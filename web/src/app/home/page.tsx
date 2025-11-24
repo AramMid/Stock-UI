@@ -80,6 +80,11 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
     chartType,
     isPrivateMode,
     enableDrawing,
+    onDrawingComplete: () => {
+      // Khi hoàn thành vẽ, đặt lại công cụ đang hoạt động về chế độ chọn và tắt enableDrawing
+      setActiveTool("selection");
+      setEnableDrawing(false);
+    },
   });
 
   // DEBUG: Check what useChart returns
