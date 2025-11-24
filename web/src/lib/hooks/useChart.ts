@@ -131,7 +131,7 @@ export function useChart({
   }, []);
 
   const redrawTrendlines = useCallback(() => {
-    if (!canvasRef.current || !enableDrawing) return;
+    if (!canvasRef.current) return;
     const canvas = canvasRef.current;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
@@ -152,8 +152,8 @@ export function useChart({
       ctx.fillRect(end.x - 4, end.y - 4, 8, 8);
     };
     trendlines.forEach((t) => drawLine(t));
-    if (currentLine) {
-      // draw dashed current
+    if (currentLine && enableDrawing) {
+      // draw dashed current (chỉ khi đang trong chế độ vẽ)
       const start = currentLine.startTime && currentLine.startPrice ? chartToCanvas(currentLine.startTime, currentLine.startPrice) : null;
       const end = currentLine.endTime && currentLine.endPrice ? chartToCanvas(currentLine.endTime, currentLine.endPrice) : null;
       if (start && end) {
@@ -205,6 +205,7 @@ export function useChart({
           width: 2,
         });
       } else if (drawingMode === "drawing" && currentLine) {
+        // Hoàn thành việc vẽ đường - lưu đường vào danh sách
         const newLine: TrendLine = {
           id: currentLine.id || `line-${Date.now()}`,
           startTime: currentLine.startTime!,
@@ -216,6 +217,7 @@ export function useChart({
         };
         setTrendlines((prev) => [...prev, newLine]);
         setCurrentLine(null);
+        // Tự động thoát chế độ vẽ sau khi vẽ xong
         setDrawingMode("none");
       }
     },
@@ -295,22 +297,22 @@ export function useChart({
     const mainChart = createChart(container, { width: container.clientWidth, height: mainChartHeight, ...chartTheme });
     mainChart.applyOptions({ handleScroll: { mouseWheel: true, pressedMouseMove: true }, handleScale: { axisPressedMouseMove: true, pinch: true } });
     // simple factory for line-like series to reduce repeated code
-    const addLineSeries = (opts?: any) => mainChart.addLineSeries({ lineWidth: 2, ...opts });
+    const addLineSeries = (opts?: any) => mainChart.addSeries(LineSeries, { lineWidth: 2, ...opts });
     mainChart.resize(container.clientWidth, mainChartHeight);
     // price series selection
     let priceSeries: any = null;
     if (chartType === "candlestick") {
-      priceSeries = mainChart.addCandlestickSeries({ upColor: "#26a69a", downColor: "#ef5350", borderVisible: false, wickUpColor: "#26a69a", wickDownColor: "#ef5350" });
+      priceSeries = mainChart.addSeries(CandlestickSeries, { upColor: "#26a69a", downColor: "#ef5350", borderVisible: false, wickUpColor: "#26a69a", wickDownColor: "#ef5350" });
     } else if (chartType === "line") {
       priceSeries = addLineSeries({ color: isDarkMode ? "#2196F3" : "#1976D2" });
     } else {
-      priceSeries = mainChart.addAreaSeries({
+      priceSeries = mainChart.addSeries(AreaSeries, {
         topColor: isDarkMode ? "rgba(33, 150, 243, 0.56)" : "rgba(25, 118, 210, 0.56)",
         bottomColor: isDarkMode ? "rgba(33, 150, 243, 0.04)" : "rgba(25, 118, 210, 0.04)",
         lineColor: isDarkMode ? "#2196F3" : "#1976D2",
       });
     }
-    const volumeSeries = mainChart.addHistogramSeries({ priceFormat: { type: "volume" }, priceScaleId: "", base: 0, color: isDarkMode ? "#64748b" : "#9ca3af" });
+    const volumeSeries = mainChart.addSeries(HistogramSeries, { priceFormat: { type: "volume" }, priceScaleId: "", base: 0, color: isDarkMode ? "#64748b" : "#9ca3af" });
     volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
     const smaSeries = addLineSeries({ color: isDarkMode ? "#3b82f6" : "blue" });
     const emaSeries = addLineSeries({ color: isDarkMode ? "#f97316" : "orange" });
@@ -327,7 +329,7 @@ export function useChart({
       rsiContainer.style.overflow = "hidden";
       container.appendChild(rsiContainer);
       rsiChart = createChart(rsiContainer, { width: container.clientWidth, height: rsiHeight, ...chartTheme });
-      rsiSeries = rsiChart.addLineSeries({ color: isDarkMode ? "#a855f7" : "purple", lineWidth: 2 });
+      rsiSeries = rsiChart.addSeries(LineSeries, { color: isDarkMode ? "#a855f7" : "purple", lineWidth: 2 });
       rsiChart.applyOptions({ rightPriceScale: { scaleMargins: { top: 0.1, bottom: 0.1 } } });
     }
     // optional MACD chart
@@ -340,7 +342,7 @@ export function useChart({
       macdContainer.style.overflow = "hidden";
       container.appendChild(macdContainer);
       macdChart = createChart(macdContainer, { width: container.clientWidth, height: macdHeight, ...chartTheme });
-      macdLineSeries = macdChart.addLineSeries({ color: isDarkMode ? "#10b981" : "green", lineWidth: 2 });
+      macdLineSeries = macdChart.addSeries(LineSeries, { color: isDarkMode ? "#10b981" : "green", lineWidth: 2 });
     }
     chartsRef.current = { mainChart, rsiChart, macdChart };
     seriesRef.current = { priceSeries, volumeSeries, smaSeries, emaSeries, bbUpperSeries, bbLowerSeries, bbMiddleSeries, rsiSeries, macdLineSeries };
@@ -558,16 +560,9 @@ export function useChart({
   useEffect(() => {
     const container = containerRef.current;
     const { mainChart } = chartsRef.current;
-    // remove canvas if drawing disabled
-    if (!enableDrawing || !container || !mainChart || !chartsReady) {
-      if (canvasRef.current) {
-        canvasRef.current.remove();
-        canvasRef.current = null;
-      }
-      return;
-    }
-    // create canvas overlay (if missing)
-    if (!canvasRef.current) {
+    
+    // Always create canvas overlay if missing and charts are ready
+    if ((!canvasRef.current || !canvasRef.current.parentElement) && container && mainChart && chartsReady) {
       const canvas = document.createElement("canvas");
       canvas.style.position = "absolute";
       canvas.style.top = "0";
@@ -581,38 +576,51 @@ export function useChart({
       container.appendChild(canvas);
       canvasRef.current = canvas;
     }
-    // subscribe handlers
-    mainChart.subscribeCrosshairMove(handleDrawingCrosshairMove);
-    container.addEventListener("click", handleChartClick);
-    // Subscribe a named visible range handler (do NOT assume subscribe returns an unsubscribe function)
-    const visibleRangeHandler = () => redrawTrendlines();
-    const timeScale = mainChart.timeScale();
-    // many lightweight-charts builds return void from subscribeVisibleLogicalRangeChange, so don't use returned value.
-    // instead keep the handler so we can attempt to unsubscribe via the timeScale API if it exists.
-    try {
-      // subscribe; result may be void
-      timeScale.subscribeVisibleLogicalRangeChange(visibleRangeHandler);
-    } catch {
-      // ignore if not implemented
-    }
-    // redraw once now
-    redrawTrendlines();
-    return () => {
-      mainChart.unsubscribeCrosshairMove(handleDrawingCrosshairMove);
+    
+    // Subscribe drawing handlers when drawing is enabled
+    if (enableDrawing && container && mainChart && chartsReady && canvasRef.current) {
+      mainChart.subscribeCrosshairMove(handleDrawingCrosshairMove);
+      container.addEventListener("click", handleChartClick);
+    } else if (!enableDrawing && container && mainChart && canvasRef.current) {
+      // Unsubscribe drawing handlers when drawing is disabled
+      mainChart?.unsubscribeCrosshairMove(handleDrawingCrosshairMove);
       container.removeEventListener("click", handleChartClick);
-      // attempt to remove handler via any available API (safe optional calls)
+    }
+    
+    // Always subscribe to visible range changes when canvas exists
+    if (mainChart && canvasRef.current) {
+      const timeScale = mainChart.timeScale();
+      const visibleRangeHandler = () => redrawTrendlines();
+      
       try {
-        timeScale.unsubscribeVisibleLogicalRangeChange(visibleRangeHandler);
-      } catch {}
-    };
+        timeScale.subscribeVisibleLogicalRangeChange(visibleRangeHandler);
+      } catch {
+        // ignore if not implemented
+      }
+      
+      // Redraw once now
+      redrawTrendlines();
+      
+      return () => {
+        try {
+          timeScale.unsubscribeVisibleLogicalRangeChange(visibleRangeHandler);
+        } catch {}
+        
+        // Also unsubscribe drawing handlers if they were subscribed
+        if (enableDrawing && mainChart && container) {
+          mainChart.unsubscribeCrosshairMove(handleDrawingCrosshairMove);
+          container.removeEventListener("click", handleChartClick);
+        }
+      };
+    }
   }, [enableDrawing, chartsReady, handleChartClick, handleDrawingCrosshairMove, redrawTrendlines, containerRef]);
 
   // redraw when lines change
   useEffect(() => {
-    if (enableDrawing && chartsReady && canvasRef.current) {
+    if (chartsReady && canvasRef.current) {
       redrawTrendlines();
     }
-  }, [enableDrawing, chartsReady, trendlines, currentLine, redrawTrendlines]);
+  }, [chartsReady, trendlines, currentLine, redrawTrendlines]);
 
   // update cursor
   useEffect(() => {
