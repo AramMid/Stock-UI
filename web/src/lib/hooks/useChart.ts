@@ -58,6 +58,7 @@ interface UseChartProps {
   isPrivateMode?: boolean;
   enableTrendlineDrawing?: boolean;
   enableBrushDrawing?: boolean;
+  activeTool?: string;
   onDrawingComplete?: () => void;
 }
 
@@ -75,6 +76,7 @@ export function useChart({
   isPrivateMode = false,
   enableTrendlineDrawing = false,
   enableBrushDrawing = false,
+  activeTool = "",
   onDrawingComplete,
 }: UseChartProps) {
   // refs & state
@@ -837,7 +839,7 @@ export function useChart({
     // fetch and init
     (async () => {
       try {
-        const data = await fetchYahooSeries(symbol, timeframe);
+        const data = await fetchYahooSeries(symbol, timeframe, isPrivateMode);
         initFromData(data);
         if (!isPrivateMode) {
           setTimeout(() => startReplay(), 1000);
@@ -980,13 +982,13 @@ export function useChart({
     const { mainChart } = chartsRef.current;
     if (mainChart) {
       // Chặn pan/scroll khi đang vẽ hoặc khi có đoạn thẳng được chọn
-      const shouldDisablePanScroll = enableTrendlineDrawing || enableBrushDrawing || !!selectedLine;
+      const shouldDisablePanScroll = enableTrendlineDrawing || enableBrushDrawing || !!selectedLine || activeTool === 'text';
       mainChart.applyOptions({ 
         handleScroll: { mouseWheel: !shouldDisablePanScroll, pressedMouseMove: !shouldDisablePanScroll }, 
         handleScale: { axisPressedMouseMove: !shouldDisablePanScroll, pinch: !shouldDisablePanScroll } 
       });
     }
-  }, [enableTrendlineDrawing, enableBrushDrawing, selectedLine]);
+  }, [enableTrendlineDrawing, enableBrushDrawing, selectedLine, activeTool]);
   
   // handle mouse up to deselect line and check if still on line
   useEffect(() => {

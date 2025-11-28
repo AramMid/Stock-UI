@@ -2,7 +2,6 @@ import {
   Menu,
   TrendingUp,
   Circle,
-  Type,
   Minus,
   Trash2,
   Eye,
@@ -52,13 +51,6 @@ export const tools: ToolItem[] = [
     label: "Brush / Drawing Tool", 
     type: "tool",
     description: "Free drawing on chart\nHighlight important areas\nMark patterns\nUse case: Visual notes, highlighting"
-  },
-  { 
-    id: "text", 
-    icon: Type, 
-    label: "Text Tool", 
-    type: "tool",
-    description: "Add text/notes to chart\nMark important price areas\nRecord observations, reasons for entry/exit\nCustomize: font, size, colors\nUse case: Trading journal notes, marking S/R"
   },
   { 
     id: "delete", 

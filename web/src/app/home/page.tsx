@@ -81,6 +81,7 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
     isPrivateMode,
     enableTrendlineDrawing: enableTrendlineDrawing,
     enableBrushDrawing: enableBrushDrawing,
+    activeTool: activeTool,
     onDrawingComplete: () => {
       // Khi hoàn thành vẽ, đặt lại công cụ đang hoạt động về chế độ chọn và tắt enableDrawing
       setActiveTool("selection");
@@ -173,11 +174,17 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
     }
     
     // Handle brush tool
-    if (toolId === 'brush') {
+    else if (toolId === 'brush') {
       const newBrushState = !enableBrushDrawing;
       console.log("🎨 Toggling brush drawing mode:", newBrushState);
       setEnableBrushDrawing(newBrushState);
       setEnableTrendlineDrawing(false); // Disable trendline when enabling brush
+    }
+    
+    // For all other tools, disable both drawing modes
+    else {
+      setEnableTrendlineDrawing(false);
+      setEnableBrushDrawing(false);
     }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

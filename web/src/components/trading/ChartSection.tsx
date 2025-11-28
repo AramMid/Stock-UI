@@ -1,4 +1,3 @@
-"use client";
 import { useRef, MutableRefObject, useEffect } from "react";
 import { Timeframe } from "@/lib/types";
 import QuickTradingButtons from "./QuickTradingButtons";

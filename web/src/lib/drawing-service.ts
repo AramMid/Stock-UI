@@ -578,6 +578,39 @@ export class DrawingService {
     }
   }
 
+  // Add drag functionality to SVG elements
+  private addDragFunctionality(element: SVGElement) {
+    let isDragging = false;
+    let offsetX = 0;
+    let offsetY = 0;
+    
+    const startDrag = (e: MouseEvent) => {
+      isDragging = true;
+      const x = parseFloat(element.getAttribute('x') || '0');
+      const y = parseFloat(element.getAttribute('y') || '0');
+      offsetX = e.clientX - x;
+      offsetY = e.clientY - y;
+      e.preventDefault();
+    };
+    
+    const drag = (e: MouseEvent) => {
+      if (!isDragging) return;
+      const newX = e.clientX - offsetX;
+      const newY = e.clientY - offsetY;
+      element.setAttribute('x', newX.toString());
+      element.setAttribute('y', newY.toString());
+    };
+    
+    const stopDrag = () => {
+      isDragging = false;
+    };
+    
+    element.addEventListener('mousedown', startDrag);
+    element.addEventListener('mousemove', drag);
+    element.addEventListener('mouseup', stopDrag);
+    element.addEventListener('mouseleave', stopDrag);
+  }
+
   // Lock all drawings
   lockAllDrawings() {
     if (this.svgOverlay) {

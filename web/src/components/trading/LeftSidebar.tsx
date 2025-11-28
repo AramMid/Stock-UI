@@ -103,6 +103,7 @@ export default function LeftSidebar({
         if (onToolSelect) onToolSelect(toolId);
         return;
       default:
+        // For all other tools, set the active tool but don't enable any drawing modes
         setActiveTool(toolId as never);
         if (onToolSelect) onToolSelect(toolId);
     }
