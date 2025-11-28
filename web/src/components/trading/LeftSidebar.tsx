@@ -82,6 +82,13 @@ export default function LeftSidebar({
       return;
     }
     
+    // Handle brush tool specifically
+    if (toolId === "brush") {
+      setActiveTool("brush" as never);
+      if (onToolSelect) onToolSelect("brush");
+      return;
+    }
+    
     switch (toolId) {
       case "delete":
         drawingService.clearAllDrawings();

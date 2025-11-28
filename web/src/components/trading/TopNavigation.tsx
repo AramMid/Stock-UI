@@ -2,24 +2,11 @@ import { useState } from "react";
 import {
   Plus,
   ChevronDown,
-  TrendingUp,
-  RotateCcw,
-  RotateCw,
-  Maximize,
-  Camera,
-  Settings,
   LineChart,
   BarChart3,
   Activity,
-  Save,
-  Upload,
-  Download,
-  Grid,
   Search,
-  Sun,
-  Moon,
   Bell,
-  Zap,
   Lock,
   Unlock,
 } from "lucide-react";
@@ -46,8 +33,6 @@ interface TopNavigationProps {
   showMACD?: boolean;
   onToggleRSI?: () => void;
   onToggleMACD?: () => void;
-  onScreenshot?: () => void;
-  onSaveChart?: () => void;
   isPrivateMode?: boolean;
   onTogglePrivateMode?: () => void;
 }
@@ -67,14 +52,11 @@ export default function TopNavigation({
   showMACD = false,
   onToggleRSI,
   onToggleMACD,
-  onScreenshot,
-  onSaveChart,
   isPrivateMode = false,
   onTogglePrivateMode,
 }: TopNavigationProps) {
   const [showTimeframeDropdown, setShowTimeframeDropdown] = useState(false);
   const [showIndicators, setShowIndicators] = useState(false);
-  const [showSaveMenu, setShowSaveMenu] = useState(false);
 
   // Determine current theme (support both prop patterns)
   const currentThemeMode: Theme =
@@ -142,16 +124,18 @@ export default function TopNavigation({
     padding: "12px 20px",
     display: "flex",
     alignItems: "center",
-    justifyContent: "space-between",
+    justifyContent: "center", // Center all content
     color: currentTheme.text,
     fontSize: "14px",
     minHeight: "60px",
   };
 
-  const sectionStyle = {
+  const centerSectionStyle = {
     display: "flex",
     alignItems: "center",
     gap: "24px",
+    justifyContent: "center",
+    width: "100%",
   };
 
   const buttonStyle = (isActive = false) => ({
@@ -228,8 +212,8 @@ export default function TopNavigation({
 
   return (
     <div style={containerStyle}>
-      {/* Left Section - Trading Controls */}
-      <div style={sectionStyle}>
+      {/* Centered Section - All Controls */}
+      <div style={centerSectionStyle}>
         {/* Symbol Search */}
         <div style={symbolInputStyle}>
           <Search
@@ -366,38 +350,6 @@ export default function TopNavigation({
 
         <div style={separatorStyle} />
 
-        {/* Undo/Redo Controls (replaced drawing tools) */}
-        <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-          <button
-            style={buttonStyle()}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.backgroundColor = currentTheme.hover;
-              e.currentTarget.style.color = currentTheme.text;
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.backgroundColor = "transparent";
-              e.currentTarget.style.color = currentTheme.textMuted;
-            }}
-            title="Undo"
-          >
-            <RotateCcw style={{ width: "16px", height: "16px" }} />
-          </button>
-          <button
-            style={buttonStyle()}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.backgroundColor = currentTheme.hover;
-              e.currentTarget.style.color = currentTheme.text;
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.backgroundColor = "transparent";
-              e.currentTarget.style.color = currentTheme.textMuted;
-            }}
-            title="Redo"
-          >
-            <RotateCw style={{ width: "16px", height: "16px" }} />
-          </button>
-        </div>
-
         {/* Indicators */}
         <div style={{ position: "relative" }}>
           <button
@@ -482,151 +434,11 @@ export default function TopNavigation({
             </div>
           )}
         </div>
-      </div>
-
-      {/* Right Section - From Save onwards */}
-      <div style={sectionStyle}>
-        {/* Save Menu */}
-        <div style={{ position: "relative" }}>
-          <button
-            onClick={() => setShowSaveMenu(!showSaveMenu)}
-            style={dropdownButtonStyle}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.backgroundColor = currentTheme.hover;
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.backgroundColor = currentTheme.cardBg;
-            }}
-          >
-            <span>Save</span>
-            <ChevronDown style={{ width: "14px", height: "14px" }} />
-          </button>
-
-          {showSaveMenu && (
-            <div
-              style={{
-                ...dropdownStyle,
-                right: "0",
-                left: "auto",
-                minWidth: "160px",
-                padding: "6px",
-              }}
-            >
-              {[
-                { icon: Save, label: "Save Chart", handler: onSaveChart },
-                { icon: Upload, label: "Load Chart" },
-                { icon: Download, label: "Export" },
-              ].map((item) => (
-                <button
-                  key={item.label}
-                  onClick={() => {
-                    item.handler?.();
-                    setShowSaveMenu(false);
-                  }}
-                  style={{
-                    width: "100%",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "8px",
-                    padding: "8px 10px",
-                    fontSize: "13px",
-                    textAlign: "left",
-                    backgroundColor: "transparent",
-                    border: "none",
-                    borderRadius: "4px",
-                    color: currentTheme.textSecondary,
-                    cursor: "pointer",
-                    transition: "background-color 0.2s ease",
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.backgroundColor = currentTheme.hover;
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.backgroundColor = "transparent";
-                  }}
-                >
-                  <item.icon style={{ width: "16px", height: "16px" }} />
-                  <span>{item.label}</span>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div style={separatorStyle} />
-
-        {/* Action Controls */}
-        <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-          {/* Layout Grid */}
-          <button
-            style={buttonStyle()}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.backgroundColor = currentTheme.hover;
-              e.currentTarget.style.color = currentTheme.text;
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.backgroundColor = "transparent";
-              e.currentTarget.style.color = currentTheme.textMuted;
-            }}
-            title="Chart layout"
-          >
-            <Grid style={{ width: "16px", height: "16px" }} />
-          </button>
-
-          {/* Screenshot */}
-          <button
-            onClick={onScreenshot}
-            style={buttonStyle()}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.backgroundColor = currentTheme.hover;
-              e.currentTarget.style.color = currentTheme.text;
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.backgroundColor = "transparent";
-              e.currentTarget.style.color = currentTheme.textMuted;
-            }}
-            title="Screenshot"
-          >
-            <Camera style={{ width: "16px", height: "16px" }} />
-          </button>
-
-          {/* Fullscreen */}
-          <button
-            style={buttonStyle()}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.backgroundColor = currentTheme.hover;
-              e.currentTarget.style.color = currentTheme.text;
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.backgroundColor = "transparent";
-              e.currentTarget.style.color = currentTheme.textMuted;
-            }}
-            title="Fullscreen"
-          >
-            <Maximize style={{ width: "16px", height: "16px" }} />
-          </button>
-        </div>
 
         <div style={separatorStyle} />
 
         {/* App Settings */}
         <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-          {/* Flash Search */}
-          <button
-            style={buttonStyle()}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.backgroundColor = currentTheme.hover;
-              e.currentTarget.style.color = currentTheme.text;
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.backgroundColor = "transparent";
-              e.currentTarget.style.color = currentTheme.textMuted;
-            }}
-            title="Flash Search"
-          >
-            <Zap style={{ width: "16px", height: "16px" }} />
-          </button>
-
           {/* Notifications */}
           <button
             style={buttonStyle()}
@@ -641,22 +453,6 @@ export default function TopNavigation({
             title="Notifications"
           >
             <Bell style={{ width: "16px", height: "16px" }} />
-          </button>
-
-          {/* Settings */}
-          <button
-            style={buttonStyle()}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.backgroundColor = currentTheme.hover;
-              e.currentTarget.style.color = currentTheme.text;
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.backgroundColor = "transparent";
-              e.currentTarget.style.color = currentTheme.textMuted;
-            }}
-            title="Settings"
-          >
-            <Settings style={{ width: "16px", height: "16px" }} />
           </button>
 
           {/* Private Mode Toggle */}
@@ -698,32 +494,7 @@ export default function TopNavigation({
               />
             )}
           </button>
-
-          {/* Theme Toggle - Removed as per requirement to only use dark mode */}
         </div>
-
-        {/* Documentation Button */}
-        <button
-          style={{
-            padding: "8px 14px",
-            backgroundColor: currentTheme.active,
-            color: "white",
-            border: "none",
-            borderRadius: "6px",
-            fontSize: "13px",
-            fontWeight: "500",
-            cursor: "pointer",
-            transition: "background-color 0.2s ease",
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.backgroundColor = "#1d4ed8";
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.backgroundColor = currentTheme.active;
-          }}
-        >
-          Documentation
-        </button>
       </div>
     </div>
   );
@@ -767,8 +538,6 @@ function DemoWrapper() {
         onChartTypeChange={setChartType}
         onToggleRSI={() => setShowRSI(!showRSI)}
         onToggleMACD={() => setShowMACD(!showMACD)}
-        onScreenshot={() => console.log("Screenshot taken")}
-        onSaveChart={() => console.log("Chart saved")}
       />
 
       {/* Demo content area */}

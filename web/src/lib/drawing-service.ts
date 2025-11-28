@@ -26,7 +26,7 @@ export class DrawingService {
     this.container.addEventListener('mousedown', this.handleMouseDown);
     this.container.addEventListener('mousemove', this.handleMouseMove);
     this.container.addEventListener('mouseup', this.handleMouseUp);
-    
+
     // Add keyboard event listener for delete key
     document.addEventListener('keydown', this.handleKeyDown.bind(this));
   }
@@ -87,7 +87,7 @@ export class DrawingService {
       const cursorStyle = this.getCursorStyle();
       console.log('Updating cursor to:', cursorStyle, 'for tool:', this.activeTool, 'cursorType:', this.cursorType);
       this.container.style.cursor = cursorStyle;
-      
+
       // Also update document body cursor for immediate feedback
       document.body.style.cursor = cursorStyle;
     } else if (this.activeTool) {
@@ -117,13 +117,13 @@ export class DrawingService {
 
   private createSVGOverlay(): void {
     if (!this.container) return;
-    
+
     // Remove existing overlay if any
     const existingOverlay = this.container.querySelector('.drawing-overlay');
     if (existingOverlay) {
       existingOverlay.remove();
     }
-    
+
     // Create SVG overlay
     this.svgOverlay = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     this.svgOverlay.classList.add('drawing-overlay');
@@ -134,7 +134,7 @@ export class DrawingService {
     this.svgOverlay.style.height = '100%';
     this.svgOverlay.style.pointerEvents = 'none'; // Allow clicks to pass through to chart
     this.svgOverlay.style.zIndex = '1000'; // Ensure it's on top
-    
+
     this.container.appendChild(this.svgOverlay);
   }
 
@@ -198,7 +198,7 @@ export class DrawingService {
 
   private updatePolygonPoints() {
     if (!this.currentElement || this.polygonPoints.length < 2) return;
-    
+
     const pointsString = this.polygonPoints.map(p => `${p.x},${p.y}`).join(' ');
     this.currentElement.setAttribute('points', pointsString);
   }
@@ -216,7 +216,7 @@ export class DrawingService {
 
   private handleSelection(e: MouseEvent) {
     const target = e.target as SVGElement;
-    
+
     // If clicking on a drawing element, select it
     if (target && target.tagName && this.drawings.has(target.id)) {
       this.selectElement(target);
@@ -253,7 +253,7 @@ export class DrawingService {
       const newY1 = e.offsetY - this.dragOffset.y;
       const newX2 = e.offsetX - this.dragOffset.x + (parseFloat(this.selectedElement.getAttribute('x2') || '0') - parseFloat(this.selectedElement.getAttribute('x1') || '0'));
       const newY2 = e.offsetY - this.dragOffset.y + (parseFloat(this.selectedElement.getAttribute('y2') || '0') - parseFloat(this.selectedElement.getAttribute('y1') || '0'));
-      
+
       this.selectedElement.setAttribute('x1', newX1.toString());
       this.selectedElement.setAttribute('y1', newY1.toString());
       this.selectedElement.setAttribute('x2', newX2.toString());
@@ -292,7 +292,7 @@ export class DrawingService {
     const deltaY = Math.abs(y - snappedY);
 
     const snapped = deltaX < snapThreshold || deltaY < snapThreshold;
-    
+
     // Show visual feedback for snapping
     if (snapped) {
       this.showSnapIndicator(snappedX, snappedY);
@@ -320,10 +320,10 @@ export class DrawingService {
     indicator.setAttribute('fill', '#00ff00');
     indicator.setAttribute('opacity', '0.8');
     indicator.style.pointerEvents = 'none';
-    
+
     if (this.svgOverlay) {
       this.svgOverlay.appendChild(indicator);
-      
+
       // Remove indicator after short delay
       setTimeout(() => {
         if (indicator.parentNode) {
@@ -346,18 +346,18 @@ export class DrawingService {
 
     this.isDrawing = false;
     this.startPoint = null;
-    
+
     // Reset pointer events after drawing
     if (this.svgOverlay) {
       this.svgOverlay.style.pointerEvents = 'none';
     }
-    
+
     this.currentElement = null;
   }
 
   private createDrawingElement(tool: string): SVGElement | null {
     const id = `drawing-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    
+
     switch (tool) {
       case 'trendline':
         const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
@@ -369,7 +369,7 @@ export class DrawingService {
         line.style.filter = 'drop-shadow(0 0 3px rgba(0, 255, 0, 0.5))';
         this.addHoverEffects(line);
         return line;
-        
+
       case 'horizontal-line':
         const hLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
         hLine.setAttribute('id', id);
@@ -379,7 +379,7 @@ export class DrawingService {
         hLine.setAttribute('cursor', 'pointer');
         this.addHoverEffects(hLine);
         return hLine;
-        
+
       case 'vertical-line':
         const vLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
         vLine.setAttribute('id', id);
@@ -389,7 +389,7 @@ export class DrawingService {
         vLine.setAttribute('cursor', 'pointer');
         this.addHoverEffects(vLine);
         return vLine;
-        
+
       case 'rectangle':
         const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
         rect.setAttribute('id', id);
@@ -400,7 +400,7 @@ export class DrawingService {
         rect.style.filter = 'drop-shadow(0 0 3px rgba(255, 255, 0, 0.5))';
         this.addHoverEffects(rect);
         return rect;
-        
+
       case 'ellipse':
         const ellipse = document.createElementNS('http://www.w3.org/2000/svg', 'ellipse');
         ellipse.setAttribute('id', id);
@@ -411,7 +411,7 @@ export class DrawingService {
         ellipse.style.filter = 'drop-shadow(0 0 3px rgba(255, 0, 255, 0.5))';
         this.addHoverEffects(ellipse);
         return ellipse;
-        
+
       case 'polygon':
         const polygon = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
         polygon.setAttribute('id', id);
@@ -423,7 +423,7 @@ export class DrawingService {
         polygon.style.filter = 'drop-shadow(0 0 3px rgba(0, 255, 255, 0.5))';
         this.addHoverEffects(polygon);
         return polygon;
-        
+
       case 'triangle':
         const triangle = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
         triangle.setAttribute('id', id);
@@ -435,7 +435,7 @@ export class DrawingService {
         triangle.style.filter = 'drop-shadow(0 0 3px rgba(255, 165, 0, 0.5))';
         this.addHoverEffects(triangle);
         return triangle;
-        
+
       case 'arrow':
         const arrow = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
         arrow.setAttribute('id', id);
@@ -447,7 +447,7 @@ export class DrawingService {
         arrow.style.filter = 'drop-shadow(0 0 3px rgba(255, 0, 0, 0.5))';
         this.addHoverEffects(arrow);
         return arrow;
-        
+
       case 'text':
         const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
         text.setAttribute('id', id);
@@ -458,7 +458,7 @@ export class DrawingService {
         text.textContent = 'Text';
         this.addHoverEffects(text);
         return text;
-        
+
       default:
         return null;
     }
@@ -470,7 +470,7 @@ export class DrawingService {
       element.setAttribute('data-original-stroke-width', currentStrokeWidth);
       element.setAttribute('stroke-width', (parseInt(currentStrokeWidth) + 1).toString());
     });
-    
+
     element.addEventListener('mouseleave', () => {
       const originalStrokeWidth = element.getAttribute('data-original-stroke-width') || '2';
       element.setAttribute('stroke-width', originalStrokeWidth);
@@ -489,7 +489,7 @@ export class DrawingService {
         element.setAttribute('x2', end.x.toString());
         element.setAttribute('y2', end.y.toString());
         break;
-        
+
       case 'rect':
         const width = Math.abs(end.x - start.x);
         const height = Math.abs(end.y - start.y);
@@ -500,7 +500,7 @@ export class DrawingService {
         element.setAttribute('width', width.toString());
         element.setAttribute('height', height.toString());
         break;
-        
+
       case 'ellipse':
         const cx = (start.x + end.x) / 2;
         const cy = (start.y + end.y) / 2;
@@ -511,7 +511,7 @@ export class DrawingService {
         element.setAttribute('rx', rx.toString());
         element.setAttribute('ry', ry.toString());
         break;
-        
+
       case 'polygon':
         const tool = element.getAttribute('data-tool') || 'polygon';
         if (tool === 'triangle') {
@@ -524,23 +524,23 @@ export class DrawingService {
           const headLength = Math.abs(end.x - start.x) * 0.3;
           const headWidth = Math.abs(end.y - start.y) * 0.2;
           const angle = Math.atan2(end.y - start.y, end.x - start.x);
-          
+
           const arrowHeadX = end.x - headLength * Math.cos(angle);
           const arrowHeadY = end.y - headLength * Math.sin(angle);
-          
+
           const leftWingX = arrowHeadX + headWidth * Math.cos(angle - Math.PI / 2);
           const leftWingY = arrowHeadY + headWidth * Math.sin(angle - Math.PI / 2);
-          
+
           const rightWingX = arrowHeadX + headWidth * Math.cos(angle + Math.PI / 2);
           const rightWingY = arrowHeadY + headWidth * Math.sin(angle + Math.PI / 2);
-          
+
           element.setAttribute('points', `${start.x},${start.y} ${arrowHeadX},${arrowHeadY} ${leftWingX},${leftWingY} ${end.x},${end.y} ${rightWingX},${rightWingY} ${arrowHeadX},${arrowHeadY}`);
         } else {
           // Regular polygon (rectangle for now)
           element.setAttribute('points', `${start.x},${start.y} ${end.x},${start.y} ${end.x},${end.y} ${start.x},${end.y}`);
         }
         break;
-        
+
       case 'text':
         element.setAttribute('x', start.x.toString());
         element.setAttribute('y', start.y.toString());

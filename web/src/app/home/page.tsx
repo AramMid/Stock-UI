@@ -4,7 +4,6 @@ import { useRef, useState, useCallback, useEffect } from "react";
 import { Timeframe } from "@/lib/types";
 import { useChart } from "@/lib/hooks/useChart";
 import { useTradingPosition } from "@/lib/hooks/useTradingPosition";
-import { useScreenshot } from "@/lib/hooks/useScreenshot";
 import { useTheme } from "@/contexts/ThemeContext";
 import { DrawingProvider, useDrawing } from "@/contexts/DrawingContext";
 import { useLayoutManager } from "@/lib/hooks/useLayoutManager";
@@ -33,7 +32,7 @@ export default function TradingPlatformWrapper(props: TradingPageProps) {
 
 function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  
+
   // Core state
   const [timeframe, setTimeframe] = useState<Timeframe>("1D");
   const [selectedSymbol, setSelectedSymbol] = useState(symbol);
@@ -50,12 +49,12 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
   const [showRSI, setShowRSI] = useState(false);
   const [showMACD, setShowMACD] = useState(false);
   const [isPrivateMode, setIsPrivateMode] = useState(false);
-  const [enableDrawing, setEnableDrawing] = useState(false); // Start with FALSE
+  const [enableTrendlineDrawing, setEnableTrendlineDrawing] = useState(false); // Separate state for trendline
+  const [enableBrushDrawing, setEnableBrushDrawing] = useState(false); // Separate state for brush
 
   // Custom hooks
   const { theme } = useTheme();
   const { tradingPosition, handleBuy, handleSell, updateLastPrice } = useTradingPosition();
-  const { downloadScreenshot } = useScreenshot();
   const { activeTool, setActiveTool } = useDrawing();
   const { triggerChartResize } = useChartResize(containerRef);
   const layoutManager = useLayoutManager();
@@ -63,7 +62,8 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
   const isDarkMode = true;
 
   // DEBUG: Log to see if useChart is being called
-  console.log("🔍 TradingPlatform render - enableDrawing:", enableDrawing);
+  console.log("🔍 TradingPlatform render - enableTrendlineDrawing:", enableTrendlineDrawing);
+  console.log("🔍 TradingPlatform render - enableBrushDrawing:", enableBrushDrawing);
   console.log("🔍 containerRef.current:", containerRef.current);
 
   // Chart management with drawing
@@ -79,11 +79,12 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
     showMACD,
     chartType,
     isPrivateMode,
-    enableDrawing,
+    enableTrendlineDrawing: enableTrendlineDrawing,
+    enableBrushDrawing: enableBrushDrawing,
     onDrawingComplete: () => {
       // Khi hoàn thành vẽ, đặt lại công cụ đang hoạt động về chế độ chọn và tắt enableDrawing
       setActiveTool("selection");
-      setEnableDrawing(false);
+      setEnableTrendlineDrawing(false);
     },
   });
 
@@ -96,15 +97,15 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
     isEnabled: false,
     isDrawing: false,
     trendlines: [],
-    startDrawing: () => {},
-    cancelDrawing: () => {},
-    clearAll: () => {},
-    undo: () => {},
+    startDrawing: () => { },
+    cancelDrawing: () => { },
+    clearAll: () => { },
+    undo: () => { },
   };
 
   // Effect to handle split changes
   useEffect(() => {
-    const isAnyDragging = 
+    const isAnyDragging =
       layoutManager.chartAccountLayout.isDragging ||
       layoutManager.horizontalLayout.isDragging ||
       layoutManager.watchlistLayout.isDragging ||
@@ -149,30 +150,21 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
 
   const handleScreenshot = useCallback(async () => {
     try {
-      const chartElement = containerRef.current;
-      if (chartElement) {
-        await downloadScreenshot(
-          chartElement,
-          `${selectedSymbol}_${timeframe}_${new Date().toISOString().split("T")[0]}.png`,
-          {
-            onSuccess: () => console.log("Screenshot downloaded successfully!"),
-            onError: (error) => console.error("Screenshot failed:", error),
-          }
-        );
-      }
+      console.log("Screenshot functionality not implemented yet");
     } catch (error) {
       console.error("Screenshot error:", error);
     }
-  }, [downloadScreenshot, selectedSymbol, timeframe]);
+  }, [selectedSymbol, timeframe]);
 
   const handleToolSelect = useCallback((toolId: string) => {
     console.log("Selected tool:", toolId);
-    
+
     if (toolId === 'trendline') {
-      const newDrawingState = !enableDrawing;
-      console.log("🎨 Toggling drawing mode:", newDrawingState);
-      setEnableDrawing(newDrawingState);
-      
+      const newDrawingState = !enableTrendlineDrawing;
+      console.log("🎨 Toggling trendline drawing mode:", newDrawingState);
+      setEnableTrendlineDrawing(newDrawingState);
+      setEnableBrushDrawing(false); // Disable brush when enabling trendline
+
       if (newDrawingState && drawing.startDrawing) {
         drawing.startDrawing();
       } else if (!newDrawingState && drawing.cancelDrawing) {
@@ -180,9 +172,17 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
       }
     }
     
+    // Handle brush tool
+    if (toolId === 'brush') {
+      const newBrushState = !enableBrushDrawing;
+      console.log("🎨 Toggling brush drawing mode:", newBrushState);
+      setEnableBrushDrawing(newBrushState);
+      setEnableTrendlineDrawing(false); // Disable trendline when enabling brush
+    }
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     setActiveTool(toolId as any);
-  }, [enableDrawing, drawing]);
+  }, [enableTrendlineDrawing, enableBrushDrawing, drawing, setActiveTool]);
 
   const handleGroupToggle = useCallback((groupId: string) => {
     console.log("Group toggled:", groupId);
@@ -191,7 +191,7 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
   const handleMenuOpen = useCallback(() => {
     console.log("Menu opened");
   }, []);
-  
+
   const handleSettingsOpen = useCallback(() => {
     console.log("Settings opened");
   }, []);
@@ -203,7 +203,8 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
       {/* DEBUG INFO */}
       <div className="fixed top-20 right-4 z-50 bg-red-900 text-white p-2 text-xs rounded">
         <div>Chart Container: {containerRef.current ? '✅' : '❌'}</div>
-        <div>Drawing Enabled: {enableDrawing ? '✅' : '❌'}</div>
+        <div>Trendline Drawing: {enableTrendlineDrawing ? '✅' : '❌'}</div>
+        <div>Brush Drawing: {enableBrushDrawing ? '✅' : '❌'}</div>
         <div>Drawing Object: {drawing ? '✅' : '❌'}</div>
         <div>Trendlines: {drawing.trendlines?.length || 0}</div>
       </div>
@@ -221,7 +222,6 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
         showMACD={showMACD}
         onToggleRSI={() => setShowRSI(!showRSI)}
         onToggleMACD={() => setShowMACD(!showMACD)}
-        onScreenshot={handleScreenshot}
         isPrivateMode={isPrivateMode}
         onTogglePrivateMode={() => setIsPrivateMode(!isPrivateMode)}
       />
@@ -236,7 +236,7 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
       {/* Main Content Area */}
       <div className="flex-1 flex relative overflow-hidden">
         {/* Left Sidebar */}
-        <LeftSidebar 
+        <LeftSidebar
           onToolSelect={handleToolSelect}
           onGroupToggle={handleGroupToggle}
           onMenuOpen={handleMenuOpen}
@@ -251,9 +251,8 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
             className="grid gap-2 transition-none relative"
             style={{
               width: `${layoutManager.horizontalLayout.split}%`,
-              gridTemplateRows: `${layoutManager.chartAccountLayout.split}fr 12px ${
-                100 - layoutManager.chartAccountLayout.split
-              }fr`,
+              gridTemplateRows: `${layoutManager.chartAccountLayout.split}fr 12px ${100 - layoutManager.chartAccountLayout.split
+                }fr`,
             }}
           >
             {/* Chart Panel */}
@@ -332,9 +331,8 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
             className="grid gap-2 transition-none"
             style={{
               width: `${100 - layoutManager.horizontalLayout.split}%`,
-              gridTemplateRows: `${layoutManager.watchlistLayout.split}fr 12px ${layoutManager.stockInfoLayout.split}fr 12px ${
-                100 - layoutManager.watchlistLayout.split - layoutManager.stockInfoLayout.split
-              }fr`,
+              gridTemplateRows: `${layoutManager.watchlistLayout.split}fr 12px ${layoutManager.stockInfoLayout.split}fr 12px ${100 - layoutManager.watchlistLayout.split - layoutManager.stockInfoLayout.split
+                }fr`,
             }}
           >
             {/* Watchlist Section */}
