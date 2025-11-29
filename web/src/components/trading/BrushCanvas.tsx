@@ -118,6 +118,7 @@ export default function BrushCanvas({
     if (!isEnabled) return;
     
     // Only draw when we're actually drawing
+    
     if (!isDrawing) return;
     
     e.stopPropagation();

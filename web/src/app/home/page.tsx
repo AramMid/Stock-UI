@@ -17,6 +17,7 @@ import WatchlistSection from "@/components/trading/WatchlistSection";
 import StockInfoSection from "@/components/trading/StockInfoSection";
 import NewsSection from "@/components/trading/NewsSection";
 import ResizableDivider from "@/components/trading/ResizableDivider";
+import OrderPanel from "@/components/trading/OrderPanel";
 
 interface TradingPageProps {
   symbol?: string;
@@ -51,6 +52,10 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
   const [isPrivateMode, setIsPrivateMode] = useState(false);
   const [enableTrendlineDrawing, setEnableTrendlineDrawing] = useState(false); // Separate state for trendline
   const [enableBrushDrawing, setEnableBrushDrawing] = useState(false); // Separate state for brush
+  const [showOrderPanel, setShowOrderPanel] = useState(false); // State for order panel
+  const [isOrderPanelDragging, setIsOrderPanelDragging] = useState(false); // State for order panel resize dragging
+  const hasManuallyResizedOrderPanel = useRef(false); // Track if user has manually resized order panel
+  const [orderPanelSide, setOrderPanelSide] = useState<"buy" | "sell">("buy"); // Track which side to show in order panel
 
   // Custom hooks
   const { theme } = useTheme();
@@ -132,6 +137,47 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
     triggerChartResize,
   ]);
 
+  // Effect to update order panel height when panel first appears or container resizes (only if not manually resized)
+  useEffect(() => {
+    if (showOrderPanel && layoutManager.rightSectionRef.current) {
+      const updateOrderPanelHeight = () => {
+        // Don't auto-update if user has manually resized
+        if (hasManuallyResizedOrderPanel.current) return;
+        
+        const container = layoutManager.rightSectionRef.current;
+        if (container) {
+          // Calculate 3/4 of available height for order panel
+          const containerHeight = container.clientHeight;
+          // Estimate the available height for the order panel
+          // (container height - dividers - other sections)
+          const availableHeight = containerHeight - 12 - 12 - 12 - 12; // 4 dividers of 12px each
+          const estimatedOrderHeight = availableHeight * 0.75; // 3/4 of available height
+          layoutManager.handleOrderPanelResize(estimatedOrderHeight);
+        }
+      };
+      
+      // Set initial height when panel first appears
+      updateOrderPanelHeight();
+      
+      // Add resize observer for container resize
+      const resizeObserver = new ResizeObserver(updateOrderPanelHeight);
+      if (layoutManager.rightSectionRef.current) {
+        resizeObserver.observe(layoutManager.rightSectionRef.current);
+      }
+      
+      return () => {
+        resizeObserver.disconnect();
+      };
+    }
+  }, [showOrderPanel, layoutManager]);
+  
+  // Reset manual resize flag when panel is closed
+  useEffect(() => {
+    if (!showOrderPanel) {
+      hasManuallyResizedOrderPanel.current = false;
+    }
+  }, [showOrderPanel]);
+
   // Event handlers
   const handleTimeframeChange = useCallback((newTimeframe: Timeframe) => {
     setTimeframe(newTimeframe);
@@ -140,14 +186,6 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
   const handleSymbolChange = useCallback((newSymbol: string) => {
     setSelectedSymbol(newSymbol);
   }, []);
-
-  const handleBuyClick = useCallback(() => {
-    handleBuy();
-  }, [handleBuy]);
-
-  const handleSellClick = useCallback(() => {
-    handleSell();
-  }, [handleSell]);
 
   const handleScreenshot = useCallback(async () => {
     try {
@@ -201,6 +239,31 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
 
   const handleSettingsOpen = useCallback(() => {
     console.log("Settings opened");
+  }, []);
+
+  const handleCloseOrderPanel = useCallback(() => {
+    setShowOrderPanel(false);
+  }, []);
+
+  const handleOrderSubmit = useCallback((side: 'buy' | 'sell', quantity: number, price: number) => {
+    console.log(`Order submitted: ${side} ${quantity} shares at ${price}`);
+    // Here you would integrate with your trading logic
+    if (side === 'buy') {
+      handleBuy();
+    } else {
+      handleSell();
+    }
+    setShowOrderPanel(false);
+  }, [handleBuy, handleSell]);
+
+  const handleBuyClick = useCallback(() => {
+    setOrderPanelSide("buy");
+    setShowOrderPanel(true);
+  }, []);
+
+  const handleSellClick = useCallback(() => {
+    setOrderPanelSide("sell");
+    setShowOrderPanel(true);
   }, []);
 
   return (
@@ -332,14 +395,15 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
             isDarkMode={isDarkMode}
           />
 
-          {/* Right Section */}
+          {/* Right Section - Balanced layout with working resize */}
           <div
             ref={layoutManager.rightSectionRef}
             className="grid gap-2 transition-none"
             style={{
               width: `${100 - layoutManager.horizontalLayout.split}%`,
-              gridTemplateRows: `${layoutManager.watchlistLayout.split}fr 12px ${layoutManager.stockInfoLayout.split}fr 12px ${100 - layoutManager.watchlistLayout.split - layoutManager.stockInfoLayout.split
-                }fr`,
+              gridTemplateRows: showOrderPanel 
+                ? `1fr 12px ${layoutManager.orderPanelHeight}px 12px 1fr 12px 1fr`
+                : `1fr 12px 1fr 12px 1fr`,
             }}
           >
             {/* Watchlist Section */}
@@ -349,13 +413,92 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
               isDarkMode={isDarkMode}
             />
 
-            {/* Watchlist to Stock Info Divider */}
+            {/* Divider and Order Panel - Only shown when buy/sell is clicked */}
+            {showOrderPanel && (
+              <>
+                <ResizableDivider
+                  isVertical={true}
+                  isDragging={isOrderPanelDragging}
+                  onMouseDown={(e: React.MouseEvent) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    
+                    setIsOrderPanelDragging(true);
+                    
+                    // Get initial position and height
+                    const startY = e.clientY;
+                    const startHeight = layoutManager.orderPanelHeight;
+                    const container = layoutManager.rightSectionRef.current;
+                    
+                    if (!container) {
+                      setIsOrderPanelDragging(false);
+                      return;
+                    }
+                      
+                    const handleMouseMove = (moveEvent: MouseEvent) => {
+                      moveEvent.preventDefault();
+                      
+                      if (!container) return;
+                      
+                      // Mark that user has manually resized
+                      hasManuallyResizedOrderPanel.current = true;
+                      
+                      // Calculate available space for order panel
+                      const containerRect = container.getBoundingClientRect();
+                      const containerHeight = containerRect.height;
+                      // Reserve space for other sections (watchlist, dividers, stock info, news)
+                      // Each divider is 12px, and we need space for other sections
+                      const reservedSpace = containerHeight * 0.4; // Reserve 40% for other sections
+                      const maxHeight = containerHeight - reservedSpace;
+                      
+                      const deltaY = moveEvent.clientY - startY;
+                      // Kéo xuống (deltaY dương) → thu nhỏ (giảm height)
+                      // Kéo lên (deltaY âm) → phóng to (tăng height)
+                      const newHeight = Math.max(100, Math.min(maxHeight, startHeight - deltaY));
+                      layoutManager.handleOrderPanelResize(newHeight);
+                    };
+                      
+                    const handleMouseUp = () => {
+                      setIsOrderPanelDragging(false);
+                      document.removeEventListener('mousemove', handleMouseMove);
+                      document.removeEventListener('mouseup', handleMouseUp);
+                      document.body.style.cursor = '';
+                      document.body.style.userSelect = '';
+                    };
+                      
+                    // Set cursor and prevent text selection
+                    document.body.style.cursor = 'row-resize';
+                    document.body.style.userSelect = 'none';
+                    
+                    document.addEventListener('mousemove', handleMouseMove, { passive: false });
+                    document.addEventListener('mouseup', handleMouseUp);
+                  }}
+                  title="Drag to resize order panel"
+                  splitPercentage={75}
+                  isDarkMode={isDarkMode}
+                />
+                <div className="rounded-lg overflow-hidden bg-[#131722] h-full">
+                  <OrderPanel
+                    symbol={selectedSymbol}
+                    currentPrice={ohlcData?.close || 245.3}
+                    onClose={handleCloseOrderPanel}
+                    onBuy={(quantity: number, price: number) => handleOrderSubmit('buy', quantity, price)}
+                    onSell={(quantity: number, price: number) => handleOrderSubmit('sell', quantity, price)}
+                    isDarkMode={isDarkMode}
+                    side={orderPanelSide} // Pass the side that was clicked
+                    onSideChange={setOrderPanelSide} // Handle side changes from within the panel
+                  />
+                </div>
+              </>
+            )}
+
+            {/* Stock Info Divider */}
             <ResizableDivider
               isVertical={true}
-              isDragging={layoutManager.watchlistLayout.isDragging}
-              onMouseDown={(e) => layoutManager.watchlistLayout.handleMouseDown(e, true)}
-              title="Drag up/down to resize watchlist and stock info sections"
-              splitPercentage={layoutManager.watchlistLayout.split}
+              isDragging={layoutManager.stockInfoLayout.isDragging}
+              onMouseDown={(e: React.MouseEvent) => layoutManager.stockInfoLayout.handleMouseDown(e, true)}
+              title="Drag up/down to resize stock info and news sections"
+              splitPercentage={layoutManager.stockInfoLayout.split + layoutManager.watchlistLayout.split}
               isDarkMode={isDarkMode}
             />
 
@@ -370,7 +513,7 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
             <ResizableDivider
               isVertical={true}
               isDragging={layoutManager.stockInfoLayout.isDragging}
-              onMouseDown={(e) => layoutManager.stockInfoLayout.handleMouseDown(e, true)}
+              onMouseDown={(e: React.MouseEvent) => layoutManager.stockInfoLayout.handleMouseDown(e, true)}
               title="Drag up/down to resize stock info and news sections"
               splitPercentage={layoutManager.stockInfoLayout.split + layoutManager.watchlistLayout.split}
               isDarkMode={isDarkMode}
@@ -379,6 +522,8 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
             {/* News Section */}
             <NewsSection isDarkMode={isDarkMode} />
           </div>
+
+          {/* Remove any modal overlay for order panel */}
         </div>
       </div>
     </div>
