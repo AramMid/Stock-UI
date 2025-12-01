@@ -5,10 +5,11 @@ import { apiCache } from "./cache";
 
 export async function fetchYahooSeries(
   symbol = "FUESSV30.HM",
-  timeframe: Timeframe = "1D"
+  timeframe: Timeframe = "1D",
+  isPrivateMode: boolean = false
 ): Promise<YahooQuoteData[]> {
-  // Create cache key
-  const cacheKey = `${symbol}-${timeframe}`;
+  // Create cache key - include private mode in cache key to separate data
+  const cacheKey = `${symbol}-${timeframe}-${isPrivateMode ? 'private' : 'public'}`;
 
   // Check cache first
   const cachedData = apiCache.get(cacheKey);
@@ -18,14 +19,135 @@ export async function fetchYahooSeries(
   }
 
   let interval = "1d";
-  let range = "6mo";
+  let range = "max"; // Default to max for private mode
 
-  if (timeframe === "1W") {
-    interval = "1wk";
-    range = "2y";
-  } else if (timeframe === "1M") {
-    interval = "1mo";
-    range = "10y";
+  // For public mode, use a more recent date range (November 2025)
+  if (!isPrivateMode) {
+    // Use a shorter range for public mode
+    switch (timeframe) {
+      case "1m":
+        range = "5d";
+        interval = "1m";
+        break;
+      case "5m":
+        range = "1mo";
+        interval = "5m";
+        break;
+      case "15m":
+        range = "1mo";
+        interval = "15m";
+        break;
+      case "30m":
+        range = "1mo";
+        interval = "30m";
+        break;
+      case "1H":
+        range = "1mo";
+        interval = "1h";
+        break;
+      case "4H":
+        range = "6mo";
+        interval = "1h"; // Yahoo Finance doesn't have 4H, using 1H
+        break;
+      case "1D":
+        range = "6mo"; // Recent 6 months for public mode
+        interval = "1d";
+        break;
+      case "5D":
+        range = "1mo";
+        interval = "1d";
+        break;
+      case "1W":
+        range = "6mo"; // Recent 6 months for public mode
+        interval = "1wk";
+        break;
+      case "1M":
+        range = "1y"; // Recent 1 year for public mode
+        interval = "1mo";
+        break;
+      case "3M":
+        range = "3mo";
+        interval = "1d";
+        break;
+      case "6M":
+        range = "6mo";
+        interval = "1d";
+        break;
+      case "1Y":
+        range = "1y";
+        interval = "1d";
+        break;
+      case "5Y":
+        range = "5y";
+        interval = "1d";
+        break;
+      default:
+        range = "6mo";
+        interval = "1d";
+    }
+  } else {
+    // For private mode, use full historical data
+    switch (timeframe) {
+      case "1m":
+        range = "5d";
+        interval = "1m";
+        break;
+      case "5m":
+        range = "1mo";
+        interval = "5m";
+        break;
+      case "15m":
+        range = "1mo";
+        interval = "15m";
+        break;
+      case "30m":
+        range = "1mo";
+        interval = "30m";
+        break;
+      case "1H":
+        range = "1mo";
+        interval = "1h";
+        break;
+      case "4H":
+        range = "6mo";
+        interval = "1h"; // Yahoo Finance doesn't have 4H, using 1H
+        break;
+      case "1D":
+        range = "max"; // Full historical data for private mode
+        interval = "1d";
+        break;
+      case "5D":
+        range = "1mo";
+        interval = "1d";
+        break;
+      case "1W":
+        range = "max"; // Full historical data for private mode
+        interval = "1wk";
+        break;
+      case "1M":
+        range = "max"; // Full historical data for private mode
+        interval = "1mo";
+        break;
+      case "3M":
+        range = "3mo";
+        interval = "1d";
+        break;
+      case "6M":
+        range = "6mo";
+        interval = "1d";
+        break;
+      case "1Y":
+        range = "1y";
+        interval = "1d";
+        break;
+      case "5Y":
+        range = "5y";
+        interval = "1d";
+        break;
+      default:
+        range = "max";
+        interval = "1d";
+    }
   }
 
   console.log(`Fetching fresh data for ${cacheKey}`);
@@ -73,7 +195,7 @@ export async function fetchYahooSeries(
       throw new Error("No quotes in Yahoo result");
     }
 
-    const data = timestamps
+    let data = timestamps
       .map((ts, i) => ({
         time: ts as Time,
         open: quotes.open[i],
@@ -86,6 +208,14 @@ export async function fetchYahooSeries(
         (d) =>
           d.open != null && d.high != null && d.low != null && d.close != null
       );
+
+    // For public mode, filter data to only include recent data (from November 2025 onwards)
+    if (!isPrivateMode) {
+      // Filter data to only include dates from November 2025 onwards
+      // Note: This is a simplified approach. In practice, you might want to adjust this based on your needs.
+      const november2025Timestamp = new Date('2025-11-01').getTime() / 1000;
+      data = data.filter(d => (d.time as number) >= november2025Timestamp);
+    }
 
     // Cache the result
     apiCache.set(cacheKey, data);

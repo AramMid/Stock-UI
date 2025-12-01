@@ -111,7 +111,7 @@ const DrawingChart: React.FC = () => {
       ctx.fillRect(end.x - 4, end.y - 4, 8, 8);
     });
 
-    // Draw current line being drawn
+    // Draw current line being drawn (dùng nét đứt)
     if (currentLine && currentLine.startTime && currentLine.startPrice && currentLine.endTime && currentLine.endPrice) {
       const start = chartToCanvas(currentLine.startTime, currentLine.startPrice);
       const end = chartToCanvas(currentLine.endTime, currentLine.endPrice);
@@ -122,9 +122,9 @@ const DrawingChart: React.FC = () => {
         ctx.lineTo(end.x, end.y);
         ctx.strokeStyle = currentLine.color || '#2196F3';
         ctx.lineWidth = currentLine.width || 2;
-        ctx.setLineDash([5, 5]);
+        ctx.setLineDash([5, 5]); // Nét đứt
         ctx.stroke();
-        ctx.setLineDash([]);
+        ctx.setLineDash([]); // Tắt nét đứt
 
         // Draw start point
         ctx.fillStyle = currentLine.color || '#2196F3';
@@ -164,7 +164,7 @@ const DrawingChart: React.FC = () => {
     if (time === undefined || price === undefined || price === null) return;
 
     if (drawingMode === 'none') {
-      // Start drawing
+      // Logic BẬT CHẾ ĐỘ VẼ khi click lần đầu tiên
       setDrawingMode('drawing');
       setCurrentLine({
         id: `line-${Date.now()}`,
@@ -176,7 +176,7 @@ const DrawingChart: React.FC = () => {
         width: 2,
       });
     } else if (drawingMode === 'drawing' && currentLine) {
-      // Finish drawing
+      // Click lần 2: Kết thúc vẽ
       const newLine: TrendLine = {
         id: currentLine.id || `line-${Date.now()}`,
         startTime: currentLine.startTime!,
@@ -189,14 +189,17 @@ const DrawingChart: React.FC = () => {
 
       setTrendlines((prev) => [...prev, newLine]);
       setCurrentLine(null);
+      
+      // THOÁT CHẾ ĐỘ VẼ TỰ ĐỘNG sau khi vẽ xong
       setDrawingMode('none');
     }
-  }, [drawingMode, currentLine]);
+  }, [drawingMode, currentLine]); // Bạn có thể loại bỏ dependency drawingMode và currentLine ở đây để tối ưu hơn nếu cần, nhưng tạm thời giữ nguyên
 
   // Initialize chart
   useEffect(() => {
     if (!chartContainerRef.current) return;
 
+    // Chart initialization logic remains the same
     const chart = createChart(chartContainerRef.current, {
       width: chartContainerRef.current.clientWidth,
       height: 600,
@@ -262,31 +265,24 @@ const DrawingChart: React.FC = () => {
     // Subscribe to crosshair move for live drawing
     chart.subscribeCrosshairMove(handleCrosshairMove);
 
+    // Redraw on chart scroll/zoom
+    const handleVisibleRangeChange = () => {
+      redrawTrendlines();
+    };
+    chart.timeScale().subscribeVisibleLogicalRangeChange(handleVisibleRangeChange);
+
     return () => {
       window.removeEventListener('resize', handleResize);
+      chart.unsubscribeCrosshairMove(handleCrosshairMove);
+      chart.timeScale().unsubscribeVisibleLogicalRangeChange(handleVisibleRangeChange);
       chart.remove();
       canvas.remove();
     };
   }, [handleCrosshairMove, redrawTrendlines]);
 
-  // Redraw when trendlines or currentLine changes
+  // Redraw when trendlines or currentLine changes (Vẫn giữ nguyên)
   useEffect(() => {
     redrawTrendlines();
-  }, [redrawTrendlines]);
-
-  // Redraw on scroll/zoom
-  useEffect(() => {
-    if (!chartRef.current) return;
-
-    const handleVisibleRangeChange = () => {
-      redrawTrendlines();
-    };
-
-    timeScaleRef.current?.subscribeVisibleLogicalRangeChange(handleVisibleRangeChange);
-
-    return () => {
-      timeScaleRef.current?.unsubscribeVisibleLogicalRangeChange(handleVisibleRangeChange);
-    };
   }, [redrawTrendlines]);
 
   // Clear all trendlines
@@ -300,26 +296,33 @@ const DrawingChart: React.FC = () => {
   const handleUndo = () => {
     setTrendlines((prev) => prev.slice(0, -1));
   };
+  
+  // Nút kích hoạt chế độ vẽ (đơn giản, không phải toggle)
+  const handleActivateDrawing = () => {
+    // Chỉ kích hoạt nếu đang ở chế độ 'none'
+    if (drawingMode === 'none') {
+        setDrawingMode('drawing');
+        setCurrentLine(null); // Đảm bảo không có line đang vẽ dở
+    } else {
+        // Nếu người dùng bấm lại nút khi đang vẽ, ta có thể xem là HỦY
+        setDrawingMode('none');
+        setCurrentLine(null);
+    }
+  };
 
   return (
     <div className="flex flex-col gap-4 p-4 bg-gray-900 min-h-screen">
       <div className="flex gap-2 items-center">
+        {/* Nút KÍCH HOẠT CHẾ ĐỘ VẼ MỘT LẦN */}
         <button
-          onClick={() => {
-            if (drawingMode === 'none') {
-              setDrawingMode('drawing');
-            } else {
-              setDrawingMode('none');
-              setCurrentLine(null);
-            }
-          }}
+          onClick={handleActivateDrawing}
           className={`px-4 py-2 rounded font-medium transition-colors ${
             drawingMode === 'drawing'
-              ? 'bg-blue-600 text-white'
-              : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+              ? 'bg-orange-600 text-white hover:bg-orange-700'
+              : 'bg-green-600 text-white hover:bg-green-700'
           }`}
         >
-          {drawingMode === 'drawing' ? 'Drawing Mode (Click to place points)' : 'Start Drawing'}
+          {drawingMode === 'drawing' ? 'Drawing Mode: Click 2 points (or click to Cancel)' : 'Trendline Tool (Bắt đầu vẽ)'}
         </button>
         
         <button
@@ -343,15 +346,14 @@ const DrawingChart: React.FC = () => {
       </div>
 
       <div className="bg-gray-800 p-4 rounded">
-        <h3 className="text-white font-semibold mb-2">Instructions:</h3>
+        <h3 className="text-white font-semibold mb-2">Instructions Cập Nhật:</h3>
         <ul className="text-gray-300 text-sm space-y-1 list-disc list-inside">
-          <li>Click &quot;Start Drawing&quot; to enable drawing mode</li>
-          <li>Click on the chart to set the first point of the trendline</li>
-          <li>Move your mouse to see the line preview</li>
-          <li>Click again to set the second point and complete the line</li>
-          <li>The trendline will stay at the same time + price coordinates when you scroll or zoom</li>
-          <li>Use &quot;Undo Last&quot; to remove the most recent line</li>
-          <li>Use &quot;Clear All&quot; to remove all trendlines</li>
+          <li>Click **"Trendline Tool"** để kích hoạt chế độ vẽ.</li>
+          <li>Click trên biểu đồ để **đặt điểm đầu tiên** (start point).</li>
+          <li>Di chuột để xem đường **preview** (nét đứt).</li>
+          <li>Click lần thứ hai để **hoàn thành** đoạn thẳng.</li>
+          <li>**Chế độ vẽ sẽ tự động thoát** sau khi đoạn thẳng hoàn thành. Nếu muốn vẽ tiếp, bạn phải click lại **"Trendline Tool"**.</li>
+          <li>Nếu đang vẽ, click lại **"Trendline Tool"** để hủy bỏ thao tác vẽ hiện tại.</li>
         </ul>
       </div>
 

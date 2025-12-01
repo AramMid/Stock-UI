@@ -11,6 +11,7 @@ import {
   CrosshairMode,
   MouseEventParams,
   Time,
+  SeriesOptions,
 } from "lightweight-charts";
 import { CandlestickWithVolume, Timeframe } from "../types";
 import { fetchYahooSeries } from "../api";
@@ -31,6 +32,7 @@ export interface TrendLine {
   endPrice: number;
   color: string;
   width: number;
+  isPrivate: boolean;
 }
 
 type DrawingMode = "none" | "drawing";
@@ -54,7 +56,10 @@ interface UseChartProps {
   showMACD?: boolean;
   chartType?: "candlestick" | "line" | "area";
   isPrivateMode?: boolean;
-  enableDrawing?: boolean;
+  enableTrendlineDrawing?: boolean;
+  enableBrushDrawing?: boolean;
+  activeTool?: string;
+  onDrawingComplete?: () => void;
 }
 
 export function useChart({
@@ -69,7 +74,10 @@ export function useChart({
   showMACD = false,
   chartType = "candlestick",
   isPrivateMode = false,
-  enableDrawing = false,
+  enableTrendlineDrawing = false,
+  enableBrushDrawing = false,
+  activeTool = "",
+  onDrawingComplete,
 }: UseChartProps) {
   // refs & state
   const isInitializedRef = useRef<string>("");
@@ -82,7 +90,7 @@ export function useChart({
     macdChart: null,
   });
   const seriesRef = useRef<{
-    priceSeries: any | null;
+    priceSeries: ISeriesApi<"Candlestick"> | ISeriesApi<"Line"> | ISeriesApi<"Area"> | null;
     volumeSeries: ISeriesApi<"Histogram"> | null;
     smaSeries: ISeriesApi<"Line"> | null;
     emaSeries: ISeriesApi<"Line"> | null;
@@ -112,7 +120,16 @@ export function useChart({
   const [trendlines, setTrendlines] = useState<TrendLine[]>([]);
   const [drawingMode, setDrawingMode] = useState<DrawingMode>("none");
   const [currentLine, setCurrentLine] = useState<Partial<TrendLine> | null>(null);
+  const [selectedLine, setSelectedLine] = useState<{line: TrendLine, point: 'start' | 'end' | 'body'} | null>(null);
   const [chartsReady, setChartsReady] = useState(false);
+  const lastClickTimeRef = useRef<number>(0);
+  const lastClickPositionRef = useRef<{x: number, y: number} | null>(null);
+  const isMouseDownRef = useRef<boolean>(false);
+  const originalLineRef = useRef<{line: TrendLine, point: 'start' | 'end' | 'body'} | null>(null);
+  const mouseDownPositionRef = useRef<{x: number, y: number, time: number, price: number} | null>(null);
+  const isDraggingRef = useRef<boolean>(false);
+  const wasDraggingRef = useRef<boolean>(false); // Lưu trạng thái drag để kiểm tra trong click handler
+  const rafIdRef = useRef<number | null>(null); // Để throttle cập nhật với requestAnimationFrame
 
   // helpers
   const chartToCanvas = useCallback((time: number, price: number): { x: number; y: number } | null => {
@@ -131,7 +148,7 @@ export function useChart({
   }, []);
 
   const redrawTrendlines = useCallback(() => {
-    if (!canvasRef.current || !enableDrawing) return;
+    if (!canvasRef.current) return;
     const canvas = canvasRef.current;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
@@ -150,10 +167,28 @@ export function useChart({
       ctx.fillStyle = line.color || "#2196F3";
       ctx.fillRect(start.x - 4, start.y - 4, 8, 8);
       ctx.fillRect(end.x - 4, end.y - 4, 8, 8);
+      
+      // Vẽ điểm điều khiển nếu đoạn thẳng được chọn
+      if (selectedLine && selectedLine.line.id === line.id) {
+        ctx.fillStyle = "#ff0000";
+        if (selectedLine.point === 'start') {
+          ctx.fillRect(start.x - 6, start.y - 6, 12, 12);
+        } else if (selectedLine.point === 'end') {
+          ctx.fillRect(end.x - 6, end.y - 6, 12, 12);
+        } else if (selectedLine.point === 'body') {
+          // Vẽ điểm điều khiển ở giữa đoạn thẳng khi chọn thân đoạn thẳng
+          const midX = (start.x + end.x) / 2;
+          const midY = (start.y + end.y) / 2;
+          ctx.fillRect(midX - 6, midY - 6, 12, 12);
+        }
+      }
     };
-    trendlines.forEach((t) => drawLine(t));
-    if (currentLine) {
-      // draw dashed current
+    // Chỉ vẽ các đoạn thẳng phù hợp với chế độ hiện tại
+    trendlines
+      .filter(t => t.isPrivate === (isPrivateMode || false))
+      .forEach((t) => drawLine(t));
+    if (currentLine && enableTrendlineDrawing && currentLine.isPrivate === (isPrivateMode || false)) {
+      // draw dashed current (chỉ khi đang trong chế độ vẽ và cùng chế độ)
       const start = currentLine.startTime && currentLine.startPrice ? chartToCanvas(currentLine.startTime, currentLine.startPrice) : null;
       const end = currentLine.endTime && currentLine.endPrice ? chartToCanvas(currentLine.endTime, currentLine.endPrice) : null;
       if (start && end) {
@@ -169,23 +204,146 @@ export function useChart({
         ctx.fillRect(start.x - 4, start.y - 4, 8, 8);
       }
     }
-  }, [trendlines, currentLine, chartToCanvas, enableDrawing]);
+  }, [trendlines, currentLine, chartToCanvas, enableTrendlineDrawing, isPrivateMode, selectedLine]);
 
   // drawing handlers
   const handleDrawingCrosshairMove = useCallback(
     (param: MouseEventParams) => {
-      if (!enableDrawing || drawingMode !== "drawing" || !currentLine) return;
       if (!param.time || param.point === undefined) return;
-      const price = seriesRef.current.priceSeries?.coordinateToPrice(param.point.y);
-      if (price === undefined || price === null) return;
-      setCurrentLine((prev) => ({ ...prev, endTime: param.time as number, endPrice: price }));
+      
+      // Nếu đang trong chế độ vẽ trendline
+      if (enableTrendlineDrawing && drawingMode === "drawing" && currentLine) {
+        const price = seriesRef.current.priceSeries?.coordinateToPrice(param.point.y);
+        if (price === undefined || price === null) return;
+        setCurrentLine((prev) => ({ ...prev, endTime: param.time as number, endPrice: price }));
+      } 
+      // Chỉ cập nhật vị trí khi đang giữ chuột (đang kéo)
+      else if (selectedLine && !enableTrendlineDrawing && isMouseDownRef.current && originalLineRef.current) {
+        const price = seriesRef.current.priceSeries?.coordinateToPrice(param.point.y);
+        if (price === undefined || price === null) return;
+        
+        // Kiểm tra xem có phải là drag không (di chuyển quá ngưỡng)
+        // Tính khoảng cách dựa trên time và price để chính xác hơn
+        if (mouseDownPositionRef.current) {
+          // Chuyển đổi sang pixel để so sánh
+          const startCanvas = chartToCanvas(mouseDownPositionRef.current.time, mouseDownPositionRef.current.price);
+          const currentCanvas = chartToCanvas(param.time as number, price);
+          
+          if (startCanvas && currentCanvas) {
+            const distance = Math.sqrt(
+              Math.pow(currentCanvas.x - startCanvas.x, 2) + 
+              Math.pow(currentCanvas.y - startCanvas.y, 2)
+            );
+            
+            // Nếu di chuyển quá 5px, đánh dấu là drag
+            if (distance > 5) {
+              isDraggingRef.current = true;
+            }
+          }
+        }
+        
+        // Chỉ cập nhật nếu đang drag
+        if (isDraggingRef.current) {
+          // Lưu trữ vị trí ban đầu của đoạn thẳng để tính toán di chuyển
+          const originalLine = originalLineRef.current.line;
+          
+          // Sử dụng requestAnimationFrame để throttle cập nhật và tránh chớp nháy
+          if (rafIdRef.current !== null) {
+            cancelAnimationFrame(rafIdRef.current);
+          }
+          
+          rafIdRef.current = requestAnimationFrame(() => {
+            // Đối với di chuyển toàn bộ đoạn thẳng, cập nhật real-time
+            if (selectedLine.point === 'body') {
+              // Tính toán vị trí ban đầu của điểm giữa đoạn thẳng
+              const originalMidTime = (originalLine.startTime + originalLine.endTime) / 2;
+              const originalMidPrice = (originalLine.startPrice + originalLine.endPrice) / 2;
+              
+              // Tính delta từ điểm giữa ban đầu đến vị trí hiện tại của chuột
+              const deltaTime = (param.time as number) - originalMidTime;
+              const deltaPrice = price - originalMidPrice;
+              
+              // Cập nhật đoạn thẳng bằng cách di chuyển cả hai điểm
+              setTrendlines(prev => prev.map(t => {
+                if (t.id === selectedLine.line.id) {
+                  return { 
+                    ...t, 
+                    startTime: originalLine.startTime + deltaTime,
+                    startPrice: originalLine.startPrice + deltaPrice,
+                    endTime: originalLine.endTime + deltaTime,
+                    endPrice: originalLine.endPrice + deltaPrice
+                  };
+                }
+                return t;
+              }));
+            }
+            // Đối với thay đổi điểm (start hoặc end), cập nhật real-time khi kéo
+            else if (selectedLine.point === 'start' || selectedLine.point === 'end') {
+              setTrendlines(prev => prev.map(t => {
+                if (t.id === selectedLine.line.id) {
+                  if (selectedLine.point === 'start') {
+                    return {
+                      ...t,
+                      startTime: param.time as number,
+                      startPrice: price
+                    };
+                  } else {
+                    return {
+                      ...t,
+                      endTime: param.time as number,
+                      endPrice: price
+                    };
+                  }
+                }
+                return t;
+              }));
+            }
+            
+            rafIdRef.current = null;
+          });
+        }
+      }
     },
-    [enableDrawing, drawingMode, currentLine]
+    [enableTrendlineDrawing, drawingMode, currentLine, selectedLine, seriesRef, chartToCanvas]
   );
 
-  const handleChartClick = useCallback(
+  // Hàm tính khoảng cách từ điểm đến đoạn thẳng
+  const distancePointToLine = (px: number, py: number, x1: number, y1: number, x2: number, y2: number): number => {
+    const A = px - x1;
+    const B = py - y1;
+    const C = x2 - x1;
+    const D = y2 - y1;
+    
+    const dot = A * C + B * D;
+    const lenSq = C * C + D * D;
+    let param = -1;
+    
+    if (lenSq !== 0) {
+      param = dot / lenSq;
+    }
+    
+    let xx, yy;
+    
+    if (param < 0) {
+      xx = x1;
+      yy = y1;
+    } else if (param > 1) {
+      xx = x2;
+      yy = y2;
+    } else {
+      xx = x1 + param * C;
+      yy = y1 + param * D;
+    }
+    
+    const dx = px - xx;
+    const dy = py - yy;
+    return Math.sqrt(dx * dx + dy * dy);
+  };
+  
+  // Handle mouse down - chọn đoạn thẳng và bắt đầu kéo
+  const handleChartMouseDown = useCallback(
     (e: MouseEvent) => {
-      if (!enableDrawing || !chartsRef.current.mainChart || !containerRef.current) return;
+      if (!chartsRef.current.mainChart || !containerRef.current) return;
       const rect = containerRef.current.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
@@ -193,38 +351,200 @@ export function useChart({
       const time = timeScale.coordinateToTime(x);
       const price = seriesRef.current.priceSeries?.coordinateToPrice(y);
       if (time === undefined || price === undefined || price === null) return;
-      if (drawingMode === "none") {
-        setDrawingMode("drawing");
-        setCurrentLine({
-          id: `line-${Date.now()}`,
-          startTime: time as number,
-          startPrice: price,
-          endTime: time as number,
-          endPrice: price,
-          color: isDarkMode ? "#2196F3" : "#1976D2",
-          width: 2,
-        });
-      } else if (drawingMode === "drawing" && currentLine) {
-        const newLine: TrendLine = {
-          id: currentLine.id || `line-${Date.now()}`,
-          startTime: currentLine.startTime!,
-          startPrice: currentLine.startPrice!,
-          endTime: time as number,
-          endPrice: price,
-          color: currentLine.color || (isDarkMode ? "#2196F3" : "#1976D2"),
-          width: currentLine.width || 2,
-        };
-        setTrendlines((prev) => [...prev, newLine]);
-        setCurrentLine(null);
-        setDrawingMode("none");
+      
+      // Nếu đang trong chế độ vẽ trendline, không xử lý mousedown cho selection
+      if (enableTrendlineDrawing) {
+        return;
+      }
+      
+      // Đánh dấu chuột đã được nhấn
+      isMouseDownRef.current = true;
+      isDraggingRef.current = false; // Reset trạng thái drag
+      mouseDownPositionRef.current = { x, y, time: time as number, price }; // Lưu vị trí ban đầu (cả pixel và chart coordinates)
+      
+      // Hủy bất kỳ pending animation frame nào
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current);
+        rafIdRef.current = null;
+      }
+      
+      // Kiểm tra xem có click vào đoạn thẳng nào không
+      let clickedOnLine = false;
+      
+      // Duyệt ngược để ưu tiên các đoạn thẳng được vẽ sau
+      for (let i = trendlines.length - 1; i >= 0; i--) {
+        const line = trendlines[i];
+        // Chỉ kiểm tra đoạn thẳng của chế độ hiện tại
+        if (line.isPrivate !== (isPrivateMode || false)) continue;
+        
+        const start = chartToCanvas(line.startTime, line.startPrice);
+        const end = chartToCanvas(line.endTime, line.endPrice);
+        
+        if (!start || !end) continue;
+        
+        // Kiểm tra khoảng cách từ điểm click đến đoạn thẳng
+        const distanceToLine = distancePointToLine(x, y, start.x, start.y, end.x, end.y);
+        
+        if (distanceToLine <= 5) { // 5px tolerance
+          // Kiểm tra xem người dùng click gần điểm bắt đầu, kết thúc hay thân đoạn thẳng
+          const distanceToStart = Math.sqrt(Math.pow(x - start.x, 2) + Math.pow(y - start.y, 2));
+          const distanceToEnd = Math.sqrt(Math.pow(x - end.x, 2) + Math.pow(y - end.y, 2));
+          
+          // Ngưỡng để xác định click vào điểm (10px) hay thân đoạn thẳng
+          const threshold = 10;
+          
+          let pointType: 'start' | 'end' | 'body' = 'body';
+          
+          // Nếu click gần điểm đầu hoặc điểm cuối, chọn điểm đó để thay đổi hướng
+          if (distanceToStart <= threshold && distanceToStart <= distanceToEnd) {
+            pointType = 'start';
+          } else if (distanceToEnd <= threshold) {
+            pointType = 'end';
+          }
+          
+          // Lưu vị trí ban đầu để tính toán khi kéo
+          const selectedData = {
+            line: { ...line },
+            point: pointType
+          };
+          setSelectedLine(selectedData);
+          originalLineRef.current = selectedData;
+          
+          clickedOnLine = true;
+          break;
+        }
+      }
+      
+      // Nếu không click vào đoạn thẳng nào, bỏ chọn và đánh dấu không kéo
+      if (!clickedOnLine) {
+        setSelectedLine(null);
+        originalLineRef.current = null;
+        isMouseDownRef.current = false;
       }
     },
-    [enableDrawing, drawingMode, currentLine, containerRef, isDarkMode]
+    [enableTrendlineDrawing, trendlines, isPrivateMode, chartToCanvas]
+  );
+
+  // Handle click - chỉ dùng cho vẽ và double click để xóa
+  const handleChartClick = useCallback(
+    (e: MouseEvent) => {
+      if (!chartsRef.current.mainChart || !containerRef.current) return;
+      const rect = containerRef.current.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const timeScale = chartsRef.current.mainChart.timeScale();
+      const time = timeScale.coordinateToTime(x);
+      const price = seriesRef.current.priceSeries?.coordinateToPrice(y);
+      if (time === undefined || price === undefined || price === null) return;
+      
+      // Nếu đang trong chế độ vẽ trendline
+      if (enableTrendlineDrawing) {
+        if (drawingMode === "none") {
+          setDrawingMode("drawing");
+          setCurrentLine({
+            id: `line-${Date.now()}`,
+            startTime: time as number,
+            startPrice: price,
+            endTime: time as number,
+            endPrice: price,
+            color: isDarkMode ? "#2196F3" : "#1976D2",
+            width: 2,
+            isPrivate: isPrivateMode || false,
+          });
+        } else if (drawingMode === "drawing" && currentLine) {
+          // Hoàn thành việc vẽ đường - lưu đường vào danh sách
+          const newLine: TrendLine = {
+            id: currentLine.id || `line-${Date.now()}`,
+            startTime: currentLine.startTime!,
+            startPrice: currentLine.startPrice!,
+            endTime: time as number,
+            endPrice: price,
+            color: currentLine.color || (isDarkMode ? "#2196F3" : "#1976D2"),
+            width: currentLine.width || 2,
+            isPrivate: isPrivateMode || false,
+          };
+          setTrendlines((prev) => [...prev, newLine]);
+          setCurrentLine(null);
+          // Tự động thoát chế độ vẽ sau khi vẽ xong
+          setDrawingMode("none");
+          // Gọi callback khi vẽ xong
+          if (onDrawingComplete) {
+            onDrawingComplete();
+          }
+        }
+      } else {
+        // Kiểm tra double click (khoảng cách thời gian < 300ms)
+        const now = Date.now();
+        const timeSinceLastClick = now - lastClickTimeRef.current;
+        const isDoubleClick = timeSinceLastClick < 300 && timeSinceLastClick > 0;
+        
+        // Nếu là double click, kiểm tra xem có click vào đoạn thẳng nào không
+        if (isDoubleClick) {
+          // Kiểm tra xem có double click vào đoạn thẳng nào không
+          let lineDeleted = false;
+          for (let i = trendlines.length - 1; i >= 0; i--) {
+            const line = trendlines[i];
+            if (line.isPrivate !== (isPrivateMode || false)) continue;
+            
+            const start = chartToCanvas(line.startTime, line.startPrice);
+            const end = chartToCanvas(line.endTime, line.endPrice);
+            
+            if (!start || !end) continue;
+            
+            const distanceToLine = distancePointToLine(x, y, start.x, start.y, end.x, end.y);
+            
+            if (distanceToLine <= 5) {
+              // Xóa đoạn thẳng khi double click
+              setTrendlines(prev => prev.filter(t => t.id !== line.id));
+              setSelectedLine(null);
+              originalLineRef.current = null;
+              lineDeleted = true;
+              break;
+            }
+          }
+          
+          // Reset sau khi xử lý double click
+          lastClickTimeRef.current = 0;
+          lastClickPositionRef.current = null;
+        } else {
+          // Nếu không phải double click, chỉ lưu thông tin click này
+          // để kiểm tra cho click tiếp theo
+          lastClickTimeRef.current = now;
+          lastClickPositionRef.current = { x, y };
+          
+          // Reset any selection when single clicking (not on a line)
+          let clickedOnLine = false;
+          for (let i = trendlines.length - 1; i >= 0; i--) {
+            const line = trendlines[i];
+            if (line.isPrivate !== (isPrivateMode || false)) continue;
+            
+            const start = chartToCanvas(line.startTime, line.startPrice);
+            const end = chartToCanvas(line.endTime, line.endPrice);
+            
+            if (!start || !end) continue;
+            
+            const distanceToLine = distancePointToLine(x, y, start.x, start.y, end.x, end.y);
+            
+            if (distanceToLine <= 5) {
+              clickedOnLine = true;
+              break;
+            }
+          }
+          
+          // Nếu click không phải trên đoạn thẳng, bỏ chọn
+          if (!clickedOnLine) {
+            setSelectedLine(null);
+            originalLineRef.current = null;
+          }
+        }
+      }
+    },
+    [enableTrendlineDrawing, drawingMode, currentLine, containerRef, isDarkMode, trendlines, isPrivateMode, chartToCanvas]
   );
 
   // keyboard shortcuts for drawing
   useEffect(() => {
-    if (!enableDrawing) return;
+    if (!enableTrendlineDrawing) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape" && drawingMode === "drawing") {
         setDrawingMode("none");
@@ -232,12 +552,24 @@ export function useChart({
       }
       if (e.ctrlKey && (e.key === "z" || e.key === "Z") && trendlines.length > 0) {
         e.preventDefault();
-        setTrendlines((prev) => prev.slice(0, -1));
+        // Chỉ undo đoạn thẳng của chế độ hiện tại
+        setTrendlines(prev => {
+          const lastIndex = prev
+            .map((t, i) => ({ t, i }))
+            .filter(({ t }) => t.isPrivate === (isPrivateMode || false))
+            .pop()?.i;
+          
+          if (lastIndex === undefined) return prev;
+          
+          const newTrendlines = [...prev];
+          newTrendlines.splice(lastIndex, 1);
+          return newTrendlines;
+        });
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [enableDrawing, drawingMode, trendlines.length]);
+  }, [enableTrendlineDrawing, drawingMode, trendlines.length, isPrivateMode]);
 
   // ---------- MAIN CHART INITIALIZATION ----------
   useEffect(() => {
@@ -293,24 +625,30 @@ export function useChart({
     };
     const { mainChartHeight, rsiHeight, macdHeight } = createChartsWithDynamicSizing();
     const mainChart = createChart(container, { width: container.clientWidth, height: mainChartHeight, ...chartTheme });
-    mainChart.applyOptions({ handleScroll: { mouseWheel: true, pressedMouseMove: true }, handleScale: { axisPressedMouseMove: true, pinch: true } });
+    // Cập nhật tùy chọn pan/scroll dựa trên chế độ vẽ
+    const shouldDisablePanScroll = enableTrendlineDrawing || enableBrushDrawing || !!selectedLine;
+    mainChart.applyOptions({ 
+      handleScroll: { mouseWheel: !shouldDisablePanScroll, pressedMouseMove: !shouldDisablePanScroll }, 
+      handleScale: { axisPressedMouseMove: !shouldDisablePanScroll, pinch: !shouldDisablePanScroll } 
+    });
     // simple factory for line-like series to reduce repeated code
-    const addLineSeries = (opts?: any) => mainChart.addLineSeries({ lineWidth: 2, ...opts });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const addLineSeries = (opts?: any) => mainChart.addSeries(LineSeries, { lineWidth: 2, ...opts });
     mainChart.resize(container.clientWidth, mainChartHeight);
     // price series selection
-    let priceSeries: any = null;
+    let priceSeries: ISeriesApi<"Candlestick"> | ISeriesApi<"Line"> | ISeriesApi<"Area"> | null = null;
     if (chartType === "candlestick") {
-      priceSeries = mainChart.addCandlestickSeries({ upColor: "#26a69a", downColor: "#ef5350", borderVisible: false, wickUpColor: "#26a69a", wickDownColor: "#ef5350" });
+      priceSeries = mainChart.addSeries(CandlestickSeries, { upColor: "#26a69a", downColor: "#ef5350", borderVisible: false, wickUpColor: "#26a69a", wickDownColor: "#ef5350" });
     } else if (chartType === "line") {
       priceSeries = addLineSeries({ color: isDarkMode ? "#2196F3" : "#1976D2" });
     } else {
-      priceSeries = mainChart.addAreaSeries({
+      priceSeries = mainChart.addSeries(AreaSeries, {
         topColor: isDarkMode ? "rgba(33, 150, 243, 0.56)" : "rgba(25, 118, 210, 0.56)",
         bottomColor: isDarkMode ? "rgba(33, 150, 243, 0.04)" : "rgba(25, 118, 210, 0.04)",
         lineColor: isDarkMode ? "#2196F3" : "#1976D2",
       });
     }
-    const volumeSeries = mainChart.addHistogramSeries({ priceFormat: { type: "volume" }, priceScaleId: "", base: 0, color: isDarkMode ? "#64748b" : "#9ca3af" });
+    const volumeSeries = mainChart.addSeries(HistogramSeries, { priceFormat: { type: "volume" }, priceScaleId: "", base: 0, color: isDarkMode ? "#64748b" : "#9ca3af" });
     volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
     const smaSeries = addLineSeries({ color: isDarkMode ? "#3b82f6" : "blue" });
     const emaSeries = addLineSeries({ color: isDarkMode ? "#f97316" : "orange" });
@@ -327,7 +665,7 @@ export function useChart({
       rsiContainer.style.overflow = "hidden";
       container.appendChild(rsiContainer);
       rsiChart = createChart(rsiContainer, { width: container.clientWidth, height: rsiHeight, ...chartTheme });
-      rsiSeries = rsiChart.addLineSeries({ color: isDarkMode ? "#a855f7" : "purple", lineWidth: 2 });
+      rsiSeries = rsiChart.addSeries(LineSeries, { color: isDarkMode ? "#a855f7" : "purple", lineWidth: 2 });
       rsiChart.applyOptions({ rightPriceScale: { scaleMargins: { top: 0.1, bottom: 0.1 } } });
     }
     // optional MACD chart
@@ -340,7 +678,7 @@ export function useChart({
       macdContainer.style.overflow = "hidden";
       container.appendChild(macdContainer);
       macdChart = createChart(macdContainer, { width: container.clientWidth, height: macdHeight, ...chartTheme });
-      macdLineSeries = macdChart.addLineSeries({ color: isDarkMode ? "#10b981" : "green", lineWidth: 2 });
+      macdLineSeries = macdChart.addSeries(LineSeries, { color: isDarkMode ? "#10b981" : "green", lineWidth: 2 });
     }
     chartsRef.current = { mainChart, rsiChart, macdChart };
     seriesRef.current = { priceSeries, volumeSeries, smaSeries, emaSeries, bbUpperSeries, bbLowerSeries, bbMiddleSeries, rsiSeries, macdLineSeries };
@@ -501,7 +839,7 @@ export function useChart({
     // fetch and init
     (async () => {
       try {
-        const data = await fetchYahooSeries(symbol, timeframe);
+        const data = await fetchYahooSeries(symbol, timeframe, isPrivateMode);
         initFromData(data);
         if (!isPrivateMode) {
           setTimeout(() => startReplay(), 1000);
@@ -552,22 +890,15 @@ export function useChart({
     };
     cleanupRef.current = cleanup;
     return cleanup;
-  }, [symbol, timeframe, isDarkMode, showRSI, showMACD, chartType, isPrivateMode]); // intentionally exclude enableDrawing
+  }, [symbol, timeframe, isDarkMode, showRSI, showMACD, chartType, isPrivateMode]); // intentionally exclude enableTrendlineDrawing and enableBrushDrawing
 
   // ---------- SEPARATE EFFECT: DRAWING CANVAS & EVENTS ----------
   useEffect(() => {
     const container = containerRef.current;
     const { mainChart } = chartsRef.current;
-    // remove canvas if drawing disabled
-    if (!enableDrawing || !container || !mainChart || !chartsReady) {
-      if (canvasRef.current) {
-        canvasRef.current.remove();
-        canvasRef.current = null;
-      }
-      return;
-    }
-    // create canvas overlay (if missing)
-    if (!canvasRef.current) {
+    
+    // Always create canvas overlay if missing and charts are ready
+    if ((!canvasRef.current || !canvasRef.current.parentElement) && container && mainChart && chartsReady) {
       const canvas = document.createElement("canvas");
       canvas.style.position = "absolute";
       canvas.style.top = "0";
@@ -581,74 +912,185 @@ export function useChart({
       container.appendChild(canvas);
       canvasRef.current = canvas;
     }
-    // subscribe handlers
-    mainChart.subscribeCrosshairMove(handleDrawingCrosshairMove);
-    container.addEventListener("click", handleChartClick);
-    // Subscribe a named visible range handler (do NOT assume subscribe returns an unsubscribe function)
-    const visibleRangeHandler = () => redrawTrendlines();
-    const timeScale = mainChart.timeScale();
-    // many lightweight-charts builds return void from subscribeVisibleLogicalRangeChange, so don't use returned value.
-    // instead keep the handler so we can attempt to unsubscribe via the timeScale API if it exists.
-    try {
-      // subscribe; result may be void
-      timeScale.subscribeVisibleLogicalRangeChange(visibleRangeHandler);
-    } catch {
-      // ignore if not implemented
+    
+    // Subscribe drawing handlers
+    if (container && mainChart && chartsReady && canvasRef.current) {
+      // Always subscribe to click events for drawing and double-click deletion
+      container.addEventListener("click", handleChartClick);
+      
+      // Subscribe to mousedown for line selection and dragging
+      if (!enableTrendlineDrawing) {
+        container.addEventListener("mousedown", handleChartMouseDown);
+      }
+      
+      // Subscribe to crosshair move when drawing, dragging, or when a line is selected
+      if (enableTrendlineDrawing || selectedLine || isMouseDownRef.current) {
+        mainChart.subscribeCrosshairMove(handleDrawingCrosshairMove);
+      } else {
+        mainChart?.unsubscribeCrosshairMove(handleDrawingCrosshairMove);
+      }
     }
-    // redraw once now
-    redrawTrendlines();
-    return () => {
-      mainChart.unsubscribeCrosshairMove(handleDrawingCrosshairMove);
-      container.removeEventListener("click", handleChartClick);
-      // attempt to remove handler via any available API (safe optional calls)
+    
+    // Always subscribe to visible range changes when canvas exists
+    if (mainChart && canvasRef.current) {
+      const timeScale = mainChart.timeScale();
+      const visibleRangeHandler = () => redrawTrendlines();
+      
       try {
-        timeScale.unsubscribeVisibleLogicalRangeChange(visibleRangeHandler);
-      } catch {}
-    };
-  }, [enableDrawing, chartsReady, handleChartClick, handleDrawingCrosshairMove, redrawTrendlines, containerRef]);
+        timeScale.subscribeVisibleLogicalRangeChange(visibleRangeHandler);
+      } catch {
+        // ignore if not implemented
+      }
+      
+      // Redraw once now
+      redrawTrendlines();
+      
+      return () => {
+        try {
+          timeScale.unsubscribeVisibleLogicalRangeChange(visibleRangeHandler);
+        } catch {}
+        
+        // Also unsubscribe drawing handlers if they were subscribed
+        if (mainChart && container) {
+          mainChart.unsubscribeCrosshairMove(handleDrawingCrosshairMove);
+          container.removeEventListener("click", handleChartClick);
+          container.removeEventListener("mousedown", handleChartMouseDown);
+        }
+      };
+    }
+  }, [enableTrendlineDrawing, chartsReady, handleChartClick, handleChartMouseDown, handleDrawingCrosshairMove, redrawTrendlines, containerRef, selectedLine]);
 
   // redraw when lines change
   useEffect(() => {
-    if (enableDrawing && chartsReady && canvasRef.current) {
+    if (chartsReady && canvasRef.current) {
       redrawTrendlines();
     }
-  }, [enableDrawing, chartsReady, trendlines, currentLine, redrawTrendlines]);
+  }, [chartsReady, trendlines, currentLine, redrawTrendlines]);
 
   // update cursor
   useEffect(() => {
     if (!containerRef.current) return;
     const container = containerRef.current;
-    container.style.cursor = enableDrawing && drawingMode === "drawing" ? "crosshair" : "default";
+    container.style.cursor = enableTrendlineDrawing && drawingMode === "drawing" ? "crosshair" : "default";
     return () => {
       container.style.cursor = "default";
     };
-  }, [enableDrawing, drawingMode, containerRef]);
+  }, [enableTrendlineDrawing, drawingMode, containerRef]);
+  
+  // update chart scroll/scale options when drawing mode or selected line changes
+  useEffect(() => {
+    const { mainChart } = chartsRef.current;
+    if (mainChart) {
+      // Chặn pan/scroll khi đang vẽ hoặc khi có đoạn thẳng được chọn
+      const shouldDisablePanScroll = enableTrendlineDrawing || enableBrushDrawing || !!selectedLine || activeTool === 'text';
+      mainChart.applyOptions({ 
+        handleScroll: { mouseWheel: !shouldDisablePanScroll, pressedMouseMove: !shouldDisablePanScroll }, 
+        handleScale: { axisPressedMouseMove: !shouldDisablePanScroll, pinch: !shouldDisablePanScroll } 
+      });
+    }
+  }, [enableTrendlineDrawing, enableBrushDrawing, selectedLine, activeTool]);
+  
+  // handle mouse up to deselect line and check if still on line
+  useEffect(() => {
+    const handleMouseUp = (e: MouseEvent) => {
+      // Hủy bất kỳ pending animation frame nào
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current);
+        rafIdRef.current = null;
+      }
+      
+      // Đánh dấu chuột đã được nhả
+      isMouseDownRef.current = false;
+      
+      // Reset trạng thái drag ngay lập tức
+      isDraggingRef.current = false;
+      wasDraggingRef.current = false;
+      mouseDownPositionRef.current = null;
+      
+      // Luôn bỏ chọn khi nhả chuột (kết thúc tất cả sự kiện)
+      // Các thay đổi đã được cập nhật real-time trong handleDrawingCrosshairMove khi kéo
+      // Không cần kiểm tra gì thêm, chỉ cần bỏ chọn
+      setSelectedLine(null);
+      originalLineRef.current = null;
+    };
+    
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mouseup', handleMouseUp);
+      // Cleanup any pending animation frame on unmount
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current);
+        rafIdRef.current = null;
+      }
+    };
+  }, []);
+
+  // Re-subscribe to crosshair move when selectedLine changes
+  useEffect(() => {
+    const container = containerRef.current;
+    const { mainChart } = chartsRef.current;
+    
+    if (container && mainChart && canvasRef.current) {
+      // Subscribe to crosshair move when drawing, dragging, or when a line is selected
+      if (enableTrendlineDrawing || selectedLine || isMouseDownRef.current) {
+        mainChart.subscribeCrosshairMove(handleDrawingCrosshairMove);
+      } else if (!enableTrendlineDrawing) {
+        mainChart?.unsubscribeCrosshairMove(handleDrawingCrosshairMove);
+      }
+    }
+    
+    return () => {
+      if (mainChart && !enableTrendlineDrawing) {
+        mainChart?.unsubscribeCrosshairMove(handleDrawingCrosshairMove);
+      }
+    };
+  }, [selectedLine, enableTrendlineDrawing, handleDrawingCrosshairMove, containerRef, isMouseDownRef.current]);
+
+  // Redraw trendlines when isPrivateMode changes
+  useEffect(() => {
+    if (chartsReady) {
+      redrawTrendlines();
+    }
+  }, [isPrivateMode, chartsReady, redrawTrendlines]);
 
   // drawing control helpers
   const startDrawing = useCallback(() => {
-    if (enableDrawing) setDrawingMode("drawing");
-  }, [enableDrawing]);
+    if (enableTrendlineDrawing) setDrawingMode("drawing");
+  }, [enableTrendlineDrawing]);
   const cancelDrawing = useCallback(() => {
     setDrawingMode("none");
     setCurrentLine(null);
   }, []);
   const clearAllTrendlines = useCallback(() => {
-    setTrendlines([]);
+    // Chỉ xóa các đoạn thẳng của chế độ hiện tại
+    setTrendlines(prev => prev.filter(t => t.isPrivate !== (isPrivateMode || false)));
     setCurrentLine(null);
     setDrawingMode("none");
-  }, []);
+  }, [isPrivateMode]);
   const undoLastTrendline = useCallback(() => {
-    setTrendlines((prev) => prev.slice(0, -1));
-  }, []);
+    // Chỉ undo đoạn thẳng của chế độ hiện tại
+    setTrendlines(prev => {
+      const lastIndex = prev
+        .map((t, i) => ({ t, i }))
+        .filter(({ t }) => t.isPrivate === (isPrivateMode || false))
+        .pop()?.i;
+      
+      if (lastIndex === undefined) return prev;
+      
+      const newTrendlines = [...prev];
+      newTrendlines.splice(lastIndex, 1);
+      return newTrendlines;
+    });
+  }, [isPrivateMode]);
 
   return {
     charts: chartsRef.current,
     series: seriesRef.current,
     isReady: chartsReady,
     drawing: {
-      isEnabled: enableDrawing,
+      isEnabled: enableTrendlineDrawing,
       isDrawing: drawingMode === "drawing",
-      trendlines,
+      trendlines: trendlines.filter(t => t.isPrivate === (isPrivateMode || false)),
       startDrawing,
       cancelDrawing,
       clearAll: clearAllTrendlines,

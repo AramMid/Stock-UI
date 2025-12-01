@@ -1,10 +1,15 @@
-"use client";
 import { useRef, MutableRefObject, useEffect } from "react";
 import { Timeframe } from "@/lib/types";
 import QuickTradingButtons from "./QuickTradingButtons";
 import TimeframeControls from "./TimeframeControls";
 import { useDrawing } from "@/contexts/DrawingContext";
 import { drawingService } from "@/lib/drawing-service";
+import dynamic from 'next/dynamic';
+
+// Dynamically import BrushCanvas to avoid SSR issues
+const BrushCanvas = dynamic(() => import('./BrushCanvas'), {
+  ssr: false
+});
 
 interface ChartSectionProps {
   containerRef: MutableRefObject<HTMLDivElement | null>;
@@ -57,28 +62,27 @@ export default function ChartSection({
   fiftyTwoWeekRange,
 }: ChartSectionProps) {
   const { activeTool } = useDrawing();
-  
+
   // Initialize drawing service when container is available
   useEffect(() => {
     if (containerRef.current) {
       drawingService.initialize(containerRef.current);
     }
-    
+
     return () => {
       drawingService.destroy();
     };
   }, [containerRef]);
-  
+
   // Update active tool in drawing service
   useEffect(() => {
     drawingService.setActiveTool(activeTool);
   }, [activeTool]);
-  
+
   return (
     <div
-      className={`rounded overflow-hidden relative transition-colors duration-300 ${
-        isDarkMode ? "bg-[#131722]" : "bg-white"
-      }`}
+      className={`rounded overflow-hidden relative transition-colors duration-300 ${isDarkMode ? "bg-[#131722]" : "bg-white"
+        }`}
     >
       <div className="absolute inset-0 flex flex-col overflow-hidden">
         {/* Quick Trading Buttons Overlay */}
@@ -97,9 +101,8 @@ export default function ChartSection({
         {/* Main Chart Container - Optimized for smooth resizing */}
         <div
           ref={containerRef}
-          className={`flex-1 w-full relative ${
-            isDarkMode ? "bg-[#131722]" : "bg-white"
-          }`}
+          className={`flex-1 w-full relative ${isDarkMode ? "bg-[#131722]" : "bg-white"
+            }`}
           style={{
             overflow: "hidden",
             minHeight: "200px",
@@ -109,6 +112,16 @@ export default function ChartSection({
             transform: "translateZ(0)",
           }}
         />
+        
+        {/* Brush Canvas - Only rendered when brush tool is active */}
+        {activeTool === 'brush' && containerRef.current && (
+          <BrushCanvas
+            isEnabled={activeTool === 'brush'}
+            chartContainerRef={containerRef}
+            color="#87CEEB"
+            lineWidth={2}
+          />
+        )}
 
         {/* Timeframe Controls */}
         <div className="absolute bottom-2 left-2 z-10">
@@ -123,25 +136,23 @@ export default function ChartSection({
         <div className="absolute top-2 right-2 flex flex-col gap-1 z-10">
           <button
             onClick={onToggleRSI}
-            className={`px-3 py-1 text-xs rounded transition-colors border-0 ${
-              showRSI
-                ? "bg-purple-600 text-white"
-                : isDarkMode
+            className={`px-3 py-1 text-xs rounded transition-colors border-0 ${showRSI
+              ? "bg-purple-600 text-white"
+              : isDarkMode
                 ? "bg-gray-700 text-gray-300 hover:bg-gray-600"
                 : "bg-gray-200 text-gray-700 hover:bg-gray-300"
-            }`}
+              }`}
           >
             RSI
           </button>
           <button
             onClick={onToggleMACD}
-            className={`px-3 py-1 text-xs rounded transition-colors border-0 ${
-              showMACD
-                ? "bg-green-600 text-white"
-                : isDarkMode
+            className={`px-3 py-1 text-xs rounded transition-colors border-0 ${showMACD
+              ? "bg-green-600 text-white"
+              : isDarkMode
                 ? "bg-gray-700 text-gray-300 hover:bg-gray-600"
                 : "bg-gray-200 text-gray-700 hover:bg-gray-300"
-            }`}
+              }`}
           >
             MACD
           </button>

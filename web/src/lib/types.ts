@@ -52,3 +52,32 @@ export interface IndicatorResults {
     middle: number[];
   };
 }
+
+// Order Book interfaces
+export interface OrderBookLevel {
+  price: number;
+  totalQuantity: number;
+  orderCount: number;
+}
+
+export interface OrderBook {
+  bids: OrderBookLevel[]; // Buy orders - sorted by price descending
+  asks: OrderBookLevel[]; // Sell orders - sorted by price ascending
+  lastTradedPrice: number;
+  timestamp: Date;
+}
+
+export interface Trade {
+  id: string;
+  price: number;
+  quantity: number;
+  timestamp: Date;
+  side: 'buy' | 'sell';
+}
+
+export interface OrderBookUpdate {
+  bids: OrderBookLevel[];
+  asks: OrderBookLevel[];
+  lastTradedPrice: number;
+  timestamp: Date;
+}
