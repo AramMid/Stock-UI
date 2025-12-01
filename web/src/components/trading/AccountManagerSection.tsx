@@ -1,6 +1,9 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { TradingPosition } from "@/lib/types";
+import { Order } from "@/lib/order-management";
+import { orderBookService } from "@/lib/services/orderBookService";
+import { OrderBook, OrderBookLevel } from "@/lib/types";
 
 interface AccountManagerSectionProps {
   tradingPosition: TradingPosition;
@@ -13,6 +16,8 @@ interface AccountManagerSectionProps {
   onOpenPanel: () => void;
   onMaximizePanel: () => void;
   onRestorePanel: () => void;
+  orders: Order[];
+  onOpenOrderPanel?: (orderType: 'buy' | 'sell', price?: number) => void;
 }
 
 export default function AccountManagerSection({
@@ -26,24 +31,44 @@ export default function AccountManagerSection({
   onOpenPanel,
   onMaximizePanel,
   onRestorePanel,
+  orders,
+  onOpenOrderPanel,
 }: AccountManagerSectionProps) {
-  const [activeTab, setActiveTab] = useState("Positions");
+  const [activeTab, setActiveTab] = useState("Orders");
+  const [orderBook, setOrderBook] = useState<OrderBook | null>(null);
+
+  useEffect(() => {
+    // Initialize order book
+    setOrderBook(orderBookService.getOrderBook());
+    
+    // In a real implementation, this would subscribe to WebSocket updates
+    const interval = setInterval(() => {
+      orderBookService.matchOrders(); // Simulate order matching
+      setOrderBook(orderBookService.getOrderBook());
+    }, 3000);
+    
+    return () => clearInterval(interval);
+  }, []);
+
+  // Format VND currency
+  const formatVND = (value: number) => {
+    return new Intl.NumberFormat('vi-VN').format(value);
+  };
 
   const tabs = [
-    "Positions",
     "Orders",
     "Order History",
+    "Order Book",
     "Balance History",
-    "Trading Journal",
   ];
 
   const metrics = [
-    { label: "Account Balance", value: "100,000.00" },
-    { label: "Equity", value: "100,000.00" },
+    { label: "Account Balance", value: formatVND(tradingPosition.cash) },
+    { label: "Equity", value: formatVND(tradingPosition.cash + tradingPosition.pnl) },
     { label: "Realized P&L", value: "0.00" },
-    { label: "Unrealized P&L", value: "0.00" },
+    { label: "Unrealized P&L", value: formatVND(tradingPosition.pnl) },
     { label: "Account margin", value: "0.00", info: true },
-    { label: "Available funds", value: "100,000.00", info: true },
+    { label: "Available funds", value: formatVND(tradingPosition.cash), info: true },
     { label: "Orders margin", value: "0.00", info: true },
   ];
 
@@ -70,7 +95,7 @@ export default function AccountManagerSection({
       >
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2 text-sm opacity-80">
-            <span>vuvuihoc123 USD</span>
+            <span>vuvuihoc123 VND</span>
           </div>
            {/* Settings Icon */}
            <div className="cursor-pointer hover:text-blue-500 ml-2">
@@ -163,7 +188,212 @@ export default function AccountManagerSection({
 
           {/* 3. Table Content Area - Container */}
           <div className="flex-1 overflow-hidden relative">
-            {/* Removed BottomPanel since we're removing demo account functionality */}
+            {activeTab === "Orders" && (
+              <div className="h-full overflow-auto trading-scrollbar p-4">
+                <div className="rounded-lg border overflow-hidden">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className={`text-left ${isDarkMode ? "bg-gray-800 text-gray-400" : "bg-gray-100 text-gray-600"}`}>
+                        <th className="py-3 px-4 font-medium">Order ID</th>
+                        <th className="py-3 px-4 font-medium">Symbol</th>
+                        <th className="py-3 px-4 font-medium">Type</th>
+                        <th className="py-3 px-4 font-medium">Order Type</th>
+                        <th className="py-3 px-4 font-medium text-right">Size</th>
+                        <th className="py-3 px-4 font-medium text-right">Price (VND)</th>
+                        <th className="py-3 px-4 font-medium">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {orderBookService.getAllOrders().filter(order => order.status === "NEW" || order.status === "PARTIALLY_FILLED").map((order: Order) => (
+                        <tr
+                          key={order.id}
+                          className={`border-t ${isDarkMode ? "border-gray-800 hover:bg-gray-800/50" : "border-gray-200 hover:bg-gray-50"}`}
+                        >
+                          <td className="py-3 px-4 font-mono">{order.id}</td>
+                          <td className="py-3 px-4 font-mono">{order.symbol}</td>
+                          <td className="py-3 px-4">
+                            <span
+                              className={`px-2.5 py-1 rounded text-xs font-medium ${
+                                order.type === "buy"
+                                  ? "bg-green-900/30 text-green-400"
+                                  : "bg-red-900/30 text-red-400"
+                              }`}
+                            >
+                              {order.type === "buy" ? "Buy" : "Sell"}
+                            </span>
+                          </td>
+                          <td className="py-3 px-4">{order.orderType}</td>
+                          <td className="py-3 px-4 text-right font-mono">{order.quantity}</td>
+                          <td className="py-3 px-4 text-right font-mono">
+                            {order.price ? `${formatVND(order.price)} VND` : "Market"}
+                          </td>
+                          <td className="py-3 px-4">
+                            <span
+                              className={`px-2.5 py-1 rounded text-xs font-medium ${
+                                order.status === "FILLED"
+                                  ? "bg-green-900/30 text-green-400"
+                                  : "bg-yellow-900/30 text-yellow-400"
+                              }`}
+                            >
+                              {order.status}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+            
+            {activeTab === "Order History" && (
+              <div className="h-full overflow-auto trading-scrollbar p-4">
+                <div className="rounded-lg border overflow-hidden">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className={`text-left ${isDarkMode ? "bg-gray-800 text-gray-400" : "bg-gray-100 text-gray-600"}`}>
+                        <th className="py-3 px-4 font-medium">Order ID</th>
+                        <th className="py-3 px-4 font-medium">Symbol</th>
+                        <th className="py-3 px-4 font-medium">Type</th>
+                        <th className="py-3 px-4 font-medium">Order Type</th>
+                        <th className="py-3 px-4 font-medium text-right">Size</th>
+                        <th className="py-3 px-4 font-medium text-right">Price (VND)</th>
+                        <th className="py-3 px-4 font-medium">Status</th>
+                        <th className="py-3 px-4 font-medium">Date</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {/* Show all orders including from order book service */}
+                      {orderBookService.getAllOrders().map((order: Order) => (
+                        <tr
+                          key={order.id}
+                          className={`border-t ${isDarkMode ? "border-gray-800 hover:bg-gray-800/50" : "border-gray-200 hover:bg-gray-50"}`}
+                        >
+                          <td className="py-3 px-4 font-mono">{order.id}</td>
+                          <td className="py-3 px-4 font-mono">{order.symbol}</td>
+                          <td className="py-3 px-4">
+                            <span
+                              className={`px-2.5 py-1 rounded text-xs font-medium ${
+                                order.type === "buy"
+                                  ? "bg-green-900/30 text-green-400"
+                                  : "bg-red-900/30 text-red-400"
+                              }`}
+                            >
+                              {order.type === "buy" ? "Buy" : "Sell"}
+                            </span>
+                          </td>
+                          <td className="py-3 px-4">{order.orderType}</td>
+                          <td className="py-3 px-4 text-right font-mono">{order.quantity}</td>
+                          <td className="py-3 px-4 text-right font-mono">
+                            {order.price ? `${formatVND(order.price)} VND` : "Market"}
+                          </td>
+                          <td className="py-3 px-4">
+                            <span
+                              className={`px-2.5 py-1 rounded text-xs font-medium ${
+                                order.status === "FILLED"
+                                  ? "bg-green-900/30 text-green-400"
+                                  : order.status === "CANCELED"
+                                    ? "bg-gray-900/30 text-gray-400"
+                                    : order.status === "REJECTED"
+                                      ? "bg-red-900/30 text-red-400"
+                                      : "bg-yellow-900/30 text-yellow-400"
+                              }`}
+                            >
+                              {order.status}
+                            </span>
+                          </td>
+                          <td className="py-3 px-4 text-gray-500">
+                            {order.timestamp.toLocaleDateString()}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+            
+            {activeTab === "Order Book" && (
+              <div className="h-full overflow-auto trading-scrollbar p-4">
+                <div className="rounded-lg border overflow-hidden mb-4">
+                  <div className={`p-3 text-sm font-medium ${isDarkMode ? "bg-gray-800 text-gray-200" : "bg-gray-100 text-gray-700"}`}>
+                    Order Book - BID (Buy Orders)
+                  </div>
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className={`text-left ${isDarkMode ? "bg-gray-800 text-gray-400" : "bg-gray-100 text-gray-600"}`}>
+                        <th className="py-2 px-3 font-medium">Price (VND)</th>
+                        <th className="py-2 px-3 font-medium text-right">Total Quantity</th>
+                        <th className="py-2 px-3 font-medium text-right">Order Count</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {orderBook ? orderBook.bids.map((level: OrderBookLevel, index: number) => (
+                        <tr
+                          key={index}
+                          className={`border-t ${isDarkMode ? "border-gray-800 hover:bg-gray-800/50" : "border-gray-200 hover:bg-gray-50"} cursor-pointer`}
+                          onClick={() => onOpenOrderPanel && onOpenOrderPanel('buy', level.price)}
+                        >
+                          <td className="py-2 px-3 font-mono text-green-500">{formatVND(level.price)}</td>
+                          <td className="py-2 px-3 text-right font-mono">{level.totalQuantity}</td>
+                          <td className="py-2 px-3 text-right font-mono">{level.orderCount}</td>
+                        </tr>
+                      )) : (
+                        <tr>
+                          <td colSpan={3} className="py-4 text-center text-gray-500">
+                            Loading order book...
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+                
+                <div className="rounded-lg border overflow-hidden mb-4">
+                  <div className={`p-3 text-sm font-medium ${isDarkMode ? "bg-gray-800 text-gray-200" : "bg-gray-100 text-gray-700"}`}>
+                    Order Book - ASK (Sell Orders)
+                  </div>
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className={`text-left ${isDarkMode ? "bg-gray-800 text-gray-400" : "bg-gray-100 text-gray-600"}`}>
+                        <th className="py-2 px-3 font-medium">Price (VND)</th>
+                        <th className="py-2 px-3 font-medium text-right">Total Quantity</th>
+                        <th className="py-2 px-3 font-medium text-right">Order Count</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {orderBook ? orderBook.asks.map((level: OrderBookLevel, index: number) => (
+                        <tr
+                          key={index}
+                          className={`border-t ${isDarkMode ? "border-gray-800 hover:bg-gray-800/50" : "border-gray-200 hover:bg-gray-50"} cursor-pointer`}
+                          onClick={() => onOpenOrderPanel && onOpenOrderPanel('sell', level.price)}
+                        >
+                          <td className="py-2 px-3 font-mono text-red-500">{formatVND(level.price)}</td>
+                          <td className="py-2 px-3 text-right font-mono">{level.totalQuantity}</td>
+                          <td className="py-2 px-3 text-right font-mono">{level.orderCount}</td>
+                        </tr>
+                      )) : (
+                        <tr>
+                          <td colSpan={3} className="py-4 text-center text-gray-500">
+                            Loading order book...
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+                
+
+              </div>
+            )}
+            
+            {activeTab === "Balance History" && (
+              <div className="h-full overflow-auto trading-scrollbar p-4">
+                <div className="text-center py-8 text-gray-500">
+                  Balance History data would be displayed here
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

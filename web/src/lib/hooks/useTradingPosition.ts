@@ -1,63 +1,62 @@
 import { useState, useEffect } from "react";
 import { TradingPosition } from "../types";
+import { AccountState, executeBuyOrder, executeSellOrder, calculatePnL } from "../order-management";
 
 /**
  * Custom hook for managing trading position state
- * @param initialCash Initial cash amount (default: 10000000)
+ * @param initialCash Initial cash amount (default: 200000000 - 200 million VND)
  * @returns Trading position state and actions
  */
-export function useTradingPosition(initialCash = 10000000) {
-  const [cash, setCash] = useState<number>(initialCash);
-  const [position, setPosition] = useState<number>(0);
-  const [avgPrice, setAvgPrice] = useState<number>(0);
-  const [lastPrice, setLastPrice] = useState<number>(0);
-  const [pnl, setPnl] = useState<number>(0);
+export function useTradingPosition(initialCash = 200000000) {
+  const [accountState, setAccountState] = useState<AccountState>({
+    cash: initialCash,
+    position: 0,
+    avgPrice: 0,
+    lastPrice: 0,
+    pnl: 0
+  });
 
   // Calculate PnL whenever position or price changes
   useEffect(() => {
-    setPnl(position * (lastPrice - avgPrice));
-  }, [lastPrice, position, avgPrice]);
+    setAccountState(prev => ({
+      ...prev,
+      pnl: calculatePnL(prev.position, prev.avgPrice, prev.lastPrice)
+    }));
+  }, [accountState.lastPrice, accountState.position, accountState.avgPrice]);
 
-  const handleBuy = () => {
-    if (lastPrice <= 0) return;
-    if (cash < lastPrice) {
-      alert("Not enough cash");
-      return;
+  const handleBuy = (quantity: number, price: number) => {
+    const result = executeBuyOrder(accountState, quantity, price);
+    if (result.success) {
+      setAccountState(result.updatedAccount);
+    } else {
+      alert(result.errorMessage);
     }
-
-    const newQty = position + 1;
-    const newAvg =
-      position === 0 ? lastPrice : (avgPrice * position + lastPrice) / newQty;
-
-    setPosition(newQty);
-    setAvgPrice(newAvg);
-    setCash((prev) => +(prev - lastPrice).toFixed(2));
+    return result.success;
   };
 
-  const handleSell = () => {
-    if (position <= 0) {
-      alert("No shares");
-      return;
+  const handleSell = (quantity: number, price: number) => {
+    const result = executeSellOrder(accountState, quantity, price);
+    if (result.success) {
+      setAccountState(result.updatedAccount);
+    } else {
+      alert(result.errorMessage);
     }
-
-    setPosition((prev) => prev - 1);
-    setCash((prev) => +(prev + lastPrice).toFixed(2));
-
-    if (position - 1 <= 0) {
-      setAvgPrice(0);
-    }
+    return result.success;
   };
 
   const updateLastPrice = (price: number) => {
-    setLastPrice(price);
+    setAccountState(prev => ({
+      ...prev,
+      lastPrice: price
+    }));
   };
 
   const tradingPosition: TradingPosition = {
-    cash,
-    position,
-    avgPrice,
-    lastPrice,
-    pnl,
+    cash: accountState.cash,
+    position: accountState.position,
+    avgPrice: accountState.avgPrice,
+    lastPrice: accountState.lastPrice,
+    pnl: accountState.pnl,
   };
 
   return {

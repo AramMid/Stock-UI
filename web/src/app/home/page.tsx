@@ -8,6 +8,8 @@ import { useTheme } from "@/contexts/ThemeContext";
 import { DrawingProvider, useDrawing } from "@/contexts/DrawingContext";
 import { useLayoutManager } from "@/lib/hooks/useLayoutManager";
 import { useChartResize } from "@/lib/hooks/useChartResize";
+import { Order } from "../../lib/order-management";
+import { MarketSimulationService, SimulatedMarketData } from "@/lib/services/marketSimulationService";
 import TopNavigation from "@/components/trading/TopNavigation";
 import StockInfoBar from "@/components/trading/StockInfoBar";
 import LeftSidebar from "@/components/trading/LeftSidebar";
@@ -56,6 +58,13 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
   const [isOrderPanelDragging, setIsOrderPanelDragging] = useState(false); // State for order panel resize dragging
   const hasManuallyResizedOrderPanel = useRef(false); // Track if user has manually resized order panel
   const [orderPanelSide, setOrderPanelSide] = useState<"buy" | "sell">("buy"); // Track which side to show in order panel
+  
+  // Orders state
+  const [orders, setOrders] = useState<Order[]>([]);
+
+  // Market simulation
+  const marketSimulationRef = useRef<MarketSimulationService | null>(null);
+  const lastPriceRef = useRef<number>(45200); // Initial price
 
   // Custom hooks
   const { theme } = useTheme();
@@ -65,6 +74,36 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
   const layoutManager = useLayoutManager();
 
   const isDarkMode = true;
+
+  // Initialize market simulation service
+  useEffect(() => {
+    marketSimulationRef.current = new MarketSimulationService();
+    
+    // Start simulation
+    marketSimulationRef.current.startSimulation((data: SimulatedMarketData) => {
+      // Update price data
+      const newOhlc = {
+        open: lastPriceRef.current,
+        high: Math.max(lastPriceRef.current, data.price),
+        low: Math.min(lastPriceRef.current, data.price),
+        close: data.price,
+        change: data.price - lastPriceRef.current,
+        changePercent: ((data.price - lastPriceRef.current) / lastPriceRef.current) * 100,
+      };
+      
+      setOhlcData(newOhlc);
+      setCurrentVolume(data.volume);
+      updateLastPrice(data.price);
+      lastPriceRef.current = data.price;
+    });
+
+    // Cleanup on unmount
+    return () => {
+      if (marketSimulationRef.current) {
+        marketSimulationRef.current.stopSimulation();
+      }
+    };
+  }, [updateLastPrice]);
 
   // DEBUG: Log to see if useChart is being called
   console.log("🔍 TradingPlatform render - enableTrendlineDrawing:", enableTrendlineDrawing);
@@ -247,14 +286,49 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
 
   const handleOrderSubmit = useCallback((side: 'buy' | 'sell', quantity: number, price: number) => {
     console.log(`Order submitted: ${side} ${quantity} shares at ${price}`);
-    // Here you would integrate with your trading logic
-    if (side === 'buy') {
-      handleBuy();
-    } else {
-      handleSell();
+    
+    // Create order object
+    const order: Order = {
+      id: `ORD${Date.now()}`,
+      symbol: selectedSymbol,
+      type: side,
+      orderType: "Market", // Default to market order for immediate execution
+      quantity: quantity,
+      price: price,
+      status: "NEW", // Only NEW or FILLED states
+      timestamp: new Date()
+    };
+    
+    // Process order against simulated market
+    let executionResult: { success: boolean; filledPrice?: number; filledQuantity?: number } = { success: false };
+    if (marketSimulationRef.current) {
+      executionResult = marketSimulationRef.current.processUserOrder(order);
     }
+    
+    // Execute the trade if order was filled
+    let success = false;
+    if (executionResult.success && executionResult.filledPrice) {
+      if (side === 'buy') {
+        success = handleBuy(quantity, executionResult.filledPrice);
+      } else {
+        success = handleSell(quantity, executionResult.filledPrice);
+      }
+    }
+    
+    // Update order status - only Pending or Filled states
+    const updatedOrder: Order = {
+      ...order,
+      orderType: "Market",
+      status: executionResult.success ? "FILLED" : "NEW", // Only these two states
+      filledPrice: executionResult.filledPrice,
+      filledQuantity: executionResult.filledQuantity
+    };
+    
+    // Add order to state
+    setOrders(prevOrders => [updatedOrder, ...prevOrders]);
+    
     setShowOrderPanel(false);
-  }, [handleBuy, handleSell]);
+  }, [handleBuy, handleSell, selectedSymbol, tradingPosition]);
 
   const handleBuyClick = useCallback(() => {
     setOrderPanelSide("buy");
@@ -335,7 +409,7 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
               onTimeframeChange={handleTimeframeChange}
               onBuyClick={handleBuyClick}
               onSellClick={handleSellClick}
-              currentPrice={ohlcData?.close || tradingPosition.lastPrice || 245.3}
+              currentPrice={ohlcData?.close || lastPriceRef.current}
               change={ohlcData?.change || 0}
               changePercent={ohlcData?.changePercent || 0}
               showRSI={showRSI}
@@ -345,12 +419,12 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
               isDragging={layoutManager.chartAccountLayout.isDragging}
               currentVolume={currentVolume}
               dayRange={{
-                low: ohlcData?.low || 240.21,
-                high: ohlcData?.high || 246.3,
+                low: ohlcData?.low || lastPriceRef.current * 0.99,
+                high: ohlcData?.high || lastPriceRef.current * 1.01,
               }}
               fiftyTwoWeekRange={{
-                low: selectedSymbol.includes(".VN") ? 180500 : 180.5,
-                high: selectedSymbol.includes(".VN") ? 260800 : 260.8,
+                low: selectedSymbol.includes(".VN") ? lastPriceRef.current * 0.8 : lastPriceRef.current * 0.7,
+                high: selectedSymbol.includes(".VN") ? lastPriceRef.current * 1.2 : lastPriceRef.current * 1.3,
               }}
             />
 
@@ -381,6 +455,12 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
               onOpenPanel={layoutManager.handleOpenPanel}
               onMaximizePanel={layoutManager.handleMaximizePanel}
               onRestorePanel={layoutManager.handleRestorePanel}
+              orders={orders}
+              onOpenOrderPanel={(side, price) => {
+                setShowOrderPanel(true);
+                setOrderPanelSide(side);
+                // In a real implementation, you might want to set a specific price
+              }}
             />
           </div>
 
@@ -480,7 +560,7 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
                 <div className="rounded-lg overflow-hidden bg-[#131722] h-full">
                   <OrderPanel
                     symbol={selectedSymbol}
-                    currentPrice={ohlcData?.close || 245.3}
+                    currentPrice={ohlcData?.close || lastPriceRef.current}
                     onClose={handleCloseOrderPanel}
                     onBuy={(quantity: number, price: number) => handleOrderSubmit('buy', quantity, price)}
                     onSell={(quantity: number, price: number) => handleOrderSubmit('sell', quantity, price)}
