@@ -1,6 +1,7 @@
   "use client";
   import { useState, useEffect } from "react";
   import { ChevronDown, X, Grid, MoreHorizontal, Plus } from "lucide-react";
+  import { formatVND } from "@/lib/order-management";
 
   interface OrderPanelProps {
     symbol: string;
@@ -68,10 +69,7 @@
       onSideChange("sell");
     };
 
-    // Format VND currency
-    const formatVND = (value: number) => {
-      return value.toLocaleString('vi-VN');
-    };
+
 
     // Dynamic Theme Classes
     const bgClass = isDarkMode ? "bg-gray-900" : "bg-white";

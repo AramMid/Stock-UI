@@ -9,7 +9,11 @@ import { DrawingProvider, useDrawing } from "@/contexts/DrawingContext";
 import { useLayoutManager } from "@/lib/hooks/useLayoutManager";
 import { useChartResize } from "@/lib/hooks/useChartResize";
 import { Order } from "../../lib/order-management";
+import { OrderStatus } from "../../lib/services/orderService";
 import { MarketSimulationService, SimulatedMarketData } from "@/lib/services/marketSimulationService";
+import { orderBookService } from "@/lib/services/orderBookService";
+import { WebSocketService } from "@/lib/services/webSocketService";
+import { NotificationService } from "@/lib/services/notificationService";
 import TopNavigation from "@/components/trading/TopNavigation";
 import StockInfoBar from "@/components/trading/StockInfoBar";
 import LeftSidebar from "@/components/trading/LeftSidebar";
@@ -68,10 +72,16 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
 
   // Custom hooks
   const { theme } = useTheme();
-  const { tradingPosition, handleBuy, handleSell, updateLastPrice } = useTradingPosition();
+  const { tradingPosition, handleBuy, handleSell, updateLastPrice, getAllPositions } = useTradingPosition();
   const { activeTool, setActiveTool } = useDrawing();
   const { triggerChartResize } = useChartResize(containerRef);
   const layoutManager = useLayoutManager();
+
+  // Create positions map for watchlist
+  const positionsMap = new Map<string, number>();
+  getAllPositions().forEach(position => {
+    positionsMap.set(position.symbol, position.position);
+  });
 
   const isDarkMode = true;
 
@@ -93,7 +103,7 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
       
       setOhlcData(newOhlc);
       setCurrentVolume(data.volume);
-      updateLastPrice(data.price);
+      updateLastPrice(selectedSymbol, data.price);
       lastPriceRef.current = data.price;
     });
 
@@ -110,12 +120,17 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
   console.log("🔍 TradingPlatform render - enableBrushDrawing:", enableBrushDrawing);
   console.log("🔍 containerRef.current:", containerRef.current);
 
+  // Wrapper function for onPriceUpdate to pass symbol
+  const handlePriceUpdate = useCallback((price: number) => {
+    updateLastPrice(selectedSymbol, price);
+  }, [selectedSymbol, updateLastPrice]);
+
   // Chart management with drawing
   const chartResult = useChart({
     containerRef,
     symbol: selectedSymbol,
     timeframe,
-    onPriceUpdate: updateLastPrice,
+    onPriceUpdate: handlePriceUpdate,
     onOHLCUpdate: setOhlcData,
     onVolumeUpdate: setCurrentVolume,
     isDarkMode,
@@ -299,33 +314,70 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
       timestamp: new Date()
     };
     
-    // Process order against simulated market
-    let executionResult: { success: boolean; filledPrice?: number; filledQuantity?: number } = { success: false };
+    // Add order to order book service for tracking
+    orderBookService.addOrder(order);
+    
+    // Subscribe to WebSocket updates for this order
+    const webSocketService = WebSocketService.getInstance();
+    const notificationService = NotificationService.getInstance();
+    
+    webSocketService.subscribe(order.id, (update) => {
+      // Update order in order book service
+      orderBookService.updateOrder(update.orderId, {
+        status: update.status,
+        filledPrice: update.filledPrice,
+        filledQuantity: update.filledQuantity
+      });
+      
+      // Update local order state
+      setOrders(prevOrders => 
+        prevOrders.map(o => 
+          o.id === update.orderId 
+            ? { ...o, status: update.status, filledPrice: update.filledPrice, filledQuantity: update.filledQuantity } 
+            : o
+        )
+      );
+      
+      // Execute the trade and show notification if order is filled
+      if (update.status === "FILLED" && update.filledPrice) {
+        let success = false;
+        if (side === 'buy') {
+          success = handleBuy(selectedSymbol, update.filledQuantity || quantity, update.filledPrice);
+        } else {
+          success = handleSell(selectedSymbol, update.filledQuantity || quantity, update.filledPrice);
+        }
+        
+        if (success) {
+          notificationService.showSuccess(`Order ${update.orderId} filled successfully!`);
+        }
+      }
+    });
+    
+    // Process order against simulated market - this adds order to pending list for bot processing
     if (marketSimulationRef.current) {
-      executionResult = marketSimulationRef.current.processUserOrder(order);
+      marketSimulationRef.current.processUserOrder(order);
     }
     
-    // Execute the trade if order was filled
-    let success = false;
-    if (executionResult.success && executionResult.filledPrice) {
-      if (side === 'buy') {
-        success = handleBuy(quantity, executionResult.filledPrice);
-      } else {
-        success = handleSell(quantity, executionResult.filledPrice);
-      }
-    }
+    // Order is pending bot processing
+    // Update order in order book service with NEW status
+    orderBookService.updateOrder(order.id, {
+      status: "NEW"
+    });
     
     // Update order status - only Pending or Filled states
     const updatedOrder: Order = {
       ...order,
       orderType: "Market",
-      status: executionResult.success ? "FILLED" : "NEW", // Only these two states
-      filledPrice: executionResult.filledPrice,
-      filledQuantity: executionResult.filledQuantity
+      status: "NEW",
+      filledPrice: undefined,
+      filledQuantity: undefined
     };
     
     // Add order to state
     setOrders(prevOrders => [updatedOrder, ...prevOrders]);
+    
+    // Show notification about order processing delay
+    notificationService.showSuccess(`Order submitted. Bots will decide whether to match your order within 5 seconds.`, 10000);
     
     setShowOrderPanel(false);
   }, [handleBuy, handleSell, selectedSymbol, tradingPosition]);
@@ -344,14 +396,6 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
     <div
       className={`h-screen flex flex-col transition-colors duration-200 bg-[#131722]`}
     >
-      {/* DEBUG INFO */}
-      <div className="fixed top-20 right-4 z-50 bg-red-900 text-white p-2 text-xs rounded">
-        <div>Chart Container: {containerRef.current ? '✅' : '❌'}</div>
-        <div>Trendline Drawing: {enableTrendlineDrawing ? '✅' : '❌'}</div>
-        <div>Brush Drawing: {enableBrushDrawing ? '✅' : '❌'}</div>
-        <div>Drawing Object: {drawing ? '✅' : '❌'}</div>
-        <div>Trendlines: {drawing.trendlines?.length || 0}</div>
-      </div>
 
       {/* Top Navigation Bar */}
       <TopNavigation
@@ -456,6 +500,8 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
               onMaximizePanel={layoutManager.handleMaximizePanel}
               onRestorePanel={layoutManager.handleRestorePanel}
               orders={orders}
+              marketSimulation={marketSimulationRef.current}
+              selectedSymbol={selectedSymbol}
               onOpenOrderPanel={(side, price) => {
                 setShowOrderPanel(true);
                 setOrderPanelSide(side);
@@ -491,6 +537,7 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
               selectedSymbol={selectedSymbol}
               onSymbolSelect={handleSymbolChange}
               isDarkMode={isDarkMode}
+              positions={positionsMap}
             />
 
             {/* Divider and Order Panel - Only shown when buy/sell is clicked */}

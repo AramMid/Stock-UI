@@ -1,6 +1,7 @@
 "use client";
 import { useState } from "react";
 import { Plus, ChevronDown, TrendingUp, TrendingDown } from "lucide-react";
+import { formatVND } from "@/lib/order-management";
 
 interface WatchlistItem {
   symbol: string;
@@ -15,12 +16,14 @@ interface RightSidebarProps {
   selectedSymbol: string;
   onSymbolSelect: (symbol: string) => void;
   isDarkMode?: boolean;
+  positions?: Map<string, number>; // symbol -> quantity mapping
 }
 
 export default function RightSidebar({
   selectedSymbol,
   onSymbolSelect,
   isDarkMode = true,
+  positions = new Map(),
 }: RightSidebarProps) {
   const [stocksExpanded, setStocksExpanded] = useState(true);
   const [forexExpanded, setForexExpanded] = useState(true);
@@ -116,7 +119,7 @@ export default function RightSidebar({
       <div
         key={item.symbol}
         onClick={() => onSymbolSelect(item.symbol)}
-        className={`grid grid-cols-4 gap-2 px-3 py-2 cursor-pointer transition-colors text-xs ${
+        className={`grid grid-cols-5 gap-2 px-3 py-2 cursor-pointer transition-colors text-xs ${
           isDarkMode ? "hover:bg-[#1e222d]" : "hover:bg-gray-50"
         } ${
           selectedSymbol === item.symbol
@@ -147,6 +150,15 @@ export default function RightSidebar({
           </span>
         </div>
 
+        {/* Position (shares owned) */}
+        <div
+          className={`text-right font-mono transition-colors duration-200 ${
+            isDarkMode ? "text-white" : "text-gray-900"
+          }`}
+        >
+          {formatVND(positions.get(item.symbol) || 0)}
+        </div>
+
         {/* Price */}
         <div
           className={`text-right font-mono transition-colors duration-200 ${
@@ -154,7 +166,7 @@ export default function RightSidebar({
           }`}
         >
           {item.symbol.endsWith(".VN")
-            ? item.price.toLocaleString("vi-VN")
+            ? formatVND(item.price)
             : item.price.toFixed(item.category === "FOREX" ? 5 : 2)}
         </div>
 
@@ -166,7 +178,7 @@ export default function RightSidebar({
         >
           {item.change >= 0 ? "+" : ""}
           {item.symbol.endsWith(".VN")
-            ? item.change.toLocaleString("vi-VN")
+            ? formatVND(item.change)
             : item.change.toFixed(item.category === "FOREX" ? 5 : 2)}
         </div>
 
@@ -235,11 +247,12 @@ export default function RightSidebar({
         }`}
       >
         <div
-          className={`grid grid-cols-4 gap-2 text-xs font-medium transition-colors duration-200 ${
+          className={`grid grid-cols-5 gap-2 text-xs font-medium transition-colors duration-200 ${
             isDarkMode ? "text-gray-400" : "text-gray-600"
           }`}
         >
           <div>Symbol</div>
+          <div className="text-right">Pos</div>
           <div className="text-right">Last</div>
           <div className="text-right">Chg</div>
           <div className="text-right">Chg%</div>

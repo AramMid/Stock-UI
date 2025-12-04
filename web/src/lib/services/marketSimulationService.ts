@@ -1,11 +1,16 @@
 import { Order } from "../order-management";
+import { WebSocketService } from "./webSocketService";
+import { OrderStatus } from "./orderService";
 
-// Types for our market simulation
 export interface MarketMakerBot {
   id: string;
   type: "marketMaker";
   symbol: string;
   isActive: boolean;
+  inventory: number;
+  targetInventory: number;
+  maxPositionSize: number;
+  pnlThreshold: number;
 }
 
 export interface TrendFollowerBot {
@@ -14,6 +19,11 @@ export interface TrendFollowerBot {
   symbol: string;
   isActive: boolean;
   trendDirection: "up" | "down" | "neutral";
+  trendStrength: number;
+  entryPrice: number;
+  stopLoss: number;
+  takeProfit: number;
+  positionSize: number;
   trendEndTime: number;
 }
 
@@ -23,14 +33,41 @@ export interface NoiseTraderBot {
   symbol: string;
   isActive: boolean;
   nextActionTime: number;
+  sentiment: "bullish" | "bearish" | "neutral";
+  volatilityMultiplier: number;
 }
 
-export type Bot = MarketMakerBot | TrendFollowerBot | NoiseTraderBot;
+export interface StatisticalArbBot {
+  id: string;
+  type: "statArb";
+  symbol: string;
+  isActive: boolean;
+  pairSymbol?: string;
+  meanPrice: number;
+  stdDev: number;
+  zScoreThreshold: number;
+  position: number;
+}
+
+export interface StabilizerBot {
+  id: string;
+  type: "stabilizer";
+  symbol: string;
+  isActive: boolean;
+  minBidAskLevels: number;
+  maxSpreadMultiplier: number;
+  gapFillThreshold: number;
+}
+
+export type Bot = MarketMakerBot | TrendFollowerBot | NoiseTraderBot | StatisticalArbBot | StabilizerBot;
 
 export interface MarketDepthLevel {
   price: number;
   quantity: number;
-  type: "bid" | "ask" | "marketMaker";
+  type: "bid" | "ask" | "marketMaker" | "trend" | "noise" | "stabilizer";
+  botId?: string;
+  expiry?: number;
+  createdTime?: number;
 }
 
 export interface SimulatedMarketData {
@@ -41,9 +78,12 @@ export interface SimulatedMarketData {
   bidDepth: MarketDepthLevel[];
   askDepth: MarketDepthLevel[];
   trend: "up" | "down" | "neutral";
+  volatility: number;
+  vwap?: number;
+  rsi?: number;
+  volumeProfile: Map<number, number>;
 }
 
-// Add new interfaces for bot trading behavior
 export interface BotOrder {
   id: string;
   botId: string;
@@ -53,7 +93,10 @@ export interface BotOrder {
   quantity: number;
   price: number;
   timestamp: number;
-  status: 'pending' | 'filled' | 'cancelled';
+  status: 'pending' | 'filled' | 'cancelled' | 'NEW' | 'PARTIALLY_FILLED';
+  decisionTime?: number;
+  expiryTime?: number;
+  probability?: number;
 }
 
 export interface BotPosition {
@@ -62,742 +105,2262 @@ export interface BotPosition {
   quantity: number;
   avgPrice: number;
   realizedPnL: number;
+  unrealizedPnL: number;
+  maxDrawdown: number;
+  winRate: number;
+  totalTrades: number;
+  profitableTrades: number;
 }
 
-// Simulation parameters
-const SIMULATION_PARAMS = {
-  // Market Maker bots (6 bots)
-  MARKET_MAKER_COUNT: 6,
-  MARKET_MAKER_BASE_SPREAD: 100, // Base spread in VND
-  MARKET_MAKER_QUANTITY_RANGE: [10, 100], // Quantity range for market makers
+export interface MarketMetrics {
+  bidAskSpread: number;
+  orderImbalance: number;
+  marketDepth: number;
+  priceMomentum: number;
+}
+
+export interface TradeRecord {
+  timestamp: number;
+  price: number;
+  quantity: number;
+  buyerBotId?: string;
+  sellerBotId?: string;
+  userId?: string;
+  symbol: string;
+}
+
+interface MarketStats {
+  totalBots: number;
+  activeBots: number;
+  totalTrades: number;
+  recentTrades: number;
+  activeTrends: number;
+  marketData: Record<string, {
+    price: number;
+    volume: number;
+    trend: "up" | "down" | "neutral";
+    rsi?: number;
+    vwap?: number;
+    activeTrends: number;
+    bidCount: number;
+    askCount: number;
+    totalBidVolume: number;
+    totalAskVolume: number;
+  }>;
+}
+
+interface ActiveTrend {
+  id: string;
+  symbol: string;
+  direction: 'up' | 'down';
+  strength: number;
+  startTime: number;
+  endTime: number;
+  volumeMultiplier: number;
+  participatingBots: string[];
+  priceTarget: number;
+  currentProgress: number;
+  priceStart: number;
+}
+
+interface MomentumWave {
+  symbol: string;
+  direction: 'up' | 'down';
+  strength: number;
+  startTime: number;
+  endTime: number;
+  volumeImpact: number;
+}
+
+interface LiquidityCluster {
+  symbol: string;
+  price: number;
+  quantity: number;
+  type: 'bid' | 'ask';
+  expiry: number;
+}
+
+interface BreakoutLevel {
+  symbol: string;
+  price: number;
+  direction: 'breakout' | 'breakdown';
+  timestamp: number;
+  strength: number;
+}
+
+const PARAMS = {
+  MARKET_MAKER_COUNT: 15,
+  TREND_FOLLOWER_COUNT: 8,
+  NOISE_TRADER_COUNT: 8,
+  STAT_ARB_COUNT: 3,
+  STABILIZER_COUNT: 2,
   
-  // Trend Follower bots (3 bots)
-  TREND_FOLLOWER_COUNT: 3,
-  TREND_DURATION_MIN: 5 * 60 * 1000, // 5 minutes minimum
-  TREND_DURATION_MAX: 30 * 60 * 1000, // 30 minutes maximum
-  TREND_IMPACT: 0.005, // 0.5% price impact per action
-  TREND_REVERSAL_PROBABILITY: 0.3, // 30% chance of trend reversal
+  MARKET_MAKER_BASE_SPREAD: 50,
+  MARKET_MAKER_QUANTITY_RANGE: [100, 500] as [number, number],
+  MARKET_MAKER_INVENTORY_RANGE: [-2000, 2000] as [number, number],
+  MARKET_MAKER_PNL_THRESHOLD: 50000,
   
-  // Noise Trader bot (1 bot)
-  NOISE_TRADER_COUNT: 1,
-  NOISE_ACTION_INTERVAL_MIN: 30, // Seconds
-  NOISE_ACTION_INTERVAL_MAX: 120, // Seconds
-  NOISE_LARGE_ORDER_MULTIPLIER: [5, 20], // Multiplier for large orders
-  NOISE_VOLATILITY_SPIKE: 0.03, // 3% volatility spike
+  TREND_GENERATION_PROBABILITY: 0.4,
+  MIN_TREND_STRENGTH: 0.5,
+  MAX_TREND_STRENGTH: 0.9,
+  TREND_VOLUME_MULTIPLIER: 5,
+  TREND_SPREAD_COMPRESSION: 0.5,
+  TREND_DURATION_MIN: 120,
+  TREND_DURATION_MAX: 300,
   
-  // General parameters
-  BASE_PRICE_VOLATILITY: 0.002, // 0.2% base volatility
-  BASE_VOLUME: 1000,
-  PRICE_UPDATE_INTERVAL: 1000, // 1 second
-  VOLATILITY_WINDOW: 20, // Window for calculating dynamic volatility
+  TREND_DURATION_MIN_BOT: 5 * 60 * 1000,
+  TREND_DURATION_MAX_BOT: 30 * 60 * 1000,
+  TREND_IMPACT: 0.008,
+  TREND_FOLLOWER_STOP_LOSS: 0.015,
+  TREND_FOLLOWER_TAKE_PROFIT: 0.025,
+  
+  MOMENTUM_WAVE_PROBABILITY: 0.35,
+  MOMENTUM_WAVE_DURATION: [30, 90] as [number, number],
+  MOMENTUM_WAVE_IMPACT: 0.015,
+  
+  LIQUIDITY_CLUSTER_PROBABILITY: 0.25,
+  LIQUIDITY_CLUSTER_SIZE_MULTIPLIER: [5, 15] as [number, number],
+  LIQUIDITY_CLUSTER_DURATION: 45,
+  
+  BREAKOUT_PROBABILITY: 0.2,
+  BREAKOUT_THRESHOLD: 0.012,
+  
+  NOISE_ACTION_INTERVAL_MIN: 10,
+  NOISE_ACTION_INTERVAL_MAX: 30,
+  NOISE_LARGE_ORDER_MULTIPLIER: [8, 25] as [number, number],
+  NOISE_VOLATILITY_IMPACT: 0.002,
+  
+  STAT_ARB_Z_THRESHOLD: 2.0,
+  STAT_ARB_MEAN_REVERSION_SPEED: 0.1,
+  
+  BASE_PRICE_VOLATILITY: 0.003,
+  BASE_VOLUME: 2000,
+  PRICE_UPDATE_INTERVAL: 1000,
+  VOLATILITY_WINDOW: 20,
+  VOLUME_PROFILE_SIZE: 50,
+  
+  LIQUIDITY_PROBABILITY: 0.7,
+  MARKET_IMPACT_MULTIPLIER: 0.0001,
+  ORDER_FILL_PROBABILITY: 0.9,
+  MINIMUM_SPREAD: 5,
+  
+  MAX_POSITION_SIZE: 20000,
+  DAILY_LOSS_LIMIT: 1000000,
+  MAX_DRAWDOWN: 0.1,
+  
+  // Giải pháp mới cho order book ổn định
+  MIN_BID_ASK_LEVELS: 5,
+  MAX_SPREAD_MULTIPLIER: 3,
+  GAP_FILL_THRESHOLD: 0.02, // 2% gap
+  ORDER_REFRESH_THRESHOLD: 0.7, // Refresh orders khi còn 70% thời gian
+  STAGGERED_EXPIRY_RANGE: [15000, 45000] as [number, number], // 15-45 giây khác nhau
+  STABILIZER_ACTION_INTERVAL: 5000, // Stabilizer kiểm tra mỗi 5 giây
+  ORDER_BOOK_STABILITY_CHECK_INTERVAL: 3000, // Kiểm tra độ ổn định mỗi 3 giây
+} as const;
+
+const SYMBOLS = {
+  "VIC.VN": { price: 45200, lotSize: 100, tickSize: 100 },
+  "VHM.VN": { price: 55500, lotSize: 100, tickSize: 100 },
+  "VCB.VN": { price: 82700, lotSize: 100, tickSize: 100 },
+  "TCB.VN": { price: 22950, lotSize: 100, tickSize: 50 },
+  "FPT.VN": { price: 123500, lotSize: 100, tickSize: 500 },
+  "VNM.VN": { price: 48200, lotSize: 100, tickSize: 100 },
+  "HPG.VN": { price: 18850, lotSize: 100, tickSize: 50 },
+  "MSN.VN": { price: 67800, lotSize: 100, tickSize: 100 }
 };
 
-/**
- * Market Simulation Service
- * Implements 3 groups of bots as described:
- * - Market Makers: Provide liquidity
- * - Trend Followers: Create trends
- * - Noise Traders: Create market chaos
- */
 export class MarketSimulationService {
   private bots: Bot[] = [];
-  private botPositions: Map<string, BotPosition> = new Map(); // Track bot positions
-  private botOrders: Map<string, BotOrder> = new Map(); // Track bot orders
-  private marketData: Map<string, SimulatedMarketData> = new Map();
-  private priceHistory: Map<string, number[]> = new Map(); // For volatility calculations
+  private botPositions = new Map<string, BotPosition>();
+  private botOrders = new Map<string, BotOrder>();
+  private pendingUserOrders = new Map<string, {order: Order, decisionTime: number}>();
+  
+  private marketData = new Map<string, SimulatedMarketData>();
+  private priceHistory = new Map<string, number[]>();
+  private volumeHistory = new Map<string, number[]>();
   private simulationInterval: NodeJS.Timeout | null = null;
+  private stabilizerInterval: NodeJS.Timeout | null = null;
+  private stabilityCheckInterval: NodeJS.Timeout | null = null;
   private onUpdateCallback: ((data: SimulatedMarketData) => void) | null = null;
   private isRunning = false;
+  private webSocketService: WebSocketService;
+  
+  private marketMetrics = new Map<string, MarketMetrics>();
+  private correlationMatrix = new Map<string, Map<string, number>>();
+  private tradeHistory: TradeRecord[] = [];
+
+  private activeTrends: ActiveTrend[] = [];
+  private momentumWaves: MomentumWave[] = [];
+  private liquidityClusters: LiquidityCluster[] = [];
+  private breakoutLevels: BreakoutLevel[] = [];
+  private lastTrendGenerationTime = 0;
+  private trendCooldown = 30000;
+  private lastStabilityCheckTime = 0;
 
   constructor() {
+    this.webSocketService = WebSocketService.getInstance();
     this.initializeBots();
-  }
-
-  /**
-   * Initialize all bots for the simulation
-   */
-  private initializeBots() {
-    // Create Market Maker bots
-    for (let i = 0; i < SIMULATION_PARAMS.MARKET_MAKER_COUNT; i++) {
-      const botId = `mm-${i}`;
-      this.bots.push({
-        id: botId,
-        type: "marketMaker",
-        symbol: "VIC.VN",
-        isActive: true,
-      });
-      
-      // Initialize bot position
-      this.botPositions.set(botId, {
-        botId: botId,
-        symbol: "VIC.VN",
-        quantity: 0,
-        avgPrice: 0,
-        realizedPnL: 0
-      });
-    }
-
-    // Create Trend Follower bots
-    for (let i = 0; i < SIMULATION_PARAMS.TREND_FOLLOWER_COUNT; i++) {
-      const botId = `tf-${i}`;
-      this.bots.push({
-        id: botId,
-        type: "trendFollower",
-        symbol: "VIC.VN",
-        isActive: true,
-        trendDirection: "neutral",
-        trendEndTime: 0,
-      });
-      
-      // Initialize bot position
-      this.botPositions.set(botId, {
-        botId: botId,
-        symbol: "VIC.VN",
-        quantity: 0,
-        avgPrice: 0,
-        realizedPnL: 0
-      });
-    }
-
-    // Create Noise Trader bot
-    for (let i = 0; i < SIMULATION_PARAMS.NOISE_TRADER_COUNT; i++) {
-      const botId = `nt-${i}`;
-      this.bots.push({
-        id: botId,
-        type: "noiseTrader",
-        symbol: "VIC.VN",
-        isActive: true,
-        nextActionTime: Date.now() + this.getRandomInterval(),
-      });
-      
-      // Initialize bot position
-      this.botPositions.set(botId, {
-        botId: botId,
-        symbol: "VIC.VN",
-        quantity: 0,
-        avgPrice: 0,
-        realizedPnL: 0
-      });
-    }
-
-    // Initialize market data
     this.initializeMarketData();
+    this.calculateCorrelations();
+    this.lastTrendGenerationTime = Date.now();
+    this.lastStabilityCheckTime = Date.now();
   }
 
-  /**
-   * Initialize market data for symbols
-   */
+  private initializeBots() {
+    const symbols = Object.keys(SYMBOLS);
+    
+    // MARKET MAKER BOTS
+    for (let i = 0; i < PARAMS.MARKET_MAKER_COUNT; i++) {
+      const botId = `mm-${i}`;
+      const symbol = symbols[i % symbols.length];
+      const targetInventory = Math.floor(Math.random() * 
+        (PARAMS.MARKET_MAKER_INVENTORY_RANGE[1] - PARAMS.MARKET_MAKER_INVENTORY_RANGE[0])) + 
+        PARAMS.MARKET_MAKER_INVENTORY_RANGE[0];
+      
+      const initialInventory = Math.floor(Math.random() * 1000) - 500;
+      
+      this.bots.push({ 
+        id: botId, 
+        type: 'marketMaker', 
+        symbol, 
+        isActive: true,
+        inventory: initialInventory,
+        targetInventory,
+        maxPositionSize: PARAMS.MAX_POSITION_SIZE,
+        pnlThreshold: PARAMS.MARKET_MAKER_PNL_THRESHOLD
+      });
+      
+      this.initializeBotPosition(botId, symbol, initialInventory);
+    }
+    
+    // TREND FOLLOWER BOTS
+    for (let i = 0; i < PARAMS.TREND_FOLLOWER_COUNT; i++) {
+      const botId = `tf-${i}`;
+      const symbol = symbols[i % symbols.length];
+      
+      this.bots.push({ 
+        id: botId, 
+        type: 'trendFollower', 
+        symbol, 
+        isActive: true, 
+        trendDirection: 'neutral',
+        trendStrength: 0,
+        entryPrice: 0,
+        stopLoss: 0,
+        takeProfit: 0,
+        positionSize: 0,
+        trendEndTime: 0
+      });
+      
+      this.initializeBotPosition(botId, symbol, 0);
+    }
+    
+    // NOISE TRADER BOTS
+    for (let i = 0; i < PARAMS.NOISE_TRADER_COUNT; i++) {
+      const botId = `nt-${i}`;
+      const symbol = symbols[i % symbols.length];
+      const sentiments: Array<"bullish" | "bearish" | "neutral"> = ["bullish", "bearish", "neutral"];
+      
+      this.bots.push({ 
+        id: botId, 
+        type: 'noiseTrader', 
+        symbol, 
+        isActive: true, 
+        nextActionTime: Date.now() + this.getRandomInterval(),
+        sentiment: sentiments[Math.floor(Math.random() * sentiments.length)],
+        volatilityMultiplier: 0.5 + Math.random() * 1.5
+      });
+      
+      this.initializeBotPosition(botId, symbol, 0);
+    }
+    
+    // STATISTICAL ARBITRAGE BOTS
+    for (let i = 0; i < PARAMS.STAT_ARB_COUNT; i++) {
+      const botId = `sa-${i}`;
+      const symbol = symbols[i % symbols.length];
+      const pairSymbol = symbols[(i + 1) % symbols.length];
+      
+      this.bots.push({ 
+        id: botId, 
+        type: 'statArb', 
+        symbol, 
+        isActive: true,
+        pairSymbol,
+        meanPrice: SYMBOLS[symbol as keyof typeof SYMBOLS].price,
+        stdDev: SYMBOLS[symbol as keyof typeof SYMBOLS].price * 0.05,
+        zScoreThreshold: PARAMS.STAT_ARB_Z_THRESHOLD,
+        position: 0
+      });
+      
+      this.initializeBotPosition(botId, symbol, 0);
+    }
+    
+    // STABILIZER BOTS (GIẢI PHÁP MỚI)
+    for (let i = 0; i < PARAMS.STABILIZER_COUNT; i++) {
+      const botId = `st-${i}`;
+      const symbol = symbols[i % symbols.length];
+      
+      this.bots.push({
+        id: botId,
+        type: 'stabilizer',
+        symbol,
+        isActive: true,
+        minBidAskLevels: PARAMS.MIN_BID_ASK_LEVELS,
+        maxSpreadMultiplier: PARAMS.MAX_SPREAD_MULTIPLIER,
+        gapFillThreshold: PARAMS.GAP_FILL_THRESHOLD
+      });
+      
+      this.initializeBotPosition(botId, symbol, 0);
+    }
+  }
+  
+  private initializeBotPosition(botId: string, symbol: string, initialQuantity: number = 0) {
+    const initialPrice = SYMBOLS[symbol as keyof typeof SYMBOLS].price;
+    this.botPositions.set(botId, { 
+      botId, 
+      symbol, 
+      quantity: initialQuantity, 
+      avgPrice: initialQuantity > 0 ? initialPrice : 0,
+      realizedPnL: 0,
+      unrealizedPnL: 0,
+      maxDrawdown: 0,
+      winRate: 0,
+      totalTrades: 0,
+      profitableTrades: 0
+    });
+  }
+
   private initializeMarketData() {
-    const initialPrice = 45200; // Starting price for VIC.VN
-    const marketData: SimulatedMarketData = {
-      symbol: "VIC.VN",
-      price: initialPrice,
-      volume: SIMULATION_PARAMS.BASE_VOLUME,
-      timestamp: Date.now(),
-      bidDepth: [],
-      askDepth: [],
-      trend: "neutral",
-    };
-
-    this.marketData.set("VIC.VN", marketData);
-    this.priceHistory.set("VIC.VN", [initialPrice]); // Initialize price history
+    Object.entries(SYMBOLS).forEach(([symbol, data]) => {
+      const marketData: SimulatedMarketData = {
+        symbol,
+        price: data.price,
+        volume: PARAMS.BASE_VOLUME,
+        timestamp: Date.now(),
+        bidDepth: [],
+        askDepth: [],
+        trend: "neutral",
+        volatility: PARAMS.BASE_PRICE_VOLATILITY,
+        volumeProfile: new Map()
+      };
+      this.marketData.set(symbol, marketData);
+      this.priceHistory.set(symbol, [data.price]);
+      this.volumeHistory.set(symbol, [PARAMS.BASE_VOLUME]);
+      
+      for (let i = 0; i < PARAMS.VOLUME_PROFILE_SIZE; i++) {
+        const priceLevel = data.price * (1 + (i - PARAMS.VOLUME_PROFILE_SIZE/2) * 0.001);
+        marketData.volumeProfile.set(priceLevel, 0);
+      }
+      
+      this.updateMarketDepth(marketData, PARAMS.BASE_PRICE_VOLATILITY);
+    });
+  }
+  
+  private calculateCorrelations() {
+    const symbols = Object.keys(SYMBOLS);
+    symbols.forEach(symbol1 => {
+      const row = new Map<string, number>();
+      symbols.forEach(symbol2 => {
+        const correlation = symbol1 === symbol2 ? 1 : (Math.random() * 1.6 - 0.7);
+        row.set(symbol2, correlation);
+      });
+      this.correlationMatrix.set(symbol1, row);
+    });
   }
 
-  /**
-   * Start the market simulation
-   */
   public startSimulation(onUpdate: (data: SimulatedMarketData) => void) {
     if (this.isRunning) return;
-
     this.onUpdateCallback = onUpdate;
     this.isRunning = true;
-
-    // Start the simulation loop
-    this.simulationInterval = setInterval(() => {
-      this.updateMarket();
-    }, SIMULATION_PARAMS.PRICE_UPDATE_INTERVAL);
+    
+    // Main simulation interval
+    this.simulationInterval = setInterval(() => this.updateMarket(), PARAMS.PRICE_UPDATE_INTERVAL);
+    
+    // Stabilizer interval để giữ order book ổn định
+    this.stabilizerInterval = setInterval(() => this.runStabilizers(), PARAMS.STABILIZER_ACTION_INTERVAL);
+    
+    // Stability check interval
+    this.stabilityCheckInterval = setInterval(() => this.checkOrderBookStability(), 
+      PARAMS.ORDER_BOOK_STABILITY_CHECK_INTERVAL);
+    
+    console.log('[SIMULATION] Market simulation started with stabilizer bots');
   }
 
-  /**
-   * Stop the market simulation
-   */
   public stopSimulation() {
     if (this.simulationInterval) {
       clearInterval(this.simulationInterval);
       this.simulationInterval = null;
     }
+    if (this.stabilizerInterval) {
+      clearInterval(this.stabilizerInterval);
+      this.stabilizerInterval = null;
+    }
+    if (this.stabilityCheckInterval) {
+      clearInterval(this.stabilityCheckInterval);
+      this.stabilityCheckInterval = null;
+    }
     this.isRunning = false;
+    console.log('[SIMULATION] Market simulation stopped');
   }
 
-  /**
-   * Update market state
-   */
   private updateMarket() {
-    const marketData = this.marketData.get("VIC.VN");
-    if (!marketData) return;
-
-    // Update timestamp
-    marketData.timestamp = Date.now();
-
-    // Calculate dynamic volatility
-    const dynamicVolatility = this.calculateDynamicVolatility("VIC.VN");
-    
-    // Apply GBM price movement
-    const drift = 0.0; // Assuming zero drift for simplicity
-    marketData.price = this.generateGBMPrice(marketData.price, drift, dynamicVolatility, SIMULATION_PARAMS.PRICE_UPDATE_INTERVAL);
-
-    // Update price history
-    const priceHistory = this.priceHistory.get("VIC.VN") || [];
-    priceHistory.push(marketData.price);
-    
-    // Keep only recent history for performance
-    if (priceHistory.length > SIMULATION_PARAMS.VOLATILITY_WINDOW * 10) {
-      priceHistory.splice(0, priceHistory.length - SIMULATION_PARAMS.VOLATILITY_WINDOW * 10);
-    }
-    this.priceHistory.set("VIC.VN", priceHistory);
-
-    // Process each bot group
-    this.processMarketMakers(marketData, dynamicVolatility);
-    this.processTrendFollowers(marketData);
-    this.processNoiseTraders(marketData, dynamicVolatility);
-
-    // Process pending bot orders
-    this.processPendingBotOrders(marketData);
-
-    // Update market depth based on bot orders
-    this.updateMarketDepth(marketData, dynamicVolatility);
-
-    // Notify subscribers of updates
-    if (this.onUpdateCallback) {
-      this.onUpdateCallback({...marketData});
-    }
-  }
-
-  /**
-   * Process Market Maker bots
-   */
-  private processMarketMakers(marketData: SimulatedMarketData, dynamicVolatility: number) {
-    const marketMakers = this.bots.filter(bot => bot.type === "marketMaker" && bot.isActive) as MarketMakerBot[];
-    
-    // Clear existing market maker orders
-    marketData.bidDepth = marketData.bidDepth.filter(level => !level.type || level.type !== "marketMaker");
-    marketData.askDepth = marketData.askDepth.filter(level => !level.type || level.type !== "marketMaker");
-    
-    // Calculate dynamic spread based on volatility
-    const volatilityMultiplier = 1 + (dynamicVolatility / SIMULATION_PARAMS.BASE_PRICE_VOLATILITY);
-    const dynamicSpread = SIMULATION_PARAMS.MARKET_MAKER_BASE_SPREAD * volatilityMultiplier;
-    
-    // Each market maker places limit orders
-    marketMakers.forEach((bot, index) => {
-      // Spread varies slightly between bots
-      const spreadAdjustment = (index % 3 - 1) * 50; // -50, 0, or +50 VND
-      const spread = dynamicSpread + spreadAdjustment;
-      
-      // Place limit buy order below current price
-      const buyPrice = Math.max(1000, marketData.price - spread);
-      
-      // Place limit sell order above current price
-      const sellPrice = marketData.price + spread;
-      
-      // Quantity varies randomly within range
-      const quantity = Math.floor(
-        Math.random() * (SIMULATION_PARAMS.MARKET_MAKER_QUANTITY_RANGE[1] - SIMULATION_PARAMS.MARKET_MAKER_QUANTITY_RANGE[0]) + 
-        SIMULATION_PARAMS.MARKET_MAKER_QUANTITY_RANGE[0]
-      );
-      
-      // Add orders to market depth
-      marketData.bidDepth.push({
-        price: buyPrice,
-        quantity: quantity,
-        type: "marketMaker"
-      });
-      
-      marketData.askDepth.push({
-        price: sellPrice,
-        quantity: quantity,
-        type: "marketMaker"
-      });
-    });
-  }
-
-  /**
-   * Calculate Simple Moving Average
-   * @param prices Array of prices
-   * @param period Period for MA calculation
-   * @returns MA value
-   */
-  private calculateSMA(prices: number[], period: number): number {
-    if (prices.length < period) return prices[prices.length - 1] || 0;
-    
-    const slice = prices.slice(-period);
-    const sum = slice.reduce((acc, price) => acc + price, 0);
-    return sum / period;
-  }
-
-  /**
-   * Calculate RSI-like indicator
-   * @param prices Array of prices
-   * @param period Period for RSI calculation
-   * @returns RSI value (0-100)
-   */
-  private calculateRSI(prices: number[], period: number): number {
-    if (prices.length < period + 1) return 50; // Neutral RSI
-    
-    let gains = 0;
-    let losses = 0;
-    
-    for (let i = prices.length - period; i < prices.length; i++) {
-      const change = prices[i] - prices[i - 1];
-      if (change > 0) {
-        gains += change;
-      } else {
-        losses -= change;
-      }
-    }
-    
-    const avgGain = gains / period;
-    const avgLoss = losses / period;
-    
-    if (avgLoss === 0) return 100;
-    const rs = avgGain / avgLoss;
-    return 100 - (100 / (1 + rs));
-  }
-
-  /**
-   * Process Trend Follower bots
-   */
-  private processTrendFollowers(marketData: SimulatedMarketData) {
-    const trendFollowers = this.bots.filter(bot => bot.type === "trendFollower" && bot.isActive) as TrendFollowerBot[];
-    let trendDirection: "up" | "down" | "neutral" = "neutral";
-    
-    // Get price history for technical analysis
-    const priceHistory = this.priceHistory.get("VIC.VN") || [];
-    
-    trendFollowers.forEach(bot => {
-      const now = Date.now();
-      
-      // Use technical indicators to determine trend
-      const smaShort = this.calculateSMA(priceHistory, 5);
-      const smaLong = this.calculateSMA(priceHistory, 20);
-      const rsi = this.calculateRSI(priceHistory, 14);
-      
-      // Check if trend period has ended or if technical conditions have changed
-      if (now >= bot.trendEndTime || 
-          (smaShort > smaLong && bot.trendDirection !== "up") ||
-          (smaShort < smaLong && bot.trendDirection !== "down")) {
-        
-        // Determine trend based on technical indicators
-        if (smaShort > smaLong && rsi < 70) {
-          // Bullish trend
-          bot.trendDirection = "up";
-        } else if (smaShort < smaLong && rsi > 30) {
-          // Bearish trend
-          bot.trendDirection = "down";
-        } else {
-          // Neutral/consolidation
-          bot.trendDirection = "neutral";
-        }
-        
-        // Set new trend end time
-        bot.trendEndTime = now + this.getRandomTrendDuration();
-      }
-      
-      // Execute trend-following behavior
-      if (bot.trendDirection === "up") {
-        // Push price up by buying - place large buy orders
-        const largeBuyQuantity = Math.floor(Math.random() * 200) + 50;
-        marketData.bidDepth.push({
-          price: marketData.price * 1.01, // Slightly above current price
-          quantity: largeBuyQuantity,
-          type: "bid"
-        });
-        
-        marketData.price = marketData.price * (1 + SIMULATION_PARAMS.TREND_IMPACT);
-        trendDirection = "up";
-      } else if (bot.trendDirection === "down") {
-        // Push price down by selling - place large sell orders
-        const largeSellQuantity = Math.floor(Math.random() * 200) + 50;
-        marketData.askDepth.push({
-          price: marketData.price * 0.99, // Slightly below current price
-          quantity: largeSellQuantity,
-          type: "ask"
-        });
-        
-        marketData.price = marketData.price * (1 - SIMULATION_PARAMS.TREND_IMPACT);
-        trendDirection = "down";
-      }
-    });
-    
-    // Update market trend
-    marketData.trend = trendDirection;
-  }
-
-  /**
-   * Process Noise Trader bots
-   */
-  private processNoiseTraders(marketData: SimulatedMarketData, dynamicVolatility: number) {
-    const noiseTraders = this.bots.filter(bot => bot.type === "noiseTrader" && bot.isActive) as NoiseTraderBot[];
     const now = Date.now();
     
-    // Check if there's a volatility spike (panic/FOMO event)
-    const isVolatilitySpike = dynamicVolatility > SIMULATION_PARAMS.BASE_PRICE_VOLATILITY * 3;
+    if (now - this.lastTrendGenerationTime > this.trendCooldown) {
+      this.generateStrongTrendsAndPatterns();
+      this.lastTrendGenerationTime = now;
+    }
     
-    noiseTraders.forEach(bot => {
-      // Check if it's time for the noise trader to act or if there's a volatility spike
-      if (now >= bot.nextActionTime || isVolatilitySpike) {
-        // Higher probability of action during volatility spikes
-        const actionProbability = isVolatilitySpike ? 0.8 : 0.3;
+    this.updateActiveTrends();
+    
+    this.marketData.forEach((marketData, symbol) => {
+      const dynamicVolatility = this.calculateDynamicVolatility(symbol);
+      marketData.volatility = dynamicVolatility;
+      
+      this.applyTrendEffects(marketData);
+      
+      const symbolBots = this.bots.filter(bot => bot.symbol === symbol);
+      
+      // GIẢI PHÁP 1: Refresh thay vì recreate
+      this.refreshExistingOrders(marketData);
+      
+      this.processMarketMakers(marketData, dynamicVolatility, 
+        symbolBots.filter(b => b.type === "marketMaker") as MarketMakerBot[]);
+      
+      this.processTrendFollowers(marketData, 
+        symbolBots.filter(b => b.type === "trendFollower") as TrendFollowerBot[]);
+      
+      this.processNoiseTraders(marketData, dynamicVolatility, 
+        symbolBots.filter(b => b.type === "noiseTrader") as NoiseTraderBot[]);
+      
+      this.processStatisticalArb(marketData, 
+        symbolBots.filter(b => b.type === "statArb") as StatisticalArbBot[]);
+      
+      this.processBotToBotTrading(marketData);
+      
+      this.updatePriceWithTrends(marketData, symbol);
+      
+      this.updateTechnicalIndicators(marketData, symbol);
+      
+      this.processPendingUserOrders(marketData);
+      
+      // GIẢI PHÁP 2: Update market depth với minimum levels guarantee
+      this.updateMarketDepthWithStability(marketData, dynamicVolatility);
+      
+      this.updateMarketMetrics(marketData);
+      
+      this.tradeHistory = this.tradeHistory.filter(t => Date.now() - t.timestamp < 60000);
+      
+      if (this.onUpdateCallback) {
+        this.onUpdateCallback({...marketData});
+      }
+    });
+  }
+  
+  // GIẢI PHÁP 1: Refresh existing orders thay vì xóa hết
+  private refreshExistingOrders(marketData: SimulatedMarketData) {
+    const now = Date.now();
+    const symbol = marketData.symbol;
+    
+    // Refresh bid orders
+    marketData.bidDepth = marketData.bidDepth.map(level => {
+      if (level.expiry && level.type === "marketMaker") {
+        const timeRemaining = level.expiry - now;
+        const totalTime = level.expiry - (level.createdTime || level.expiry - 30000);
         
-        if (Math.random() < actionProbability) {
-          // Place a large order
-          const multiplier = Math.floor(
-            Math.random() * (SIMULATION_PARAMS.NOISE_LARGE_ORDER_MULTIPLIER[1] - SIMULATION_PARAMS.NOISE_LARGE_ORDER_MULTIPLIER[0]) + 
-            SIMULATION_PARAMS.NOISE_LARGE_ORDER_MULTIPLIER[0]
+        // Nếu còn 70% thời gian, giữ nguyên, nếu không refresh
+        if (timeRemaining / totalTime > PARAMS.ORDER_REFRESH_THRESHOLD) {
+          return level;
+        } else {
+          // Refresh order bằng cách kéo dài expiry
+          const newExpiry = now + this.getStaggeredExpiryTime();
+          return {
+            ...level,
+            expiry: newExpiry,
+            createdTime: level.createdTime || now
+          };
+        }
+      }
+      return level;
+    }).filter(level => !level.expiry || level.expiry > now);
+    
+    // Refresh ask orders
+    marketData.askDepth = marketData.askDepth.map(level => {
+      if (level.expiry && level.type === "marketMaker") {
+        const timeRemaining = level.expiry - now;
+        const totalTime = level.expiry - (level.createdTime || level.expiry - 30000);
+        
+        if (timeRemaining / totalTime > PARAMS.ORDER_REFRESH_THRESHOLD) {
+          return level;
+        } else {
+          const newExpiry = now + this.getStaggeredExpiryTime();
+          return {
+            ...level,
+            expiry: newExpiry,
+            createdTime: level.createdTime || now
+          };
+        }
+      }
+      return level;
+    }).filter(level => !level.expiry || level.expiry > now);
+  }
+  
+  // GIẢI PHÁP 3: Minimum levels guarantee
+  private ensureMinimumLevels(marketData: SimulatedMarketData) {
+    const now = Date.now();
+    const symbol = marketData.symbol;
+    const currentPrice = marketData.price;
+    
+    // Đảm bảo ít nhất MIN_BID_ASK_LEVELS levels mỗi side
+    if (marketData.bidDepth.length < PARAMS.MIN_BID_ASK_LEVELS) {
+      const levelsToAdd = PARAMS.MIN_BID_ASK_LEVELS - marketData.bidDepth.length;
+      for (let i = 0; i < levelsToAdd; i++) {
+        const priceStep = PARAMS.MARKET_MAKER_BASE_SPREAD * (i + 1);
+        const bidPrice = Math.round((currentPrice - priceStep) / 100) * 100;
+        const quantity = Math.floor(
+          PARAMS.MARKET_MAKER_QUANTITY_RANGE[0] + 
+          Math.random() * (PARAMS.MARKET_MAKER_QUANTITY_RANGE[1] - PARAMS.MARKET_MAKER_QUANTITY_RANGE[0])
+        );
+        
+        marketData.bidDepth.push({
+          price: bidPrice,
+          quantity,
+          type: "stabilizer",
+          expiry: now + this.getStaggeredExpiryTime(),
+          createdTime: now
+        });
+      }
+    }
+    
+    if (marketData.askDepth.length < PARAMS.MIN_BID_ASK_LEVELS) {
+      const levelsToAdd = PARAMS.MIN_BID_ASK_LEVELS - marketData.askDepth.length;
+      for (let i = 0; i < levelsToAdd; i++) {
+        const priceStep = PARAMS.MARKET_MAKER_BASE_SPREAD * (i + 1);
+        const askPrice = Math.round((currentPrice + priceStep) / 100) * 100;
+        const quantity = Math.floor(
+          PARAMS.MARKET_MAKER_QUANTITY_RANGE[0] + 
+          Math.random() * (PARAMS.MARKET_MAKER_QUANTITY_RANGE[1] - PARAMS.MARKET_MAKER_QUANTITY_RANGE[0])
+        );
+        
+        marketData.askDepth.push({
+          price: askPrice,
+          quantity,
+          type: "stabilizer",
+          expiry: now + this.getStaggeredExpiryTime(),
+          createdTime: now
+        });
+      }
+    }
+  }
+  
+  // GIẢI PHÁP 4: Gap filling
+  private fillPriceGaps(marketData: SimulatedMarketData) {
+    const now = Date.now();
+    const symbol = marketData.symbol;
+    
+    // Sort depths
+    marketData.bidDepth.sort((a, b) => b.price - a.price);
+    marketData.askDepth.sort((a, b) => a.price - b.price);
+    
+    // Kiểm tra gap ở bid side
+    if (marketData.bidDepth.length > 1) {
+      for (let i = 0; i < marketData.bidDepth.length - 1; i++) {
+        const currentLevel = marketData.bidDepth[i];
+        const nextLevel = marketData.bidDepth[i + 1];
+        const priceGap = currentLevel.price - nextLevel.price;
+        const avgPrice = (currentLevel.price + nextLevel.price) / 2;
+        const gapPercentage = priceGap / avgPrice;
+        
+        if (gapPercentage > PARAMS.GAP_FILL_THRESHOLD) {
+          // Tạo order để lấp khoảng trống
+          const fillPrice = (currentLevel.price + nextLevel.price) / 2;
+          const fillQuantity = Math.floor(
+            (currentLevel.quantity + nextLevel.quantity) / 2
           );
           
-          // Larger price movement during volatility spikes
-          const volatilityFactor = isVolatilitySpike ? SIMULATION_PARAMS.NOISE_VOLATILITY_SPIKE * 2 : SIMULATION_PARAMS.NOISE_VOLATILITY_SPIKE;
-          const priceImpact = (Math.random() - 0.5) * volatilityFactor;
-          marketData.price = marketData.price * (1 + priceImpact);
+          marketData.bidDepth.splice(i + 1, 0, {
+            price: Math.round(fillPrice / 100) * 100,
+            quantity: fillQuantity,
+            type: "stabilizer",
+            expiry: now + this.getStaggeredExpiryTime(),
+            createdTime: now
+          });
           
-          // Place large order in the book
-          const largeQuantity = Math.floor(Math.random() * 500) + 100;
-          if (Math.random() > 0.5) {
-            // Place large buy order
-            marketData.bidDepth.push({
-              price: marketData.price * (0.99 + Math.random() * 0.02), // Near current price
-              quantity: largeQuantity,
-              type: "bid"
-            });
-          } else {
-            // Place large sell order
-            marketData.askDepth.push({
-              price: marketData.price * (0.99 + Math.random() * 0.02), // Near current price
-              quantity: largeQuantity,
-              type: "ask"
-            });
-          }
-        } else if (Math.random() > 0.5) {
-          // Cancel random orders to create volatility
-          if (marketData.bidDepth.length > 3) {
-            marketData.bidDepth.splice(Math.floor(Math.random() * marketData.bidDepth.length), 1);
-          }
-          if (marketData.askDepth.length > 3) {
-            marketData.askDepth.splice(Math.floor(Math.random() * marketData.askDepth.length), 1);
+          break; // Chỉ fill một gap mỗi lần
+        }
+      }
+    }
+    
+    // Kiểm tra gap ở ask side
+    if (marketData.askDepth.length > 1) {
+      for (let i = 0; i < marketData.askDepth.length - 1; i++) {
+        const currentLevel = marketData.askDepth[i];
+        const nextLevel = marketData.askDepth[i + 1];
+        const priceGap = nextLevel.price - currentLevel.price;
+        const avgPrice = (currentLevel.price + nextLevel.price) / 2;
+        const gapPercentage = priceGap / avgPrice;
+        
+        if (gapPercentage > PARAMS.GAP_FILL_THRESHOLD) {
+          // Tạo order để lấp khoảng trống
+          const fillPrice = (currentLevel.price + nextLevel.price) / 2;
+          const fillQuantity = Math.floor(
+            (currentLevel.quantity + nextLevel.quantity) / 2
+          );
+          
+          marketData.askDepth.splice(i + 1, 0, {
+            price: Math.round(fillPrice / 100) * 100,
+            quantity: fillQuantity,
+            type: "stabilizer",
+            expiry: now + this.getStaggeredExpiryTime(),
+            createdTime: now
+          });
+          
+          break; // Chỉ fill một gap mỗi lần
+        }
+      }
+    }
+  }
+  
+  // GIẢI PHÁP 5: Stabilizer bot actions
+  private runStabilizers() {
+    const now = Date.now();
+    const stabilizerBots = this.bots.filter(bot => 
+      bot.type === "stabilizer" && bot.isActive
+    ) as StabilizerBot[];
+    
+    stabilizerBots.forEach(bot => {
+      const marketData = this.marketData.get(bot.symbol);
+      if (!marketData) return;
+      
+      // Kiểm tra spread
+      const spread = this.calculateBidAskSpread(marketData);
+      const currentPrice = marketData.price;
+      const maxAllowedSpread = PARAMS.MARKET_MAKER_BASE_SPREAD * bot.maxSpreadMultiplier;
+      
+      if (spread > maxAllowedSpread) {
+        // Spread quá rộng, thêm liquidity
+        this.addStabilizerLiquidity(bot, marketData, spread, maxAllowedSpread);
+      }
+      
+      // Kiểm tra số lượng levels
+      if (marketData.bidDepth.length < bot.minBidAskLevels ||
+          marketData.askDepth.length < bot.minBidAskLevels) {
+        this.ensureMinimumLevels(marketData);
+      }
+      
+      // Kiểm tra và fill gaps
+      this.fillPriceGaps(marketData);
+    });
+  }
+  
+  private addStabilizerLiquidity(
+    bot: StabilizerBot, 
+    marketData: SimulatedMarketData, 
+    currentSpread: number, 
+    maxSpread: number
+  ) {
+    const now = Date.now();
+    const currentPrice = marketData.price;
+    const targetSpread = maxSpread * 0.7; // Nhắm đến 70% của max spread
+    
+    // Thêm bid order
+    const bidPrice = Math.round((currentPrice - targetSpread / 2) / 100) * 100;
+    const bidQuantity = Math.floor(
+      PARAMS.MARKET_MAKER_QUANTITY_RANGE[1] * 1.5
+    );
+    
+    marketData.bidDepth.push({
+      price: bidPrice,
+      quantity: bidQuantity,
+      type: "stabilizer",
+      botId: bot.id,
+      expiry: now + this.getStaggeredExpiryTime(),
+      createdTime: now
+    });
+    
+    // Thêm ask order
+    const askPrice = Math.round((currentPrice + targetSpread / 2) / 100) * 100;
+    const askQuantity = Math.floor(
+      PARAMS.MARKET_MAKER_QUANTITY_RANGE[1] * 1.5
+    );
+    
+    marketData.askDepth.push({
+      price: askPrice,
+      quantity: askQuantity,
+      type: "stabilizer",
+      botId: bot.id,
+      expiry: now + this.getStaggeredExpiryTime(),
+      createdTime: now
+    });
+    
+    console.log(`[STABILIZER] ${bot.id} added liquidity to ${marketData.symbol}, spread: ${currentSpread.toFixed(0)} -> target: ${targetSpread.toFixed(0)}`);
+  }
+  
+  private checkOrderBookStability() {
+    const now = Date.now();
+    if (now - this.lastStabilityCheckTime < PARAMS.ORDER_BOOK_STABILITY_CHECK_INTERVAL) return;
+    
+    this.lastStabilityCheckTime = now;
+    
+    this.marketData.forEach((marketData, symbol) => {
+      const bidCount = marketData.bidDepth.length;
+      const askCount = marketData.askDepth.length;
+      const spread = this.calculateBidAskSpread(marketData);
+      const maxSpread = PARAMS.MARKET_MAKER_BASE_SPREAD * PARAMS.MAX_SPREAD_MULTIPLIER;
+      
+      // Log stability metrics
+      if (bidCount < PARAMS.MIN_BID_ASK_LEVELS || askCount < PARAMS.MIN_BID_ASK_LEVELS || spread > maxSpread) {
+        console.warn(`[STABILITY] ${symbol}: Bids=${bidCount}, Asks=${askCount}, Spread=${spread.toFixed(0)}`);
+      }
+    });
+  }
+  
+  private getStaggeredExpiryTime(): number {
+    // GIẢI PHÁP: Stagger expiry times - mỗi order có expiry time khác nhau
+    return Math.floor(
+      Math.random() * (PARAMS.STAGGERED_EXPIRY_RANGE[1] - PARAMS.STAGGERED_EXPIRY_RANGE[0])
+    ) + PARAMS.STAGGERED_EXPIRY_RANGE[0];
+  }
+  
+  // Cập nhật processMarketMakers để sử dụng staggered expiry
+  private processMarketMakers(
+    marketData: SimulatedMarketData, 
+    dynamicVolatility: number, 
+    marketMakers: MarketMakerBot[]
+  ) {
+    const now = Date.now();
+    const symbol = marketData.symbol;
+    
+    // Filter logic ít aggressive hơn
+    marketData.bidDepth = marketData.bidDepth.filter(level => 
+      level.type !== "marketMaker" || 
+      (level.expiry && (level.expiry - now) > 5000) // Chỉ xóa nếu còn dưới 5 giây
+    );
+    
+    marketData.askDepth = marketData.askDepth.filter(level => 
+      level.type !== "marketMaker" || 
+      (level.expiry && (level.expiry - now) > 5000)
+    );
+    
+    const symbolTrends = this.activeTrends.filter(t => 
+      t.symbol === marketData.symbol && t.endTime > now
+    );
+    const hasStrongTrend = symbolTrends.length > 0;
+    
+    let volatilityMultiplier = 1 + (dynamicVolatility / PARAMS.BASE_PRICE_VOLATILITY);
+    let baseSpread = Math.max(PARAMS.MINIMUM_SPREAD, PARAMS.MARKET_MAKER_BASE_SPREAD * volatilityMultiplier);
+    
+    if (hasStrongTrend) {
+      const trend = symbolTrends[0];
+      baseSpread *= (1 - trend.strength * PARAMS.TREND_SPREAD_COMPRESSION);
+      volatilityMultiplier *= (1 + trend.strength * 0.5);
+    }
+    
+    marketMakers.forEach((bot, index) => {
+      const position = this.botPositions.get(bot.id);
+      if (!position) return;
+      
+      const marketMakerBot = this.bots.find(b => b.id === bot.id && b.type === 'marketMaker') as MarketMakerBot;
+      if (marketMakerBot) {
+        marketMakerBot.inventory = position.quantity;
+      }
+      
+      const inventorySkew = (position.quantity - bot.targetInventory) / bot.maxPositionSize;
+      
+      // Chỉ tạo order nếu không có đủ orders hiện tại
+      const existingBidOrders = marketData.bidDepth.filter(l => l.botId === bot.id).length;
+      const existingAskOrders = marketData.askDepth.filter(l => l.botId === bot.id).length;
+      
+      if (existingBidOrders < 2 && Math.random() < 0.6) {
+        const inventoryAdjustment = inventorySkew * (50 + index * 25);
+        const levelSpread = baseSpread * (1 + index * 0.3);
+        
+        const buyPrice = Math.round(
+          Math.max(1000, marketData.price - levelSpread / 2 - inventoryAdjustment) / 100
+        ) * 100;
+        
+        const baseQuantity = Math.floor(Math.random() * 
+          (PARAMS.MARKET_MAKER_QUANTITY_RANGE[1] - PARAMS.MARKET_MAKER_QUANTITY_RANGE[0])) + 
+          PARAMS.MARKET_MAKER_QUANTITY_RANGE[0];
+        
+        let quantityMultiplier = 1 - (index * 0.3);
+        if (hasStrongTrend) {
+          quantityMultiplier *= symbolTrends[0].volumeMultiplier;
+        }
+        
+        const quantity = Math.max(10, Math.floor(baseQuantity * quantityMultiplier));
+        const bidExpiry = now + this.getStaggeredExpiryTime();
+        
+        marketData.bidDepth.push({ 
+          price: buyPrice, 
+          quantity, 
+          type: "marketMaker",
+          botId: bot.id,
+          expiry: bidExpiry,
+          createdTime: now
+        });
+        
+        this.createBotOrder(
+          bot.id,
+          marketData.symbol,
+          'buy',
+          'Limit',
+          quantity,
+          buyPrice,
+          0.8,
+          bidExpiry
+        );
+      }
+      
+      if (existingAskOrders < 2 && Math.random() < 0.6) {
+        const inventoryAdjustment = inventorySkew * (50 + index * 25);
+        const levelSpread = baseSpread * (1 + index * 0.3);
+        
+        const sellPrice = Math.round(
+          (marketData.price + levelSpread / 2 - inventoryAdjustment) / 100
+        ) * 100;
+        
+        const baseQuantity = Math.floor(Math.random() * 
+          (PARAMS.MARKET_MAKER_QUANTITY_RANGE[1] - PARAMS.MARKET_MAKER_QUANTITY_RANGE[0])) + 
+          PARAMS.MARKET_MAKER_QUANTITY_RANGE[0];
+        
+        let quantityMultiplier = 1 - (index * 0.3);
+        if (hasStrongTrend) {
+          quantityMultiplier *= symbolTrends[0].volumeMultiplier;
+        }
+        
+        const quantity = Math.max(10, Math.floor(baseQuantity * quantityMultiplier));
+        const askExpiry = now + this.getStaggeredExpiryTime();
+        
+        marketData.askDepth.push({ 
+          price: sellPrice, 
+          quantity, 
+          type: "marketMaker",
+          botId: bot.id,
+          expiry: askExpiry,
+          createdTime: now
+        });
+        
+        this.createBotOrder(
+          bot.id,
+          marketData.symbol,
+          'sell',
+          'Limit',
+          quantity,
+          sellPrice,
+          0.8,
+          askExpiry
+        );
+      }
+    });
+  }
+  
+  // Cập nhật updateMarketDepth để đảm bảo stability
+  private updateMarketDepthWithStability(marketData: SimulatedMarketData, dynamicVolatility: number) {
+    const now = Date.now();
+    
+    // Sắp xếp
+    marketData.bidDepth.sort((a, b) => b.price - a.price);
+    marketData.askDepth.sort((a, b) => a.price - b.price);
+    
+    // Filter ít aggressive hơn
+    marketData.bidDepth = marketData.bidDepth.filter(level => 
+      !level.expiry || (level.expiry - now) > 2000 // Chỉ xóa nếu còn dưới 2 giây
+    );
+    
+    marketData.askDepth = marketData.askDepth.filter(level => 
+      !level.expiry || (level.expiry - now) > 2000
+    );
+    
+    // Đảm bảo minimum levels
+    this.ensureMinimumLevels(marketData);
+    
+    // Giới hạn số lượng levels
+    if (marketData.bidDepth.length > 25) marketData.bidDepth.length = 25;
+    if (marketData.askDepth.length > 25) marketData.askDepth.length = 25;
+    
+    this.updateVolumeProfile(marketData);
+  }
+  
+  // ... (các method khác giữ nguyên từ original code) ...
+  
+  private generateStrongTrendsAndPatterns() {
+    const symbols = Object.keys(SYMBOLS);
+    const now = Date.now();
+    
+    this.activeTrends = this.activeTrends.filter(t => t.endTime > now);
+    this.momentumWaves = this.momentumWaves.filter(w => w.endTime > now);
+    this.liquidityClusters = this.liquidityClusters.filter(c => c.expiry > now);
+    this.breakoutLevels = this.breakoutLevels.filter(b => now - b.timestamp < 60000);
+    
+    symbols.forEach(symbol => {
+      const hasActiveTrend = this.activeTrends.some(t => t.symbol === symbol && t.endTime > now);
+      
+      if (!hasActiveTrend && Math.random() < PARAMS.TREND_GENERATION_PROBABILITY) {
+        this.createStrongTrend(symbol);
+      }
+    });
+    
+    if (Math.random() < PARAMS.MOMENTUM_WAVE_PROBABILITY) {
+      this.createMomentumWave();
+    }
+    
+    if (Math.random() < PARAMS.LIQUIDITY_CLUSTER_PROBABILITY) {
+      this.createLiquidityClusters();
+    }
+    
+    if (Math.random() < PARAMS.BREAKOUT_PROBABILITY) {
+      this.createBreakoutPattern();
+    }
+  }
+  
+  private createStrongTrend(symbol: string) {
+    const direction: 'up' | 'down' = Math.random() > 0.5 ? 'up' : 'down';
+    const strength = PARAMS.MIN_TREND_STRENGTH + 
+      Math.random() * (PARAMS.MAX_TREND_STRENGTH - PARAMS.MIN_TREND_STRENGTH);
+    
+    const duration = PARAMS.TREND_DURATION_MIN + Math.random() * (PARAMS.TREND_DURATION_MAX - PARAMS.TREND_DURATION_MIN);
+    const endTime = Date.now() + duration * 1000;
+    
+    const marketData = this.marketData.get(symbol);
+    if (!marketData) return;
+    
+    const priceTarget = direction === 'up' 
+      ? marketData.price * (1 + strength * 0.05)
+      : marketData.price * (1 - strength * 0.05);
+    
+    const participatingBots = this.bots
+      .filter(bot => bot.symbol === symbol && bot.isActive && bot.type === 'trendFollower')
+      .slice(0, Math.floor(Math.random() * 4) + 2)
+      .map(bot => bot.id);
+    
+    const trend: ActiveTrend = {
+      id: `trend-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      symbol,
+      direction,
+      strength,
+      startTime: Date.now(),
+      endTime,
+      volumeMultiplier: PARAMS.TREND_VOLUME_MULTIPLIER,
+      participatingBots,
+      priceTarget,
+      currentProgress: 0,
+      priceStart: marketData.price
+    };
+    
+    this.activeTrends.push(trend);
+    
+    participatingBots.forEach(botId => {
+      const bot = this.bots.find(b => b.id === botId && b.type === 'trendFollower') as TrendFollowerBot;
+      if (bot) {
+        bot.trendDirection = direction;
+        bot.trendStrength = strength;
+        bot.trendEndTime = endTime;
+        
+        const positionSize = Math.floor(PARAMS.MAX_POSITION_SIZE * 0.2 * strength);
+        const orderType = direction === 'up' ? 'buy' : 'sell';
+        const orderPrice = direction === 'up' 
+          ? marketData.price * 0.998
+          : marketData.price * 1.002;
+        
+        this.createBotOrder(
+          botId,
+          symbol,
+          orderType,
+          'Limit',
+          positionSize,
+          orderPrice,
+          0.9,
+          endTime
+        );
+        
+        bot.positionSize = positionSize;
+        bot.entryPrice = orderPrice;
+        bot.stopLoss = direction === 'up' 
+          ? orderPrice * (1 - PARAMS.TREND_FOLLOWER_STOP_LOSS)
+          : orderPrice * (1 + PARAMS.TREND_FOLLOWER_STOP_LOSS);
+        bot.takeProfit = direction === 'up'
+          ? orderPrice * (1 + PARAMS.TREND_FOLLOWER_TAKE_PROFIT)
+          : orderPrice * (1 - PARAMS.TREND_FOLLOWER_TAKE_PROFIT);
+        
+        console.log(`[STRONG_TREND] Created ${direction} trend for ${symbol}, strength: ${strength.toFixed(2)}, target: ${priceTarget.toFixed(0)}`);
+      }
+    });
+  }
+  
+  private createMomentumWave() {
+    const symbols = Object.keys(SYMBOLS);
+    const symbol = symbols[Math.floor(Math.random() * symbols.length)];
+    const direction: 'up' | 'down' = Math.random() > 0.5 ? 'up' : 'down';
+    const strength = 0.3 + Math.random() * 0.5;
+    
+    const duration = PARAMS.MOMENTUM_WAVE_DURATION[0] + 
+      Math.random() * (PARAMS.MOMENTUM_WAVE_DURATION[1] - PARAMS.MOMENTUM_WAVE_DURATION[0]);
+    
+    const wave: MomentumWave = {
+      symbol,
+      direction,
+      strength,
+      startTime: Date.now(),
+      endTime: Date.now() + duration * 1000,
+      volumeImpact: 2 + Math.random() * 3
+    };
+    
+    this.momentumWaves.push(wave);
+    
+    const marketData = this.marketData.get(symbol);
+    if (marketData) {
+      const orderType = direction === 'up' ? 'buy' : 'sell';
+      const price = direction === 'up' 
+        ? marketData.price * (1 - 0.001)
+        : marketData.price * (1 + 0.001);
+      
+      for (let i = 0; i < 3 + Math.floor(Math.random() * 3); i++) {
+        const quantity = Math.floor(500 + Math.random() * 1500);
+        
+        this.createBotOrder(
+          `momentum-${i}`,
+          symbol,
+          orderType,
+          'Market',
+          quantity,
+          price,
+          0.8,
+          wave.endTime
+        );
+      }
+    }
+  }
+  
+  private createLiquidityClusters() {
+    const symbols = Object.keys(SYMBOLS);
+    const symbol = symbols[Math.floor(Math.random() * symbols.length)];
+    
+    const marketData = this.marketData.get(symbol);
+    if (!marketData) return;
+    
+    const bidCluster: LiquidityCluster = {
+      symbol,
+      price: marketData.price * (1 - 0.005),
+      quantity: Math.floor(
+        (PARAMS.MARKET_MAKER_QUANTITY_RANGE[1] * 
+        PARAMS.LIQUIDITY_CLUSTER_SIZE_MULTIPLIER[0]) + 
+        Math.random() * (PARAMS.LIQUIDITY_CLUSTER_SIZE_MULTIPLIER[1] - PARAMS.LIQUIDITY_CLUSTER_SIZE_MULTIPLIER[0])
+      ),
+      type: 'bid',
+      expiry: Date.now() + PARAMS.LIQUIDITY_CLUSTER_DURATION * 1000
+    };
+    
+    const askCluster: LiquidityCluster = {
+      symbol,
+      price: marketData.price * (1 + 0.005),
+      quantity: Math.floor(
+        (PARAMS.MARKET_MAKER_QUANTITY_RANGE[1] * 
+        PARAMS.LIQUIDITY_CLUSTER_SIZE_MULTIPLIER[0]) + 
+        Math.random() * (PARAMS.LIQUIDITY_CLUSTER_SIZE_MULTIPLIER[1] - PARAMS.LIQUIDITY_CLUSTER_SIZE_MULTIPLIER[0])
+      ),
+      type: 'ask',
+      expiry: Date.now() + PARAMS.LIQUIDITY_CLUSTER_DURATION * 1000
+    };
+    
+    this.liquidityClusters.push(bidCluster, askCluster);
+  }
+  
+  private createBreakoutPattern() {
+    const symbols = Object.keys(SYMBOLS);
+    const symbol = symbols[Math.floor(Math.random() * symbols.length)];
+    
+    const marketData = this.marketData.get(symbol);
+    if (!marketData) return;
+    
+    const direction: 'breakout' | 'breakdown' = Math.random() > 0.5 ? 'breakout' : 'breakdown';
+    const price = direction === 'breakout' 
+      ? marketData.price * (1 + PARAMS.BREAKOUT_THRESHOLD)
+      : marketData.price * (1 - PARAMS.BREAKOUT_THRESHOLD);
+    
+    const breakout: BreakoutLevel = {
+      symbol,
+      price,
+      direction,
+      timestamp: Date.now(),
+      strength: 0.4 + Math.random() * 0.4
+    };
+    
+    this.breakoutLevels.push(breakout);
+  }
+  
+  private updateActiveTrends() {
+    const now = Date.now();
+    
+    this.activeTrends.forEach(trend => {
+      if (now > trend.endTime) return;
+      
+      const marketData = this.marketData.get(trend.symbol);
+      if (!marketData) return;
+      
+      const elapsed = now - trend.startTime;
+      const total = trend.endTime - trend.startTime;
+      trend.currentProgress = Math.min(1, elapsed / total);
+      
+      const priceMovement = (trend.priceTarget - trend.priceStart) * trend.currentProgress;
+      marketData.price = trend.priceStart + priceMovement;
+      
+      marketData.volume *= trend.volumeMultiplier;
+      
+      marketData.trend = trend.direction;
+    });
+  }
+  
+  private applyTrendEffects(marketData: SimulatedMarketData) {
+    const symbol = marketData.symbol;
+    const now = Date.now();
+    
+    const symbolTrends = this.activeTrends.filter(t => t.symbol === symbol && t.endTime > now);
+    if (symbolTrends.length > 0) {
+      const mainTrend = symbolTrends[0];
+      marketData.trend = mainTrend.direction;
+    }
+    
+    const symbolWaves = this.momentumWaves.filter(w => w.symbol === symbol && w.endTime > now);
+    symbolWaves.forEach(wave => {
+      const progress = (now - wave.startTime) / (wave.endTime - wave.startTime);
+      const impact = wave.strength * (1 - progress) * PARAMS.MOMENTUM_WAVE_IMPACT;
+      
+      if (wave.direction === 'up') {
+        marketData.price *= (1 + impact);
+      } else {
+        marketData.price *= (1 - impact);
+      }
+      
+      marketData.volume *= wave.volumeImpact;
+    });
+    
+    const symbolClusters = this.liquidityClusters.filter(c => c.symbol === symbol && c.expiry > now);
+    symbolClusters.forEach(cluster => {
+      if (cluster.type === 'bid') {
+        marketData.bidDepth.push({
+          price: cluster.price,
+          quantity: cluster.quantity,
+          type: 'marketMaker',
+          expiry: cluster.expiry
+        });
+      } else {
+        marketData.askDepth.push({
+          price: cluster.price,
+          quantity: cluster.quantity,
+          type: 'marketMaker',
+          expiry: cluster.expiry
+        });
+      }
+    });
+  }
+  
+  private updatePriceWithTrends(marketData: SimulatedMarketData, symbol: string) {
+    const symbolBreakouts = this.breakoutLevels.filter(b => 
+      b.symbol === symbol && Date.now() - b.timestamp < 30000
+    );
+    
+    symbolBreakouts.forEach(breakout => {
+      if (breakout.direction === 'breakout' && marketData.price >= breakout.price) {
+        marketData.price *= (1 + breakout.strength * 0.01);
+        marketData.volume *= 2;
+      } else if (breakout.direction === 'breakdown' && marketData.price <= breakout.price) {
+        marketData.price *= (1 - breakout.strength * 0.01);
+        marketData.volume *= 2;
+      }
+    });
+    
+    const priceHistory = this.priceHistory.get(symbol) || [];
+    priceHistory.push(marketData.price);
+    if (priceHistory.length > PARAMS.VOLATILITY_WINDOW * 10) {
+      priceHistory.splice(0, priceHistory.length - PARAMS.VOLATILITY_WINDOW * 10);
+    }
+    this.priceHistory.set(symbol, priceHistory);
+    
+    const volumeHistory = this.volumeHistory.get(symbol) || [];
+    volumeHistory.push(marketData.volume);
+    if (volumeHistory.length > 100) {
+      volumeHistory.splice(0, volumeHistory.length - 100);
+    }
+    this.volumeHistory.set(symbol, volumeHistory);
+  }
+  
+  private processTrendFollowers(
+    marketData: SimulatedMarketData, 
+    trendFollowers: TrendFollowerBot[]
+  ) {
+    const now = Date.now();
+    const symbol = marketData.symbol;
+    
+    const symbolTrends = this.activeTrends.filter(t => t.symbol === symbol && t.endTime > now);
+    const hasActiveTrend = symbolTrends.length > 0;
+    
+    trendFollowers.forEach(bot => {
+      const position = this.botPositions.get(bot.id);
+      if (!position) return;
+      
+      if (bot.positionSize > 0) {
+        const currentPnL = (marketData.price - bot.entryPrice) * bot.positionSize;
+        position.unrealizedPnL = currentPnL;
+        
+        const drawdown = Math.min(0, currentPnL / (bot.entryPrice * bot.positionSize));
+        position.maxDrawdown = Math.min(position.maxDrawdown, drawdown);
+        
+        if (marketData.price <= bot.stopLoss) {
+          this.closeTrendPosition(bot, marketData, "stop_loss");
+          return;
+        }
+        
+        if (marketData.price >= bot.takeProfit) {
+          this.closeTrendPosition(bot, marketData, "take_profit");
+          return;
+        }
+      }
+      
+      if (hasActiveTrend && bot.positionSize === 0) {
+        const trend = symbolTrends[0];
+        if (bot.trendDirection === 'neutral' || bot.trendDirection !== trend.direction) {
+          this.joinActiveTrend(bot, marketData, trend);
+        }
+      } 
+      else if (bot.positionSize === 0 && Math.random() > 0.9) {
+        const trendDetected = this.detectTrend(marketData.symbol);
+        
+        if (trendDetected.direction !== 'neutral' && trendDetected.strength > 0.3) {
+          this.createTrendPosition(bot, marketData, trendDetected);
+        }
+      }
+      
+      if (bot.positionSize > 0 && now >= bot.trendEndTime) {
+        this.closeTrendPosition(bot, marketData, "trend_expired");
+      }
+    });
+  }
+  
+  private joinActiveTrend(bot: TrendFollowerBot, marketData: SimulatedMarketData, trend: ActiveTrend) {
+    bot.trendDirection = trend.direction;
+    bot.trendStrength = trend.strength;
+    bot.trendEndTime = trend.endTime;
+    
+    const positionSize = Math.floor(
+      (PARAMS.MAX_POSITION_SIZE * 0.15) * trend.strength
+    );
+    
+    if (positionSize > 0) {
+      bot.positionSize = positionSize;
+      bot.entryPrice = marketData.price;
+      bot.stopLoss = trend.direction === 'up' 
+        ? marketData.price * (1 - PARAMS.TREND_FOLLOWER_STOP_LOSS)
+        : marketData.price * (1 + PARAMS.TREND_FOLLOWER_STOP_LOSS);
+      bot.takeProfit = trend.direction === 'up'
+        ? marketData.price * (1 + PARAMS.TREND_FOLLOWER_TAKE_PROFIT)
+        : marketData.price * (1 - PARAMS.TREND_FOLLOWER_TAKE_PROFIT);
+      
+      const orderType = trend.direction === 'up' ? 'buy' : 'sell';
+      const orderPrice = trend.direction === 'up' 
+        ? marketData.price * 0.999
+        : marketData.price * 1.001;
+      
+      if (orderType === 'buy') {
+        marketData.bidDepth.push({
+          price: orderPrice,
+          quantity: positionSize,
+          type: 'trend',
+          botId: bot.id,
+          expiry: trend.endTime
+        });
+      } else {
+        marketData.askDepth.push({
+          price: orderPrice,
+          quantity: positionSize,
+          type: 'trend',
+          botId: bot.id,
+          expiry: trend.endTime
+        });
+      }
+      
+      this.createBotOrder(
+        bot.id,
+        marketData.symbol,
+        orderType,
+        'Limit',
+        positionSize,
+        orderPrice,
+        0.85,
+        trend.endTime
+      );
+      
+      console.log(`[TREND_JOIN] Bot ${bot.id} joined ${trend.direction} trend with ${positionSize} shares`);
+    }
+  }
+  
+  private createTrendPosition(bot: TrendFollowerBot, marketData: SimulatedMarketData, trend: { direction: 'up' | 'down' | 'neutral', strength: number }) {
+    bot.trendDirection = trend.direction;
+    bot.trendStrength = trend.strength;
+    bot.trendEndTime = Date.now() + this.getRandomTrendDuration();
+    
+    const positionSize = Math.floor(
+      (PARAMS.MAX_POSITION_SIZE * 0.1) * trend.strength
+    );
+    
+    if (positionSize > 0) {
+      bot.positionSize = positionSize;
+      bot.entryPrice = marketData.price;
+      bot.stopLoss = trend.direction === 'up' 
+        ? marketData.price * (1 - PARAMS.TREND_FOLLOWER_STOP_LOSS)
+        : marketData.price * (1 + PARAMS.TREND_FOLLOWER_STOP_LOSS);
+      bot.takeProfit = trend.direction === 'up'
+        ? marketData.price * (1 + PARAMS.TREND_FOLLOWER_TAKE_PROFIT)
+        : marketData.price * (1 - PARAMS.TREND_FOLLOWER_TAKE_PROFIT);
+      
+      const orderType = trend.direction === 'up' ? 'buy' : 'sell';
+      
+      if (orderType === 'buy') {
+        marketData.bidDepth.push({
+          price: marketData.price * 0.995,
+          quantity: positionSize,
+          type: 'trend',
+          botId: bot.id,
+          expiry: bot.trendEndTime
+        });
+      } else {
+        marketData.askDepth.push({
+          price: marketData.price * 1.005,
+          quantity: positionSize,
+          type: 'trend',
+          botId: bot.id,
+          expiry: bot.trendEndTime
+        });
+      }
+      
+      this.createBotOrder(
+        bot.id,
+        marketData.symbol,
+        orderType,
+        'Limit',
+        positionSize,
+        marketData.price,
+        0.7,
+        bot.trendEndTime
+      );
+      
+      console.log(`[TREND] Bot ${bot.id} opened ${orderType} position: ${positionSize} @ ${marketData.price}`);
+    }
+  }
+  
+  private closeTrendPosition(bot: TrendFollowerBot, marketData: SimulatedMarketData, reason: string) {
+    if (bot.positionSize > 0) {
+      const orderType: 'buy' | 'sell' = bot.trendDirection === 'up' ? 'sell' : 'buy';
+      const orderPrice = marketData.price;
+      
+      if (orderType === 'sell') {
+        marketData.askDepth.push({
+          price: orderPrice,
+          quantity: bot.positionSize,
+          type: 'trend',
+          botId: bot.id,
+          expiry: Date.now() + 60000
+        });
+      } else {
+        marketData.bidDepth.push({
+          price: orderPrice,
+          quantity: bot.positionSize,
+          type: 'trend',
+          botId: bot.id,
+          expiry: Date.now() + 60000
+        });
+      }
+      
+      this.createBotOrder(
+        bot.id,
+        marketData.symbol,
+        orderType,
+        'Limit',
+        bot.positionSize,
+        orderPrice,
+        0.8,
+        Date.now() + 60000
+      );
+      
+      console.log(`[TREND_CLOSE] Bot ${bot.id} closed position: ${reason}, ${bot.positionSize} shares`);
+      
+      bot.positionSize = 0;
+      bot.trendDirection = 'neutral';
+      bot.trendStrength = 0;
+      bot.entryPrice = 0;
+      bot.stopLoss = 0;
+      bot.takeProfit = 0;
+    }
+  }
+  
+  private processNoiseTraders(
+    marketData: SimulatedMarketData, 
+    dynamicVolatility: number, 
+    noiseTraders: NoiseTraderBot[]
+  ) {
+    const now = Date.now();
+    
+    const symbolTrends = this.activeTrends.filter(t => 
+      t.symbol === marketData.symbol && t.endTime > now
+    );
+    const hasActiveTrend = symbolTrends.length > 0;
+    
+    noiseTraders.forEach(bot => {
+      if (now >= bot.nextActionTime) {
+        this.updateNoiseTraderSentiment(bot, marketData);
+        
+        if (hasActiveTrend) {
+          const trend = symbolTrends[0];
+          if (Math.random() < trend.strength * 0.7) {
+            bot.sentiment = trend.direction === 'up' ? 'bullish' : 'bearish';
           }
         }
         
-        // Set next action time
+        const actionProbability = 0.6 + (dynamicVolatility / PARAMS.BASE_PRICE_VOLATILITY) * 0.3;
+        
+        if (Math.random() < actionProbability) {
+          const position = this.botPositions.get(bot.id);
+          if (!position) return;
+          
+          let orderType: 'buy' | 'sell';
+          let orderPrice: number;
+          
+          if (bot.sentiment === 'bullish') {
+            orderType = 'buy';
+            orderPrice = marketData.price * (1 - 0.001 * bot.volatilityMultiplier);
+          } else if (bot.sentiment === 'bearish') {
+            orderType = 'sell';
+            orderPrice = marketData.price * (1 + 0.001 * bot.volatilityMultiplier);
+          } else {
+            orderType = Math.random() > 0.5 ? 'buy' : 'sell';
+            orderPrice = marketData.price * (1 + (Math.random() - 0.5) * 0.003);
+          }
+          
+          const maxQuantity = PARAMS.MAX_POSITION_SIZE * 0.05;
+          const quantity = Math.floor(Math.random() * maxQuantity) + 10;
+          
+          const isLargeOrder = hasActiveTrend ? Math.random() > 0.85 : Math.random() > 0.92;
+          const finalQuantity = isLargeOrder ? quantity * 15 : quantity;
+          
+          if (orderType === 'buy') {
+            marketData.bidDepth.push({
+              price: orderPrice,
+              quantity: finalQuantity,
+              type: 'noise',
+              botId: bot.id,
+              expiry: now + this.getStaggeredExpiryTime(),
+              createdTime: now
+            });
+          } else {
+            marketData.askDepth.push({
+              price: orderPrice,
+              quantity: finalQuantity,
+              type: 'noise',
+              botId: bot.id,
+              expiry: now + this.getStaggeredExpiryTime(),
+              createdTime: now
+            });
+          }
+          
+          this.createBotOrder(
+            bot.id,
+            marketData.symbol,
+            orderType,
+            'Limit',
+            finalQuantity,
+            orderPrice,
+            0.7,
+            now + this.getStaggeredExpiryTime()
+          );
+          
+          if (isLargeOrder) {
+            console.log(`[NOISE] Bot ${bot.id} placed large ${orderType} order: ${finalQuantity} @ ${orderPrice}`);
+          }
+        }
+        
         bot.nextActionTime = now + this.getRandomInterval();
       }
     });
   }
-
-  /**
-   * Generate bell curve distributed quantity
-   * @param maxQuantity Maximum quantity
-   * @param distance Distance from center (0 = center)
-   * @param spread Spread parameter
-   * @returns Quantity following bell curve distribution
-   */
-  private generateBellCurveQuantity(maxQuantity: number, distance: number, spread: number): number {
-    // Normal distribution formula
-    const exponent = -0.5 * Math.pow(distance / spread, 2);
-    const normalDistribution = Math.exp(exponent);
-    return Math.max(1, Math.floor(maxQuantity * normalDistribution));
+  
+  private updateNoiseTraderSentiment(bot: NoiseTraderBot, marketData: SimulatedMarketData) {
+    const priceHistory = this.priceHistory.get(marketData.symbol) || [];
+    if (priceHistory.length < 5) return;
+    
+    const recentPrices = priceHistory.slice(-5);
+    const priceChange = (recentPrices[recentPrices.length-1] - recentPrices[0]) / recentPrices[0];
+    
+    if (priceChange > 0.02) {
+      bot.sentiment = 'bullish';
+    } else if (priceChange < -0.02) {
+      bot.sentiment = 'bearish';
+    } else if (Math.random() > 0.7) {
+      const sentiments: Array<"bullish" | "bearish" | "neutral"> = ["bullish", "bearish", "neutral"];
+      bot.sentiment = sentiments[Math.floor(Math.random() * sentiments.length)];
+    }
   }
-
-  /**
-   * Update market depth (DOM) based on bot orders
-   */
-  private updateMarketDepth(marketData: SimulatedMarketData, dynamicVolatility: number) {
-    // Preserve existing market maker orders
-    const marketMakerBids = marketData.bidDepth.filter(level => level.type === "marketMaker");
-    const marketMakerAsks = marketData.askDepth.filter(level => level.type === "marketMaker");
-    
-    // Clear non-market maker depth
-    marketData.bidDepth = marketMakerBids;
-    marketData.askDepth = marketMakerAsks;
-    
-    // Calculate dynamic spread based on volatility
-    const volatilityMultiplier = 1 + (dynamicVolatility / SIMULATION_PARAMS.BASE_PRICE_VOLATILITY);
-    const dynamicSpread = SIMULATION_PARAMS.MARKET_MAKER_BASE_SPREAD * volatilityMultiplier;
-    
-    // Generate additional bids (below current price) following bell curve distribution
-    const bidLevels = 10;
-    for (let i = 1; i <= bidLevels; i++) {
-      const price = marketData.price - (i * dynamicSpread * 0.5);
-      const distance = i; // Distance from center
-      const maxQuantity = 100;
-      const quantity = this.generateBellCurveQuantity(maxQuantity, distance, 3); // Spread parameter = 3
+  
+  private processStatisticalArb(
+    marketData: SimulatedMarketData, 
+    statArbs: StatisticalArbBot[]
+  ) {
+    statArbs.forEach(bot => {
+      if (!bot.pairSymbol) return;
       
-      marketData.bidDepth.push({
-        price: Math.max(1000, price), // Ensure positive price
+      const pairData = this.marketData.get(bot.pairSymbol);
+      if (!pairData) return;
+      
+      const spread = marketData.price - pairData.price;
+      const zScore = (spread - bot.meanPrice) / bot.stdDev;
+      
+      if (Math.abs(zScore) > bot.zScoreThreshold * 0.7) {
+        if (zScore > bot.zScoreThreshold * 0.7 && bot.position <= 0) {
+          this.createPairsTrade(bot, marketData, pairData, 'sell', 'buy');
+        } else if (zScore < -bot.zScoreThreshold * 0.7 && bot.position >= 0) {
+          this.createPairsTrade(bot, marketData, pairData, 'buy', 'sell');
+        }
+      }
+      
+      const newMean = bot.meanPrice * 0.99 + spread * 0.01;
+      const newStdDev = Math.sqrt(
+        0.99 * bot.stdDev * bot.stdDev + 
+        0.01 * (spread - newMean) * (spread - newMean)
+      );
+      
+      bot.meanPrice = newMean;
+      bot.stdDev = newStdDev;
+    });
+  }
+  
+  private createPairsTrade(
+    bot: StatisticalArbBot,
+    mainMarket: SimulatedMarketData,
+    pairMarket: SimulatedMarketData,
+    mainAction: 'buy' | 'sell',
+    pairAction: 'buy' | 'sell'
+  ) {
+    const quantity = Math.floor(PARAMS.MAX_POSITION_SIZE * 0.05);
+    
+    if (mainAction === 'buy') {
+      mainMarket.bidDepth.push({
+        price: mainMarket.price * 0.995,
         quantity,
-        type: "bid"
+        type: 'marketMaker',
+        botId: bot.id,
+        expiry: Date.now() + this.getStaggeredExpiryTime(),
+        createdTime: Date.now()
+      });
+    } else {
+      mainMarket.askDepth.push({
+        price: mainMarket.price * 1.005,
+        quantity,
+        type: 'marketMaker',
+        botId: bot.id,
+        expiry: Date.now() + this.getStaggeredExpiryTime(),
+        createdTime: Date.now()
       });
     }
     
-    // Generate additional asks (above current price) following bell curve distribution
-    const askLevels = 10;
-    for (let i = 1; i <= askLevels; i++) {
-      const price = marketData.price + (i * dynamicSpread * 0.5);
-      const distance = i; // Distance from center
-      const maxQuantity = 100;
-      const quantity = this.generateBellCurveQuantity(maxQuantity, distance, 3); // Spread parameter = 3
+    this.createBotOrder(
+      bot.id,
+      mainMarket.symbol,
+      mainAction,
+      'Limit',
+      quantity,
+      mainMarket.price,
+      0.6,
+      Date.now() + this.getStaggeredExpiryTime()
+    );
+    
+    console.log(`[STAT_ARB] Bot ${bot.id}: ${mainAction} ${mainMarket.symbol}, ${pairAction} ${pairMarket.symbol}`);
+    
+    bot.position = mainAction === 'buy' ? quantity : -quantity;
+  }
+  
+  private processBotToBotTrading(marketData: SimulatedMarketData) {
+    const symbol = marketData.symbol;
+    const now = Date.now();
+    
+    const botOrdersForSymbol = Array.from(this.botOrders.values())
+      .filter(order => 
+        order.symbol === symbol && 
+        order.status === 'pending' &&
+        (!order.expiryTime || order.expiryTime > now)
+      );
+    
+    if (botOrdersForSymbol.length === 0) return;
+    
+    const buyOrders = botOrdersForSymbol
+      .filter(order => order.type === 'buy')
+      .sort((a, b) => b.price - a.price);
+    
+    const sellOrders = botOrdersForSymbol
+      .filter(order => order.type === 'sell')
+      .sort((a, b) => a.price - b.price);
+    
+    for (const buyOrder of buyOrders) {
+      if (buyOrder.status !== 'pending') continue;
       
-      marketData.askDepth.push({
-        price,
-        quantity,
-        type: "ask"
-      });
+      for (const sellOrder of sellOrders) {
+        if (sellOrder.status !== 'pending') continue;
+        
+        if (buyOrder.price >= sellOrder.price) {
+          const matchQuantity = Math.min(buyOrder.quantity, sellOrder.quantity);
+          const matchPrice = (buyOrder.price + sellOrder.price) / 2;
+          
+          if (matchQuantity > 0) {
+            this.executeBotToBotTrade(
+              buyOrder,
+              sellOrder,
+              matchPrice,
+              matchQuantity,
+              marketData
+            );
+            
+            break;
+          }
+        }
+      }
+    }
+  }
+  
+  private executeBotToBotTrade(
+    buyOrder: BotOrder,
+    sellOrder: BotOrder,
+    price: number,
+    quantity: number,
+    marketData: SimulatedMarketData
+  ) {
+    buyOrder.quantity -= quantity;
+    sellOrder.quantity -= quantity;
+    
+    if (buyOrder.quantity <= 0) {
+      buyOrder.status = 'filled';
+      this.botOrders.delete(buyOrder.id);
+    } else {
+      this.botOrders.set(buyOrder.id, buyOrder);
     }
     
-    // Sort depth levels
-    marketData.bidDepth.sort((a, b) => b.price - a.price); // Highest bid first
-    marketData.askDepth.sort((a, b) => a.price - b.price); // Lowest ask first
+    if (sellOrder.quantity <= 0) {
+      sellOrder.status = 'filled';
+      this.botOrders.delete(sellOrder.id);
+    } else {
+      this.botOrders.set(sellOrder.id, sellOrder);
+    }
+    
+    this.updateBotPositionFromTrade(buyOrder.botId, 'buy', price, quantity, marketData.symbol);
+    this.updateBotPositionFromTrade(sellOrder.botId, 'sell', price, quantity, marketData.symbol);
+    
+    this.tradeHistory.push({
+      timestamp: Date.now(),
+      price,
+      quantity,
+      buyerBotId: buyOrder.botId,
+      sellerBotId: sellOrder.botId,
+      symbol: marketData.symbol
+    });
+    
+    marketData.price = price;
+    marketData.volume += quantity;
+    marketData.timestamp = Date.now();
+    
+    const priceHistory = this.priceHistory.get(marketData.symbol) || [];
+    priceHistory.push(price);
+    if (priceHistory.length > PARAMS.VOLATILITY_WINDOW * 10) {
+      priceHistory.splice(0, priceHistory.length - PARAMS.VOLATILITY_WINDOW * 10);
+    }
+    this.priceHistory.set(marketData.symbol, priceHistory);
+    
+    const volumeHistory = this.volumeHistory.get(marketData.symbol) || [];
+    volumeHistory.push(quantity);
+    if (volumeHistory.length > 100) {
+      volumeHistory.splice(0, volumeHistory.length - 100);
+    }
+    this.volumeHistory.set(marketData.symbol, volumeHistory);
+    
+    console.log(`[BOT_TRADE] ${quantity} shares traded at ${price} between ${buyOrder.botId} and ${sellOrder.botId}`);
+  }
+  
+  public processUserOrder(order: Order): { success: boolean; filledPrice?: number; filledQuantity?: number } {
+    const delay = Math.floor(Math.random() * 6000) + 2000; 
+    console.log(`[USER_ORDER] Order ${order.id} received. Delay: ${delay}ms`);
+    
+    this.pendingUserOrders.set(order.id, {
+      order: order,
+      decisionTime: Date.now() + delay
+    });
+
+    return { success: false };
   }
 
-  /**
-   * Get random interval for noise trader actions
-   */
-  private getRandomInterval(): number {
-    const min = SIMULATION_PARAMS.NOISE_ACTION_INTERVAL_MIN;
-    const max = SIMULATION_PARAMS.NOISE_ACTION_INTERVAL_MAX;
-    return (Math.random() * (max - min) + min) * 1000; // Convert to milliseconds
+  private processPendingUserOrders(marketData: SimulatedMarketData): void {
+    const currentTime = Date.now();
+
+    this.pendingUserOrders.forEach((pendingItem, orderId) => {
+      if (currentTime >= pendingItem.decisionTime) {
+        const { order } = pendingItem;
+        const currentData = this.marketData.get(order.symbol);
+
+        if (!currentData) {
+            this.pendingUserOrders.delete(orderId);
+            return;
+        }
+
+        const botDecision = this.evaluateUserOrder(order, currentData);
+        
+        if (botDecision.accepted) {
+            const execution = this.executeUserOrderWithBots(order, currentData);
+            
+            if (execution.filled) {
+                console.log(`[USER_FILL] Order ${orderId} filled: ${execution.quantity} @ ${execution.price}`);
+                
+                this.sendOrderUpdate({
+                    orderId: order.id,
+                    status: execution.quantity < order.quantity ? "PARTIALLY_FILLED" : "FILLED",
+                    filledPrice: execution.price,
+                    filledQuantity: execution.quantity,
+                    timestamp: Date.now()
+                });
+                
+                if (execution.quantity < order.quantity) {
+                  const remainingOrder = { ...order };
+                  remainingOrder.quantity -= execution.quantity;
+                  this.pendingUserOrders.set(orderId, {
+                    order: remainingOrder,
+                    decisionTime: currentTime + 2000
+                  });
+                  return;
+                }
+            } else {
+                this.sendOrderUpdate({
+                    orderId: order.id,
+                    status: "REJECTED",
+                    timestamp: Date.now()
+                });
+            }
+        } else {
+            console.log(`[USER_REJECT] Order ${orderId} rejected: ${botDecision.reason}`);
+            this.sendOrderUpdate({
+                orderId: order.id,
+                status: "REJECTED",
+                timestamp: Date.now()
+            });
+        }
+
+        this.pendingUserOrders.delete(orderId);
+      }
+    });
   }
 
-  /**
-   * Get random trend duration
-   */
-  private getRandomTrendDuration(): number {
-    const min = SIMULATION_PARAMS.TREND_DURATION_MIN;
-    const max = SIMULATION_PARAMS.TREND_DURATION_MAX;
-    return Math.random() * (max - min) + min;
+  private evaluateUserOrder(order: Order, marketData: SimulatedMarketData): { accepted: boolean; reason: string } {
+    const isBuy = order.type === "buy";
+    const currentPrice = marketData.price;
+    const orderPrice = order.price || currentPrice;
+    
+    const bestBid = marketData.bidDepth.length > 0 ? 
+      Math.max(...marketData.bidDepth.map(l => l.price)) : currentPrice;
+    const bestAsk = marketData.askDepth.length > 0 ? 
+      Math.min(...marketData.askDepth.map(l => l.price)) : currentPrice;
+    const spread = bestAsk - bestBid;
+    
+    let acceptanceProbability = 0.7;
+    
+    if (order.orderType === "Market") {
+      acceptanceProbability = 0.9;
+    } else if (order.orderType === "Limit") {
+      if (isBuy) {
+        const priceAdvantage = (orderPrice - bestAsk) / bestAsk;
+        acceptanceProbability = 0.6 + Math.min(0.3, priceAdvantage * 10);
+      } else {
+        const priceAdvantage = (bestBid - orderPrice) / bestBid;
+        acceptanceProbability = 0.6 + Math.min(0.3, priceAdvantage * 10);
+      }
+    }
+    
+    const spreadFactor = Math.max(0.5, 1 - (spread / (currentPrice * 0.01)));
+    acceptanceProbability *= spreadFactor;
+    
+    const sizeFactor = Math.max(0.3, 1 - (order.quantity / 10000));
+    acceptanceProbability *= sizeFactor;
+    
+    const accepted = Math.random() < acceptanceProbability;
+    
+    return {
+      accepted,
+      reason: accepted ? 
+        `Bot willing to trade (${Math.round(acceptanceProbability * 100)}%)` :
+        `Bot not interested (${Math.round(acceptanceProbability * 100)}%)`
+    };
   }
 
-  /**
-   * Get current market data
-   */
-  public getMarketData(symbol: string): SimulatedMarketData | undefined {
-    return this.marketData.get(symbol);
+  private executeUserOrderWithBots(order: Order, marketData: SimulatedMarketData): { 
+    filled: boolean; 
+    price: number; 
+    quantity: number;
+  } {
+    const isBuy = order.type === "buy";
+    
+    const suitableBots = this.bots.filter(bot => 
+      bot.symbol === order.symbol && 
+      bot.isActive &&
+      this.canBotTradeWithUser(bot, order, marketData)
+    );
+    
+    if (suitableBots.length === 0) {
+      return { filled: false, price: 0, quantity: 0 };
+    }
+    
+    const selectedBot = suitableBots[Math.floor(Math.random() * suitableBots.length)];
+    const botPosition = this.botPositions.get(selectedBot.id);
+    
+    if (!botPosition) {
+      return { filled: false, price: 0, quantity: 0 };
+    }
+    
+    const maxQuantity = isBuy ? 
+      Math.min(botPosition.quantity, order.quantity) :
+      Math.min(PARAMS.MAX_POSITION_SIZE - botPosition.quantity, order.quantity);
+    
+    if (maxQuantity <= 0) {
+      return { filled: false, price: 0, quantity: 0 };
+    }
+    
+    const price = this.calculateTradePrice(order, marketData, selectedBot);
+    const tradeQuantity = Math.min(maxQuantity, order.quantity);
+    
+    if (isBuy) {
+      this.updateBotPositionFromTrade(selectedBot.id, 'sell', price, tradeQuantity, order.symbol);
+    } else {
+      this.updateBotPositionFromTrade(selectedBot.id, 'buy', price, tradeQuantity, order.symbol);
+    }
+    
+    this.tradeHistory.push({
+      timestamp: Date.now(),
+      price,
+      quantity: tradeQuantity,
+      buyerBotId: isBuy ? undefined : selectedBot.id,
+      sellerBotId: isBuy ? selectedBot.id : undefined,
+      userId: order.id,
+      symbol: order.symbol
+    });
+    
+    marketData.price = price;
+    marketData.volume += tradeQuantity;
+    
+    return {
+      filled: true,
+      price,
+      quantity: tradeQuantity
+    };
   }
 
-  /**
-   * Update bot positions based on filled orders
-   * @param botId Bot identifier
-   * @param order Filled order details
-   */
-  private updateBotPosition(botId: string, order: BotOrder): void {
+  private canBotTradeWithUser(bot: Bot, order: Order, marketData: SimulatedMarketData): boolean {
+    const position = this.botPositions.get(bot.id);
+    if (!position) return false;
+    
+    const isBuy = order.type === 'buy';
+    
+    if (bot.type === 'marketMaker') {
+      return true;
+    } else if (bot.type === 'trendFollower') {
+      const trendBot = bot as TrendFollowerBot;
+      if (isBuy && trendBot.trendDirection === 'up') {
+        return true;
+      } else if (!isBuy && trendBot.trendDirection === 'down') {
+        return true;
+      }
+    } else if (bot.type === 'noiseTrader') {
+      const noiseBot = bot as NoiseTraderBot;
+      if (isBuy && noiseBot.sentiment === 'bearish') {
+        return true;
+      } else if (!isBuy && noiseBot.sentiment === 'bullish') {
+        return true;
+      }
+    }
+    
+    return false;
+  }
+
+  private calculateTradePrice(order: Order, marketData: SimulatedMarketData, bot: Bot): number {
+    const isBuy = order.type === 'buy';
+    const currentPrice = marketData.price;
+    const orderPrice = order.price || currentPrice;
+    
+    if (order.orderType === 'Market') {
+      return isBuy ? 
+        marketData.askDepth.length > 0 ? Math.min(...marketData.askDepth.map(l => l.price)) : currentPrice :
+        marketData.bidDepth.length > 0 ? Math.max(...marketData.bidDepth.map(l => l.price)) : currentPrice;
+    } else {
+      let price = orderPrice;
+      
+      if (bot.type === 'marketMaker') {
+        const marketMakerBot = bot as MarketMakerBot;
+        const inventorySkew = (marketMakerBot.inventory - marketMakerBot.targetInventory) / marketMakerBot.maxPositionSize;
+        const spreadAdjustment = PARAMS.MARKET_MAKER_BASE_SPREAD * (1 + Math.abs(inventorySkew));
+        
+        if (isBuy) {
+          price = orderPrice + spreadAdjustment * 0.5;
+        } else {
+          price = orderPrice - spreadAdjustment * 0.5;
+        }
+      }
+      
+      return Math.max(1000, Math.min(price, currentPrice * 2));
+    }
+  }
+  
+  private createBotOrder(
+    botId: string, 
+    symbol: string, 
+    type: 'buy' | 'sell', 
+    orderType: 'Market' | 'Limit',
+    quantity: number,
+    price: number,
+    probability?: number,
+    expiryTime?: number
+  ): string {
+    const orderId = `bot-order-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    
+    const order: BotOrder = {
+      id: orderId,
+      botId,
+      symbol,
+      type,
+      orderType,
+      quantity,
+      price,
+      timestamp: Date.now(),
+      status: 'pending',
+      expiryTime: expiryTime || Date.now() + this.getStaggeredExpiryTime(),
+      probability
+    };
+    
+    this.botOrders.set(orderId, order);
+    return orderId;
+  }
+  
+  private updateBotPositionFromTrade(
+    botId: string, 
+    type: 'buy' | 'sell', 
+    price: number, 
+    quantity: number,
+    symbol: string
+  ) {
     const position = this.botPositions.get(botId);
     if (!position) return;
-
-    if (order.type === 'buy') {
-      // Update average price for new purchases
-      const newQuantity = position.quantity + order.quantity;
-      const newAvgPrice = (position.quantity * position.avgPrice + order.quantity * order.price) / newQuantity;
+    
+    if (type === 'buy') {
+      const newQuantity = position.quantity + quantity;
+      const newAvgPrice = position.quantity > 0 ? 
+        (position.quantity * position.avgPrice + quantity * price) / newQuantity :
+        price;
       
       position.quantity = newQuantity;
       position.avgPrice = newAvgPrice;
     } else {
-      // Calculate realized PnL for sells
-      const sellQuantity = Math.min(order.quantity, position.quantity);
-      const realizedPnL = sellQuantity * (order.price - position.avgPrice);
-      
+      const realizedPnL = (price - position.avgPrice) * quantity;
       position.realizedPnL += realizedPnL;
-      position.quantity = Math.max(0, position.quantity - order.quantity);
+      position.quantity = Math.max(0, position.quantity - quantity);
       
-      // Reset average price if all shares sold
-      if (position.quantity === 0) {
-        position.avgPrice = 0;
-      }
+      position.totalTrades++;
+      if (realizedPnL > 0) position.profitableTrades++;
+      position.winRate = position.totalTrades > 0 ? 
+        position.profitableTrades / position.totalTrades : 0;
+    }
+    
+    const bot = this.bots.find(b => b.id === botId);
+    if (bot && bot.type === 'marketMaker') {
+      (bot as MarketMakerBot).inventory = position.quantity;
     }
     
     this.botPositions.set(botId, position);
   }
-
-  /**
-   * Bot decision making based on user orders
-   * @param userOrder User's order
-   * @param marketData Current market data
-   */
-  private processBotResponseToUserOrder(userOrder: Order, marketData: SimulatedMarketData): void {
-    const bots = this.bots.filter(bot => bot.isActive);
+  
+  private detectTrend(symbol: string): { direction: 'up' | 'down' | 'neutral'; strength: number } {
+    const prices = this.priceHistory.get(symbol) || [];
+    if (prices.length < 10) return { direction: 'neutral', strength: 0 };
     
-    // Use market price if order price is not defined
-    const orderPrice = userOrder.price || marketData.price;
+    const recent = prices.slice(-10);
+    const startPrice = recent[0];
+    const endPrice = recent[recent.length - 1];
+    const change = (endPrice - startPrice) / startPrice;
     
-    bots.forEach(bot => {
-      // Only market makers and trend followers respond to user orders
-      if (bot.type === "marketMaker" || bot.type === "trendFollower") {
-        // Calculate potential profit/loss for this bot
-        let potentialPnL = 0;
-        const botPosition = this.botPositions.get(bot.id);
-        
-        if (botPosition) {
-          if (userOrder.type === 'buy') {
-            // User buying - bots might sell if they have inventory
-            if (botPosition.quantity > 0) {
-              potentialPnL = userOrder.quantity * (orderPrice - botPosition.avgPrice);
-            }
-          } else {
-            // User selling - bots might buy
-            potentialPnL = userOrder.quantity * (botPosition.avgPrice - orderPrice);
-          }
-        }
-        
-        // Bots will act if there's potential profit or to provide liquidity
-        const shouldAct = potentialPnL > 0 || bot.type === "marketMaker";
-        
-        if (shouldAct) {
-          // Create bot order
-          const botOrder: BotOrder = {
-            id: `BOT-${bot.id}-${Date.now()}`,
-            botId: bot.id,
-            symbol: userOrder.symbol,
-            type: userOrder.type === 'buy' ? 'sell' : 'buy', // Opposite to user order
-            orderType: "Market",
-            quantity: Math.min(userOrder.quantity, Math.floor(Math.random() * 100) + 10), // Partial fill
-            price: orderPrice,
-            timestamp: Date.now(),
-            status: "pending"
-          };
-          
-          // Add to pending orders
-          this.botOrders.set(botOrder.id, botOrder);
-        }
-      }
-    });
-  }
-
-  /**
-   * Process pending bot orders
-   * @param marketData Current market data
-   */
-  private processPendingBotOrders(marketData: SimulatedMarketData): void {
-    this.botOrders.forEach((order, orderId) => {
-      if (order.status === "pending") {
-        // Simple matching logic - bots fill orders immediately
-        order.status = "filled";
-        this.botOrders.set(orderId, order);
-        
-        // Update bot position
-        this.updateBotPosition(order.botId, order);
-      }
-    });
-  }
-
-  /**
-   * Process a user order against the simulated market
-   */
-  public processUserOrder(order: Order): { success: boolean; filledPrice?: number; filledQuantity?: number } {
-    const marketData = this.marketData.get(order.symbol);
-    if (!marketData) {
-      return { success: false };
-    }
-
-    // For market orders, match against existing depth
-    let filledPrice: number | undefined;
-    let filledQuantity: number | undefined;
-
-    if (order.orderType === "Market") {
-      if (order.type === "buy") {
-        // Match against best ask (lowest ask price)
-        const bestAsk = marketData.askDepth
-          .filter(ask => ask.type === "ask" || ask.type === "marketMaker")
-          .sort((a, b) => a.price - b.price)[0];
-        
-        if (bestAsk) {
-          filledPrice = bestAsk.price;
-          filledQuantity = order.quantity;
-        }
-      } else {
-        // Match against best bid (highest bid price)
-        const bestBid = marketData.bidDepth
-          .filter(bid => bid.type === "bid" || bid.type === "marketMaker")
-          .sort((a, b) => b.price - a.price)[0];
-        
-        if (bestBid) {
-          filledPrice = bestBid.price;
-          filledQuantity = order.quantity;
-        }
-      }
-    } else if (order.orderType === "Limit") {
-      // For limit orders, check if price crosses market
-      if (order.type === "buy" && order.price && order.price >= marketData.price) {
-        filledPrice = order.price;
-        filledQuantity = order.quantity;
-      } else if (order.type === "sell" && order.price && order.price <= marketData.price) {
-        filledPrice = order.price;
-        filledQuantity = order.quantity;
-      }
-    }
-
-    // If order can be filled
-    if (filledPrice !== undefined && filledQuantity !== undefined) {
-      // Bots respond to user orders
-      this.processBotResponseToUserOrder(order, marketData);
-      
-      // Process pending bot orders
-      this.processPendingBotOrders(marketData);
-      
-      return { success: true, filledPrice, filledQuantity };
-    }
-
-    // Order didn't immediately fill - set to pending
-    return { success: false };
-  }
-
-  /**
-   * Generate price movement using Geometric Brownian Motion
-   * @param currentPrice Current price
-   * @param drift Drift term (expected return)
-   * @param volatility Volatility parameter
-   * @param timeStep Time step
-   * @returns New price
-   */
-  private generateGBMPrice(currentPrice: number, drift: number, volatility: number, timeStep: number = 1): number {
-    // Generate standard normal random variable using Box-Muller transform
-    const u1 = Math.random();
-    const u2 = Math.random();
-    const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+    if (Math.abs(change) < 0.005) return { direction: 'neutral', strength: 0 };
     
-    // GBM formula: S(t+dt) = S(t) * exp((drift - 0.5 * volatility^2) * dt + volatility * sqrt(dt) * Z)
-    const dt = timeStep / (252 * 24 * 60 * 60); // Convert to years (assuming 252 trading days)
-    const exponent = (drift - 0.5 * volatility * volatility) * dt + volatility * Math.sqrt(dt) * z;
-    return currentPrice * Math.exp(exponent);
+    const direction = change > 0 ? 'up' : 'down';
+    const strength = Math.min(1, Math.abs(change) * 20);
+    
+    return { direction, strength };
   }
-
-  /**
-   * Calculate dynamic volatility based on recent price history
-   * @param symbol Trading symbol
-   * @returns Dynamic volatility value
-   */
+  
   private calculateDynamicVolatility(symbol: string): number {
-    const history = this.priceHistory.get(symbol);
-    if (!history || history.length < 2) {
-      return SIMULATION_PARAMS.BASE_PRICE_VOLATILITY;
-    }
-
-    // Calculate returns
-    const returns: number[] = [];
-    for (let i = 1; i < history.length; i++) {
-      returns.push(Math.log(history[i] / history[i - 1]));
-    }
-
-    // Calculate standard deviation of returns (volatility)
-    if (returns.length < 2) {
-      return SIMULATION_PARAMS.BASE_PRICE_VOLATILITY;
-    }
-
-    const mean = returns.reduce((sum, r) => sum + r, 0) / returns.length;
-    const variance = returns.reduce((sum, r) => sum + Math.pow(r - mean, 2), 0) / (returns.length - 1);
-    const stdDev = Math.sqrt(variance);
-
-    // Annualize volatility (assuming 252 trading days)
-    const annualizedVolatility = stdDev * Math.sqrt(252);
+    const prices = this.priceHistory.get(symbol) || [];
+    if (prices.length < 2) return PARAMS.BASE_PRICE_VOLATILITY;
     
-    // Ensure volatility is within reasonable bounds
-    return Math.max(0.001, Math.min(0.1, annualizedVolatility));
+    const returns = [];
+    for (let i = 1; i < prices.length; i++) {
+      returns.push(Math.log(prices[i] / prices[i-1]));
+    }
+    
+    if (returns.length < 2) return PARAMS.BASE_PRICE_VOLATILITY;
+    
+    const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
+    const variance = returns.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / returns.length;
+    const volatility = Math.sqrt(variance * 252);
+    
+    return Math.max(PARAMS.BASE_PRICE_VOLATILITY * 0.5, 
+                   Math.min(PARAMS.BASE_PRICE_VOLATILITY * 2, volatility));
+  }
+  
+  private updateTechnicalIndicators(marketData: SimulatedMarketData, symbol: string) {
+    const prices = this.priceHistory.get(symbol) || [];
+    const volumes = this.volumeHistory.get(symbol) || [];
+    
+    if (prices.length < 14) return;
+    
+    const recentPrices = prices.slice(-14);
+    let gains = 0;
+    let losses = 0;
+    
+    for (let i = 1; i < recentPrices.length; i++) {
+      const change = recentPrices[i] - recentPrices[i-1];
+      if (change > 0) gains += change;
+      else losses -= change;
+    }
+    
+    const avgGain = gains / 14;
+    const avgLoss = losses / 14;
+    const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
+    marketData.rsi = 100 - (100 / (1 + rs));
+    
+    if (volumes.length >= 10) {
+      const recentVolumes = volumes.slice(-10);
+      const recentPricesForVWAP = prices.slice(-10);
+      
+      let totalValue = 0;
+      let totalVolume = 0;
+      
+      for (let i = 0; i < recentPricesForVWAP.length; i++) {
+        totalValue += recentPricesForVWAP[i] * recentVolumes[i];
+        totalVolume += recentVolumes[i];
+      }
+      
+      marketData.vwap = totalValue / totalVolume;
+    }
+  }
+  
+  private updateMarketMetrics(marketData: SimulatedMarketData) {
+    const spread = this.calculateBidAskSpread(marketData);
+    const orderImbalance = this.calculateOrderImbalance(marketData);
+    const marketDepth = this.calculateMarketDepth(marketData);
+    const priceMomentum = this.calculatePriceMomentum(marketData.symbol);
+    
+    this.marketMetrics.set(marketData.symbol, {
+      bidAskSpread: spread,
+      orderImbalance,
+      marketDepth,
+      priceMomentum
+    });
+  }
+  
+  private calculateBidAskSpread(marketData: SimulatedMarketData): number {
+    if (marketData.bidDepth.length === 0 || marketData.askDepth.length === 0) {
+      return PARAMS.MARKET_MAKER_BASE_SPREAD;
+    }
+    
+    const bestBid = Math.max(...marketData.bidDepth.map(l => l.price));
+    const bestAsk = Math.min(...marketData.askDepth.map(l => l.price));
+    
+    return bestAsk - bestBid;
+  }
+  
+  private calculateOrderImbalance(marketData: SimulatedMarketData): number {
+    const totalBidVolume = marketData.bidDepth.reduce((sum, level) => sum + level.quantity, 0);
+    const totalAskVolume = marketData.askDepth.reduce((sum, level) => sum + level.quantity, 0);
+    
+    if (totalBidVolume + totalAskVolume === 0) return 0;
+    
+    return (totalBidVolume - totalAskVolume) / (totalBidVolume + totalAskVolume);
+  }
+  
+  private calculateMarketDepth(marketData: SimulatedMarketData): number {
+    const bidDepth = marketData.bidDepth.slice(0, 5).reduce((sum, level) => sum + level.quantity, 0);
+    const askDepth = marketData.askDepth.slice(0, 5).reduce((sum, level) => sum + level.quantity, 0);
+    
+    return (bidDepth + askDepth) / 2;
+  }
+  
+  private calculatePriceMomentum(symbol: string): number {
+    const prices = this.priceHistory.get(symbol) || [];
+    if (prices.length < 5) return 0;
+    
+    const recent = prices.slice(-5);
+    const momentum = (recent[recent.length-1] - recent[0]) / recent[0];
+    
+    return momentum;
+  }
+  
+  private updateMarketDepth(marketData: SimulatedMarketData, dynamicVolatility: number) {
+    // Đã được thay thế bởi updateMarketDepthWithStability
+    this.updateMarketDepthWithStability(marketData, dynamicVolatility);
+  }
+  
+  private updateVolumeProfile(marketData: SimulatedMarketData) {
+    const currentPrice = marketData.price;
+    const roundedPrice = Math.round(currentPrice / 100) * 100;
+    
+    const currentVolume = marketData.volumeProfile.get(roundedPrice) || 0;
+    marketData.volumeProfile.set(roundedPrice, currentVolume + marketData.volume);
+    
+    if (marketData.volumeProfile.size > PARAMS.VOLUME_PROFILE_SIZE) {
+      const entries = Array.from(marketData.volumeProfile.entries());
+      entries.sort((a, b) => b[1] - a[1]);
+      entries.length = PARAMS.VOLUME_PROFILE_SIZE;
+      marketData.volumeProfile = new Map(entries);
+    }
+  }
+  
+  private getRandomTrendDuration(): number {
+    return Math.floor(
+      Math.random() * (PARAMS.TREND_DURATION_MAX_BOT - PARAMS.TREND_DURATION_MIN_BOT)
+    ) + PARAMS.TREND_DURATION_MIN_BOT;
+  }
+  
+  private getRandomInterval(): number {
+    return (Math.random() * (PARAMS.NOISE_ACTION_INTERVAL_MAX - PARAMS.NOISE_ACTION_INTERVAL_MIN) + 
+            PARAMS.NOISE_ACTION_INTERVAL_MIN) * 1000;
+  }
+  
+  private sendOrderUpdate(update: {orderId: string; status: OrderStatus; filledPrice?: number; filledQuantity?: number; timestamp: number}) {
+    this.webSocketService.sendOrderUpdate(update);
+  }
+  
+  public getMarketData(symbol: string): SimulatedMarketData | undefined {
+    return this.marketData.get(symbol);
+  }
+  
+  public getBotPositions(): BotPosition[] {
+    return Array.from(this.botPositions.values());
+  }
+  
+  public getActiveBots(): Bot[] {
+    return this.bots.filter(bot => bot.isActive);
+  }
+  
+  public getTradeHistory(symbol?: string): TradeRecord[] {
+    if (symbol) {
+      return this.tradeHistory.filter(trade => trade.symbol === symbol);
+    }
+    return this.tradeHistory;
+  }
+  
+  public getActiveTrends(): ActiveTrend[] {
+    return this.activeTrends.filter(t => t.endTime > Date.now());
+  }
+  
+  public getMarketDepth(symbol: string) {
+    const marketData = this.marketData.get(symbol);
+    if (!marketData) return { bids: [], asks: [] };
+    
+    const aggregateDepth = (depth: MarketDepthLevel[]) => {
+      const priceMap = new Map<number, { quantity: number, orderCount: number }>();
+      
+      depth.forEach(level => {
+        const existing = priceMap.get(level.price);
+        if (existing) {
+          existing.quantity += level.quantity;
+          existing.orderCount += 1;
+        } else {
+          priceMap.set(level.price, { 
+            quantity: level.quantity, 
+            orderCount: 1 
+          });
+        }
+      });
+      
+      return Array.from(priceMap.entries())
+        .map(([price, data]) => ({
+          price,
+          totalQuantity: data.quantity,
+          orderCount: data.orderCount
+        }))
+        .sort((a, b) => b.price - a.price);
+    };
+    
+    return {
+      bids: aggregateDepth(marketData.bidDepth),
+      asks: aggregateDepth(marketData.askDepth).sort((a, b) => a.price - b.price)
+    };
+  }
+  
+  public getMarketStatistics(): MarketStats {
+    const stats: MarketStats = {
+      totalBots: this.bots.length,
+      activeBots: this.bots.filter(b => b.isActive).length,
+      totalTrades: this.tradeHistory.length,
+      recentTrades: this.tradeHistory.filter(t => Date.now() - t.timestamp < 60000).length,
+      activeTrends: this.activeTrends.filter(t => t.endTime > Date.now()).length,
+      marketData: {}
+    };
+    
+    this.marketData.forEach((data, symbol) => {
+      const activeTrendsForSymbol = this.activeTrends.filter(t => 
+        t.symbol === symbol && t.endTime > Date.now()
+      );
+      
+      stats.marketData[symbol] = {
+        price: data.price,
+        volume: data.volume,
+        trend: data.trend,
+        rsi: data.rsi,
+        vwap: data.vwap,
+        activeTrends: activeTrendsForSymbol.length,
+        bidCount: data.bidDepth.length,
+        askCount: data.askDepth.length,
+        totalBidVolume: data.bidDepth.reduce((sum, level) => sum + level.quantity, 0),
+        totalAskVolume: data.askDepth.reduce((sum, level) => sum + level.quantity, 0)
+      };
+    });
+    
+    return stats;
+  }
+  
+  public getOrderBookStabilityMetrics(symbol: string) {
+    const marketData = this.marketData.get(symbol);
+    if (!marketData) return null;
+    
+    const spread = this.calculateBidAskSpread(marketData);
+    const maxAllowedSpread = PARAMS.MARKET_MAKER_BASE_SPREAD * PARAMS.MAX_SPREAD_MULTIPLIER;
+    const spreadHealth = Math.max(0, Math.min(100, (1 - (spread / maxAllowedSpread)) * 100));
+    
+    const depthHealth = Math.min(100, 
+      (Math.min(marketData.bidDepth.length, marketData.askDepth.length) / PARAMS.MIN_BID_ASK_LEVELS) * 100
+    );
+    
+    const now = Date.now();
+    const orderAgeHealth = marketData.bidDepth.concat(marketData.askDepth)
+      .reduce((sum, level) => {
+        if (level.createdTime) {
+          const age = now - level.createdTime;
+          const maxAge = PARAMS.STAGGERED_EXPIRY_RANGE[1];
+          return sum + Math.max(0, Math.min(100, (1 - (age / maxAge)) * 100));
+        }
+        return sum + 100;
+      }, 0) / (marketData.bidDepth.length + marketData.askDepth.length || 1);
+    
+    const overallHealth = (spreadHealth * 0.4 + depthHealth * 0.3 + orderAgeHealth * 0.3);
+    
+    return {
+      symbol,
+      spread,
+      maxAllowedSpread,
+      spreadHealth: Math.round(spreadHealth),
+      bidLevels: marketData.bidDepth.length,
+      askLevels: marketData.askDepth.length,
+      depthHealth: Math.round(depthHealth),
+      orderAgeHealth: Math.round(orderAgeHealth),
+      overallHealth: Math.round(overallHealth),
+      status: overallHealth > 80 ? "Healthy" : overallHealth > 60 ? "Stable" : overallHealth > 40 ? "Warning" : "Critical"
+    };
   }
 }

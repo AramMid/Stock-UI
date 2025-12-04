@@ -1,6 +1,7 @@
 "use client";
 import { useState } from "react";
 import { TradingPosition } from "@/lib/types";
+import { formatVND } from "@/lib/order-management";
 
 interface Position {
   symbol: string;
@@ -83,10 +84,7 @@ export default function BottomPanel({
   const equity = balance + positions.reduce((total, pos) => total + pos.pnl, 0);
   const totalPnL = positions.reduce((total, pos) => total + pos.pnl, 0);
 
-  // Format VND currency
-  const formatVND = (value: number) => {
-    return new Intl.NumberFormat('vi-VN').format(value);
-  };
+
 
   return (
     <div

@@ -1,4 +1,17 @@
 "use client";
+import { formatVND } from "@/lib/order-management";
+
+interface StockData {
+  name: string;
+  exchange: string;
+  price: number;
+  change: number;
+  changePercent: number;
+  dayLow: number;
+  dayHigh: number;
+  marketStatus: string;
+  isVN: boolean;
+}
 
 interface StockInfoSectionProps {
   selectedSymbol: string;
@@ -24,8 +37,8 @@ export default function StockInfoSection({
   };
 
   // Mock data based on selected symbol
-  const getStockData = (symbol: string) => {
-    const stockData: Record<string, any> = {
+  const getStockData = (symbol: string): StockData => {
+    const stockData: Record<string, StockData> = {
       "VIC.VN": {
         name: "Vingroup JSC",
         exchange: "HOSE",
@@ -197,7 +210,7 @@ export default function StockInfoSection({
             }`}
           >
             {stockData.isVN
-              ? stockData.price.toLocaleString("vi-VN")
+              ? formatVND(stockData.price)
               : stockData.price.toFixed(2)}
           </div>
           <div
@@ -208,7 +221,7 @@ export default function StockInfoSection({
             <span className="font-medium">
               {isPositive ? "+" : ""}
               {stockData.isVN
-                ? stockData.change.toLocaleString("vi-VN")
+                ? formatVND(stockData.change)
                 : stockData.change.toFixed(2)}
             </span>
             <span className="font-medium">
@@ -233,7 +246,7 @@ export default function StockInfoSection({
                 isDarkMode ? "text-gray-400" : "text-gray-600"
               }`}
             >
-              DAY'S RANGE
+              DAY&apos;S RANGE
             </span>
             <span
               className={`text-xs transition-colors duration-200 ${
@@ -241,7 +254,7 @@ export default function StockInfoSection({
               }`}
             >
               {stockData.isVN
-                ? stockData.dayHigh.toLocaleString("vi-VN")
+                ? formatVND(stockData.dayHigh)
                 : stockData.dayHigh.toFixed(2)}
             </span>
           </div>
@@ -269,12 +282,12 @@ export default function StockInfoSection({
           <div className="flex justify-between">
             <span className="text-gray-400 text-xs">
               {stockData.isVN
-                ? stockData.dayLow.toLocaleString("vi-VN")
+                ? formatVND(stockData.dayLow)
                 : stockData.dayLow.toFixed(2)}
             </span>
             <span className="text-gray-400 text-xs">
               {stockData.isVN
-                ? stockData.dayHigh.toLocaleString("vi-VN")
+                ? formatVND(stockData.dayHigh)
                 : stockData.dayHigh.toFixed(2)}
             </span>
           </div>
@@ -296,7 +309,7 @@ export default function StockInfoSection({
               }`}
             >
               {stockData.isVN
-                ? (stockData.dayLow + 800).toLocaleString("vi-VN")
+                ? formatVND(stockData.dayLow + 800)
                 : (stockData.dayLow + 1.2).toFixed(2)}
             </span>
           </div>

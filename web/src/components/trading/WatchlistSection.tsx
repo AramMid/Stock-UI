@@ -5,12 +5,14 @@ interface WatchlistSectionProps {
   selectedSymbol: string;
   onSymbolSelect: (symbol: string) => void;
   isDarkMode: boolean;
+  positions?: Map<string, number>; // symbol -> quantity mapping
 }
 
 export default function WatchlistSection({
   selectedSymbol,
   onSymbolSelect,
   isDarkMode,
+  positions = new Map(),
 }: WatchlistSectionProps) {
   return (
     <div
@@ -24,6 +26,7 @@ export default function WatchlistSection({
         selectedSymbol={selectedSymbol}
         onSymbolSelect={onSymbolSelect}
         isDarkMode={isDarkMode}
+        positions={positions}
       />
     </div>
   );

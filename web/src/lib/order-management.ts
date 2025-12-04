@@ -10,6 +10,8 @@ export interface Order {
   stopPrice?: number;
   status: OrderStatus;
   timestamp: Date;
+  canceledTime?: Date;
+  updatedTime?: Date;
   takeProfitEnabled?: boolean;
   takeProfitPrice?: number;
   stopLossEnabled?: boolean;
@@ -29,11 +31,12 @@ export interface AccountState {
 /**
  * Execute a buy order
  * @param account Current account state
+ * @param cash Available cash balance
  * @param quantity Number of shares to buy
  * @param price Price per share
  * @returns Updated account state and success status
  */
-export function executeBuyOrder(account: AccountState, quantity: number, price: number): { 
+export function executeBuyOrder(account: AccountState, cash: number, quantity: number, price: number): { 
   updatedAccount: AccountState; 
   success: boolean;
   errorMessage?: string;
@@ -47,7 +50,7 @@ export function executeBuyOrder(account: AccountState, quantity: number, price: 
   }
   
   const cost = quantity * price;
-  if (account.cash < cost) {
+  if (cash < cost) {
     return {
       updatedAccount: account,
       success: false,
@@ -62,7 +65,7 @@ export function executeBuyOrder(account: AccountState, quantity: number, price: 
 
   const updatedAccount: AccountState = {
     ...account,
-    cash: +(account.cash - cost).toFixed(2),
+    // cash field will be updated separately in the trading hook
     position: newQty,
     avgPrice: newAvg
   };
@@ -76,11 +79,12 @@ export function executeBuyOrder(account: AccountState, quantity: number, price: 
 /**
  * Execute a sell order
  * @param account Current account state
+ * @param cash Available cash balance (for consistency with buy order)
  * @param quantity Number of shares to sell
  * @param price Price per share
  * @returns Updated account state and success status
  */
-export function executeSellOrder(account: AccountState, quantity: number, price: number): { 
+export function executeSellOrder(account: AccountState, cash: number, quantity: number, price: number): { 
   updatedAccount: AccountState; 
   success: boolean;
   errorMessage?: string;
@@ -98,7 +102,7 @@ export function executeSellOrder(account: AccountState, quantity: number, price:
   
   const updatedAccount: AccountState = {
     ...account,
-    cash: +(account.cash + proceeds).toFixed(2),
+    // cash field will be updated separately in the trading hook
     position: newPosition,
     avgPrice: newPosition <= 0 ? 0 : account.avgPrice
   };
