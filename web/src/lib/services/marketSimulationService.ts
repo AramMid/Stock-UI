@@ -2,6 +2,15 @@
 
 export type TrendType = "up" | "down" | "neutral";
 
+export interface CandleDTO {
+  timestamp: number; // ms từ backend
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
 export interface MarketDepthLevel {
   price: number;
   quantity: number;
@@ -14,13 +23,20 @@ export interface SimulatedMarketData {
   price: number;
   volume: number;
   timestamp: number;
+
+  // 🔹 DỮ LIỆU NẾN TỪ BACKEND
+  history: CandleDTO[];           // danh sách các nến đã đóng
+  currentCandle?: CandleDTO | null; // nến đang chạy
+
   bidDepth: MarketDepthLevel[];
   askDepth: MarketDepthLevel[];
   trend: TrendType;
   volatility: number;
   vwap?: number | null;
   rsi?: number | null;
-  volumeProfile: Record<number, number>;
+
+  // BE gửi Dict[float, float] -> JSON key sẽ là string
+  volumeProfile: Record<string, number>;
 }
 
 export interface OrderResult {
@@ -57,8 +73,7 @@ export class MarketSimulationService {
     const envBase =
       (typeof import.meta !== "undefined" &&
         (import.meta as any).env?.VITE_MARKET_API_URL) ||
-      (typeof window !== "undefined" &&
-        (window as any).__MARKET_API_URL);
+      (typeof window !== "undefined" && (window as any).__MARKET_API_URL);
 
     this.baseUrl = baseUrl || envBase || "http://localhost:8000";
   }
@@ -71,7 +86,9 @@ export class MarketSimulationService {
 
   /** Gọi 1 tick mới từ backend: GET /market/{symbol}/next */
   async fetchNextTick(symbol: string): Promise<SimulatedMarketData> {
-    const url = `${this.baseUrl}/market/${encodeURIComponent(symbol)}/next`;
+    const url = `${this.baseUrl}/market/${encodeURIComponent(
+      symbol
+    )}/next`;
 
     const res = await fetch(url, {
       method: "GET",
@@ -80,7 +97,9 @@ export class MarketSimulationService {
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       throw new Error(
-        `Failed to fetch next tick (${res.status}): ${text || res.statusText}`
+        `Failed to fetch next tick (${res.status}): ${
+          text || res.statusText
+        }`
       );
     }
 
@@ -96,7 +115,6 @@ export class MarketSimulationService {
   ) {
     // ❗ SSR: trên server không có window, bỏ qua
     if (typeof window === "undefined") {
-      // Chỉ log nhẹ cho dev nếu muốn
       if (process.env.NODE_ENV === "development") {
         console.warn(
           "[MarketSimulationService] startSimulation called on server, skipping..."
@@ -116,15 +134,12 @@ export class MarketSimulationService {
       this.timer = null;
     }
 
-    // Hàm tick đã CATCH error → không để promise reject “lọt” ra ngoài
     const runTick = () => {
       this.fetchNextTick(symbol)
         .then((data) => {
-          // fetchNextTick đã set this.lastData
           onTick(data);
         })
         .catch((err) => {
-          // Không throw nữa, chỉ log cho dev
           if (process.env.NODE_ENV === "development") {
             console.warn("[MarketSimulationService] tick error:", err);
           }
@@ -140,7 +155,6 @@ export class MarketSimulationService {
 
   /** Dừng loop */
   stopSimulation() {
-    // SSR-safe
     if (typeof window === "undefined") {
       this.timer = null;
       return;
@@ -176,7 +190,9 @@ export class MarketSimulationService {
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       throw new Error(
-        `Failed to post order (${res.status}): ${text || res.statusText}`
+        `Failed to post order (${res.status}): ${
+          text || res.statusText
+        }`
       );
     }
 
