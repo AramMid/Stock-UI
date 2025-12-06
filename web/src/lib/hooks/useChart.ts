@@ -110,9 +110,10 @@ export function useChart({
     rsiSeries: null,
     macdLineSeries: null,
   });
-  const dataRef = useRef<{ bars: CandlestickWithVolume[]; closes: number[]; lastBar: CandlestickWithVolume | null; timer: number | null }>({
+  const dataRef = useRef<{ bars: CandlestickWithVolume[]; closes: number[]; volumes: number[]; lastBar: CandlestickWithVolume | null; timer: number | null }>({
     bars: [],
     closes: [],
+    volumes: [],
     lastBar: null,
     timer: null,
   });
@@ -707,144 +708,171 @@ export function useChart({
       });
     };
     // initialize from fetched data
-    const initFromData = (data: CandlestickWithVolume[]) => {
-      const { priceSeries, volumeSeries, smaSeries, emaSeries, bbUpperSeries, bbLowerSeries, bbMiddleSeries, rsiSeries, macdLineSeries } = seriesRef.current;
-      if (!priceSeries || !volumeSeries || !smaSeries || !emaSeries) return;
-      dataRef.current.bars = data.slice();
-      dataRef.current.closes = data.map((b) => b.close);
-      dataRef.current.lastBar = data[data.length - 1] ?? null;
-      const safeMap = (arr: { time: Time; value: number }[]) => arr.filter((p) => !isNaN(p.value));
-      priceSeries.setData(
-        chartType === "candlestick"
-          ? data.map((d) => ({ time: d.time as Time, open: d.open, high: d.high, low: d.low, close: d.close }))
-          : data.map((d) => ({ time: d.time as Time, value: d.close }))
-      );
-      volumeSeries.setData(data.map((b) => ({ time: b.time as Time, value: b.volume, color: b.close >= b.open ? "#26a69a" : "#ef5350" })));
-      if (dataRef.current.lastBar) {
-        onPriceUpdate(dataRef.current.lastBar.close);
-        if (onVolumeUpdate) onVolumeUpdate(dataRef.current.lastBar.volume);
-        if (onOHLCUpdate && data.length > 1) {
-          const currentBar = dataRef.current.lastBar!;
-          const previousBar = data[data.length - 2];
-          const change = currentBar.close - previousBar.close;
-          const changePercent = (change / previousBar.close) * 100;
-          onOHLCUpdate({ open: currentBar.open, high: currentBar.high, low: currentBar.low, close: currentBar.close, change, changePercent });
-        }
-      }
-      const sma = calculateSMA(dataRef.current.closes, 14);
-      const ema = calculateEMA(dataRef.current.closes, 14);
-      const rsi = calculateRSI(dataRef.current.closes, 14);
-      const macdObj = calculateMACD(dataRef.current.closes);
-      const bb = calculateBollingerBands(dataRef.current.closes, 20);
-      bbUpperSeries?.setData(safeMap(data.map((b, i) => ({ time: b.time as Time, value: bb.upper[i] }))));
-      bbLowerSeries?.setData(safeMap(data.map((b, i) => ({ time: b.time as Time, value: bb.lower[i] }))));
-      bbMiddleSeries?.setData(safeMap(data.map((b, i) => ({ time: b.time as Time, value: bb.middle[i] }))));
-      smaSeries.setData(safeMap(data.map((b, i) => ({ time: b.time as Time, value: sma[i] }))));
-      emaSeries.setData(safeMap(data.map((b, i) => ({ time: b.time as Time, value: ema[i] }))));
-      rsiSeries?.setData(safeMap(data.map((b, i) => ({ time: b.time as Time, value: rsi[i] }))));
-      macdLineSeries?.setData(safeMap(data.map((b, i) => ({ time: b.time as Time, value: macdObj.macdLine[i] }))));
-      setupCrosshairHandler();
-    };
+ const initFromData = (data: CandlestickWithVolume[]) => {
+  const { priceSeries, volumeSeries, smaSeries, emaSeries, bbUpperSeries, bbLowerSeries, bbMiddleSeries, rsiSeries, macdLineSeries } = seriesRef.current;
+  if (!priceSeries || !volumeSeries || !smaSeries || !emaSeries) return;
+  
+  dataRef.current.bars = data.slice();
+  dataRef.current.closes = data.map((b) => b.close);
+  dataRef.current.lastBar = data[data.length - 1] ?? null;
+  
+  const safeMap = (arr: { time: Time; value: number }[]) => arr.filter((p) => !isNaN(p.value));
+  
+  priceSeries.setData(
+    chartType === "candlestick"
+      ? data.map((d) => ({ time: d.time as Time, open: d.open, high: d.high, low: d.low, close: d.close }))
+      : data.map((d) => ({ time: d.time as Time, value: d.close }))
+  );
+  
+  volumeSeries.setData(data.map((b) => ({ 
+    time: b.time as Time, 
+    value: b.volume, 
+    color: b.close >= b.open ? "#26a69a" : "#ef5350" 
+  })));
+  
+  if (dataRef.current.lastBar) {
+    onPriceUpdate(dataRef.current.lastBar.close);
+    if (onVolumeUpdate) onVolumeUpdate(dataRef.current.lastBar.volume);
+    if (onOHLCUpdate && data.length > 1) {
+      const currentBar = dataRef.current.lastBar!;
+      const previousBar = data[data.length - 2];
+      const change = currentBar.close - previousBar.close;
+      const changePercent = (change / previousBar.close) * 100;
+      onOHLCUpdate({ 
+        open: currentBar.open, 
+        high: currentBar.high, 
+        low: currentBar.low, 
+        close: currentBar.close, 
+        change, 
+        changePercent 
+      });
+    }
+  }
+  
+  const sma = calculateSMA(dataRef.current.closes, 14);
+  const ema = calculateEMA(dataRef.current.closes, 14);
+  const rsi = calculateRSI(dataRef.current.closes, 14);
+  const macdObj = calculateMACD(dataRef.current.closes);
+  const bb = calculateBollingerBands(dataRef.current.closes, 20);
+  
+  bbUpperSeries?.setData(safeMap(data.map((b, i) => ({ time: b.time as Time, value: bb.upper[i] }))));
+  bbLowerSeries?.setData(safeMap(data.map((b, i) => ({ time: b.time as Time, value: bb.lower[i] }))));
+  bbMiddleSeries?.setData(safeMap(data.map((b, i) => ({ time: b.time as Time, value: bb.middle[i] }))));
+  smaSeries.setData(safeMap(data.map((b, i) => ({ time: b.time as Time, value: sma[i] }))));
+  emaSeries.setData(safeMap(data.map((b, i) => ({ time: b.time as Time, value: ema[i] }))));
+  rsiSeries?.setData(safeMap(data.map((b, i) => ({ time: b.time as Time, value: rsi[i] }))));
+  macdLineSeries?.setData(safeMap(data.map((b, i) => ({ time: b.time as Time, value: macdObj.macdLine[i] }))));
+  
+  setupCrosshairHandler();
+};
     // replay updates every 3 seconds to generate new candles
     // Bots continue to operate at normal speed (every 2 seconds)
     // Chart candles are generated every 3 seconds for more frequent updates
-    const startReplay = () => {
-      if (dataRef.current.timer) return;
-      // Store the current bar to accumulate price movements
-      let currentBar: CandlestickWithVolume | null = dataRef.current.lastBar ? { ...dataRef.current.lastBar } : null;
-      let lastCandleTime = Date.now();
+// Trong hàm startReplay, sửa như sau:
+const startReplay = () => {
+  if (dataRef.current.timer) return;
+  // Store the current bar to accumulate price movements
+  let currentBar: CandlestickWithVolume | null = dataRef.current.lastBar ? { ...dataRef.current.lastBar } : null;
+  let lastCandleTime = Date.now();
+  
+  dataRef.current.timer = window.setInterval(() => {
+    if (isDisposedRef.current) {
+      if (dataRef.current.timer) {
+        window.clearInterval(dataRef.current.timer);
+        dataRef.current.timer = null;
+      }
+      return;
+    }
+    
+    const { lastBar, bars, closes } = dataRef.current;
+    const { priceSeries, volumeSeries, smaSeries, emaSeries, bbUpperSeries, bbLowerSeries, bbMiddleSeries, rsiSeries, macdLineSeries } = seriesRef.current;
+    if (!lastBar || !priceSeries || !volumeSeries || !currentBar) return;
+    
+    // Generate a new candle every 3 seconds
+    const now = Date.now();
+    if (now - lastCandleTime >= 3000) { // 3 seconds
+      // Use the accumulated bar as the new candle
+      const next: CandlestickWithVolume = {
+        time: Math.floor(now / 1000) as Time,
+        open: currentBar.open,
+        high: currentBar.high,
+        low: currentBar.low,
+        close: currentBar.close,
+        volume: currentBar.volume
+      };
       
-      dataRef.current.timer = window.setInterval(() => {
-        if (isDisposedRef.current) {
-          if (dataRef.current.timer) {
-            window.clearInterval(dataRef.current.timer);
-            dataRef.current.timer = null;
-          }
-          return;
-        }
-        
-        const { lastBar, bars, closes } = dataRef.current;
-        const { priceSeries, volumeSeries, smaSeries, emaSeries, bbUpperSeries, bbLowerSeries, bbMiddleSeries, rsiSeries, macdLineSeries } = seriesRef.current;
-        if (!lastBar || !priceSeries || !volumeSeries || !currentBar) return;
-        
-        // Generate a new candle every 3 seconds
-        const now = Date.now();
-        if (now - lastCandleTime >= 3000) { // 3 seconds
-          // Use the accumulated bar as the new candle
-          const next: CandlestickWithVolume = {
-            time: Math.floor(now / 1000) as Time,
-            open: currentBar.open,
-            high: currentBar.high,
-            low: currentBar.low,
-            close: currentBar.close,
-            volume: currentBar.volume
-          };
-          
-          bars.push(next);
-          closes.push(next.close);
-          dataRef.current.lastBar = next;
-          
-          try {
-            if (priceSeries) {
-              if (chartType === "candlestick") {
-                priceSeries.update({ ...next, time: next.time as Time });
-              } else {
-                priceSeries.update({ time: next.time as Time, value: next.close });
-              }
-            }
-            volumeSeries.update({ time: next.time as Time, value: next.volume, color: next.close >= next.open ? "#26a69a" : "#ef5350" });
-            const sma = calculateSMA(closes, 14);
-            const ema = calculateEMA(closes, 14);
-            const rsi = calculateRSI(closes, 14);
-            const macdObj = calculateMACD(closes);
-            const bb = calculateBollingerBands(closes, 20);
-            const i = closes.length - 1;
-            if (!isNaN(bb.upper[i]) && bbUpperSeries) bbUpperSeries.update({ time: next.time as Time, value: bb.upper[i] });
-            if (!isNaN(bb.lower[i]) && bbLowerSeries) bbLowerSeries.update({ time: next.time as Time, value: bb.lower[i] });
-            if (!isNaN(bb.middle[i]) && bbMiddleSeries) bbMiddleSeries.update({ time: next.time as Time, value: bb.middle[i] });
-            if (!isNaN(sma[i]) && smaSeries) smaSeries.update({ time: next.time as Time, value: sma[i] });
-            if (!isNaN(ema[i]) && emaSeries) emaSeries.update({ time: next.time as Time, value: ema[i] });
-            if (!isNaN(rsi[i]) && rsiSeries) rsiSeries.update({ time: next.time as Time, value: rsi[i] });
-            if (!isNaN(macdObj.macdLine[i]) && macdLineSeries)
-              macdLineSeries.update({ time: next.time as Time, value: macdObj.macdLine[i] });
-            onPriceUpdate(next.close);
-            if (onOHLCUpdate && bars.length > 1) {
-              const previousBar = bars[bars.length - 2];
-              const change = next.close - previousBar.close;
-              const changePercent = (change / previousBar.close) * 100;
-              onOHLCUpdate({ open: next.open, high: next.high, low: next.low, close: next.close, change, changePercent });
-            }
-            
-            // Reset current bar for next candle
-            currentBar = { ...next };
-            lastCandleTime = now;
-          } catch (error) {
-            console.warn("Chart update error:", error);
-          }
-        } else {
-          // Update the current bar with ongoing price movements (every 2 seconds)
-          if (currentBar) {
-            const tempBar = generateNextBarRealistic(currentBar, closes);
-            currentBar = { ...tempBar };
-            
-            // Update the live price without creating a new candle
-            onPriceUpdate(tempBar.close);
-            if (onOHLCUpdate) {
-              const change = tempBar.close - lastBar.close;
-              const changePercent = (change / lastBar.close) * 100;
-              onOHLCUpdate({ 
-                open: lastBar.open, 
-                high: Math.max(lastBar.high, tempBar.close), 
-                low: Math.min(lastBar.low, tempBar.close), 
-                close: tempBar.close, 
-                change, 
-                changePercent 
-              });
-            }
+      bars.push(next);
+      closes.push(next.close);
+      dataRef.current.lastBar = next;
+      
+      try {
+        if (priceSeries) {
+          if (chartType === "candlestick") {
+            priceSeries.update({ ...next, time: next.time as Time });
+          } else {
+            priceSeries.update({ time: next.time as Time, value: next.close });
           }
         }
-      }, 2000); // Still update every 2 seconds for smooth price movements
-    };
+        volumeSeries.update({ time: next.time as Time, value: next.volume, color: next.close >= next.open ? "#26a69a" : "#ef5350" });
+        
+        // Tính toán các chỉ số
+        const sma = calculateSMA(closes, 14);
+        const ema = calculateEMA(closes, 14);
+        const rsi = calculateRSI(closes, 14);
+        const macdObj = calculateMACD(closes);
+        const bb = calculateBollingerBands(closes, 20);
+        
+        const i = closes.length - 1;
+        if (!isNaN(bb.upper[i]) && bbUpperSeries) bbUpperSeries.update({ time: next.time as Time, value: bb.upper[i] });
+        if (!isNaN(bb.lower[i]) && bbLowerSeries) bbLowerSeries.update({ time: next.time as Time, value: bb.lower[i] });
+        if (!isNaN(bb.middle[i]) && bbMiddleSeries) bbMiddleSeries.update({ time: next.time as Time, value: bb.middle[i] });
+        if (!isNaN(sma[i]) && smaSeries) smaSeries.update({ time: next.time as Time, value: sma[i] });
+        if (!isNaN(ema[i]) && emaSeries) emaSeries.update({ time: next.time as Time, value: ema[i] });
+        if (!isNaN(rsi[i]) && rsiSeries) rsiSeries.update({ time: next.time as Time, value: rsi[i] });
+        if (!isNaN(macdObj.macdLine[i]) && macdLineSeries)
+          macdLineSeries.update({ time: next.time as Time, value: macdObj.macdLine[i] });
+        
+        onPriceUpdate(next.close);
+        if (onOHLCUpdate && bars.length > 1) {
+          const previousBar = bars[bars.length - 2];
+          const change = next.close - previousBar.close;
+          const changePercent = (change / previousBar.close) * 100;
+          onOHLCUpdate({ open: next.open, high: next.high, low: next.low, close: next.close, change, changePercent });
+        }
+        
+        // Reset current bar for next candle
+        currentBar = { ...next };
+        lastCandleTime = now;
+      } catch (error) {
+        console.warn("Chart update error:", error);
+      }
+    } else {
+      // Update the current bar with ongoing price movements (every 2 seconds)
+      if (currentBar) {
+        // Lấy volumes từ bars hiện tại
+        const volumes = bars.map(b => b.volume);
+        // Tạo bar tạm thời với tham số volumes
+        const tempBar = generateNextBarRealistic(currentBar, closes, volumes);
+        currentBar = { ...tempBar };
+        
+        // Update the live price without creating a new candle
+        onPriceUpdate(tempBar.close);
+        if (onOHLCUpdate) {
+          const change = tempBar.close - lastBar.close;
+          const changePercent = (change / lastBar.close) * 100;
+          onOHLCUpdate({ 
+            open: lastBar.open, 
+            high: Math.max(lastBar.high, tempBar.close), 
+            low: Math.min(lastBar.low, tempBar.close), 
+            close: tempBar.close, 
+            change, 
+            changePercent 
+          });
+        }
+      }
+    }
+  }, 2000); // Still update every 2 seconds for smooth price movements
+};
     const handleChartResize = () => {
       if (resizeTimeoutRef.current) {
         window.clearTimeout(resizeTimeoutRef.current);
