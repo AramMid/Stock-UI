@@ -9,6 +9,7 @@ import {
   MarketDepthLevel,
   SimulatedMarketData,
 } from "@/lib/services/marketSimulationService";
+import StrategyTester from "./StrategyTester";
 
 // Suggestion data type
 interface SuggestionData {
@@ -49,6 +50,7 @@ interface AccountManagerSectionProps {
   onOpenPanel: () => void;
   onMaximizePanel: () => void;
   onRestorePanel: () => void;
+  onFullScreenStrategyTester?: () => void;
   orders: Order[];
   marketSimulation: MarketSimulationService | null;
   onOpenOrderPanel?: (orderType: "buy" | "sell", price?: number) => void;
@@ -66,6 +68,7 @@ export default function AccountManagerSection({
   onOpenPanel,
   onMaximizePanel,
   onRestorePanel,
+  onFullScreenStrategyTester,
   orders,
   marketSimulation,
   onOpenOrderPanel,
@@ -679,7 +682,7 @@ export default function AccountManagerSection({
     return colors[condition];
   };
 
-  const tabs = ["Orders", "Order Book", "Order History", "AI Insights"];
+  const tabs = ["Orders", "Order Book", "Order History", "AI Insights", "Strategy Tester"];
 
   const metrics = [
     { label: "Account Balance", value: formatVND(tradingPosition.cash) },
@@ -767,6 +770,25 @@ export default function AccountManagerSection({
                 strokeWidth="2"
               >
                 <polyline points="18,15 12,9 6,15"></polyline>
+              </svg>
+            </button>
+          )}
+          {activeTab === "Strategy Tester" && onFullScreenStrategyTester && (
+            <button
+              onClick={onFullScreenStrategyTester}
+              className={`p-1.5 rounded hover:bg-gray-700/50 ${
+                isDarkMode ? "text-gray-400" : "text-gray-600"
+              }`}
+            >
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path>
               </svg>
             </button>
           )}
@@ -2252,6 +2274,18 @@ export default function AccountManagerSection({
                     </div>
                   )}
                 </div>
+              </div>
+            )}
+
+            {/* STRATEGY TESTER TAB */}
+            {activeTab === "Strategy Tester" && (
+              <div className="h-full overflow-auto trading-scrollbar">
+                <StrategyTester 
+                  isDarkMode={isDarkMode}
+                  tradingPosition={tradingPosition}
+                  selectedSymbol={selectedSymbol}
+                  marketSimulation={marketSimulation}
+                />
               </div>
             )}
           </div>

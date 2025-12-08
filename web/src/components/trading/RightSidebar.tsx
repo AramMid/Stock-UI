@@ -10,6 +10,9 @@ interface WatchlistItem {
   change: number;
   changePercent: number;
   category: "STOCKS" | "FOREX" | "CRYPTO";
+  referencePrice?: number;
+  ceilingPrice?: number;
+  floorPrice?: number;
 }
 
 interface RightSidebarProps {
@@ -36,6 +39,9 @@ export default function RightSidebar({
       change: 800,
       changePercent: 1.8,
       category: "STOCKS",
+      referencePrice: 45000,
+      ceilingPrice: 48150,
+      floorPrice: 42150,
     },
     {
       symbol: "VHM.VN",
@@ -44,6 +50,9 @@ export default function RightSidebar({
       change: -500,
       changePercent: -0.89,
       category: "STOCKS",
+      referencePrice: 55800,
+      ceilingPrice: 59706,
+      floorPrice: 51894,
     },
     {
       symbol: "VCB.VN",
@@ -52,6 +61,9 @@ export default function RightSidebar({
       change: 1200,
       changePercent: 1.47,
       category: "STOCKS",
+      referencePrice: 82000,
+      ceilingPrice: 87740,
+      floorPrice: 77560,
     },
     {
       symbol: "TCB.VN",
@@ -60,6 +72,9 @@ export default function RightSidebar({
       change: 350,
       changePercent: 1.55,
       category: "STOCKS",
+      referencePrice: 22800,
+      ceilingPrice: 24396,
+      floorPrice: 21204,
     },
     {
       symbol: "FPT.VN",
@@ -68,6 +83,9 @@ export default function RightSidebar({
       change: -1500,
       changePercent: -1.2,
       category: "STOCKS",
+      referencePrice: 124000,
+      ceilingPrice: 132680,
+      floorPrice: 115320,
     },
     {
       symbol: "VNM.VN",
@@ -76,6 +94,9 @@ export default function RightSidebar({
       change: 600,
       changePercent: 1.26,
       category: "STOCKS",
+      referencePrice: 47900,
+      ceilingPrice: 51253,
+      floorPrice: 44847,
     },
     {
       symbol: "HPG.VN",
@@ -84,6 +105,9 @@ export default function RightSidebar({
       change: -250,
       changePercent: -1.31,
       category: "STOCKS",
+      referencePrice: 19000,
+      ceilingPrice: 20330,
+      floorPrice: 17670,
     },
     {
       symbol: "MSN.VN",
@@ -92,6 +116,9 @@ export default function RightSidebar({
       change: 2100,
       changePercent: 3.2,
       category: "STOCKS",
+      referencePrice: 67000,
+      ceilingPrice: 71690,
+      floorPrice: 62910,
     },
   ];
 
@@ -195,6 +222,94 @@ export default function RightSidebar({
     ));
   };
 
+  // Render watchlist items with price bands for Vietnamese stocks
+  const renderWatchlistItemsWithBands = (items: WatchlistItem[]) => {
+    return items.map((item) => (
+      <div
+        key={item.symbol}
+        onClick={() => onSymbolSelect(item.symbol)}
+        className={`px-3 py-2 cursor-pointer transition-colors text-xs ${
+          isDarkMode ? "hover:bg-[#1e222d]" : "hover:bg-gray-50"
+        } ${
+          selectedSymbol === item.symbol
+            ? isDarkMode
+              ? "bg-[#1e222d]"
+              : "bg-blue-50"
+            : ""
+        }`}
+      >
+        <div className="grid grid-cols-12 gap-2">
+          {/* Symbol with flag/icon */}
+          <div className="col-span-3 flex items-center space-x-1">
+            {item.category === "STOCKS" && (
+              <div className="w-3 h-3 rounded bg-blue-500 flex items-center justify-center text-[8px] font-bold text-white">
+                {item.symbol.charAt(0)}
+              </div>
+            )}
+            {item.category === "FOREX" && (
+              <div className="w-3 h-3 rounded bg-green-500 flex items-center justify-center text-[8px] font-bold text-white">
+                {item.symbol.substring(0, 2)}
+              </div>
+            )}
+            <span
+              className={`font-medium truncate transition-colors duration-200 ${
+                isDarkMode ? "text-white" : "text-gray-900"
+              }`}
+            >
+              {item.symbol}
+            </span>
+          </div>
+
+          {/* Position (shares owned) */}
+          <div
+            className={`col-span-2 text-right font-mono transition-colors duration-200 ${
+              isDarkMode ? "text-white" : "text-gray-900"
+            }`}
+          >
+            {formatVND(positions.get(item.symbol) || 0)}
+          </div>
+
+          {/* Price with bands for Vietnamese stocks */}
+          <div className="col-span-7">
+            <div className="flex justify-between items-center">
+              <div
+                className={`text-right font-mono transition-colors duration-200 ${
+                  isDarkMode ? "text-white" : "text-gray-900"
+                }`}
+              >
+                {item.symbol.endsWith(".VN")
+                  ? formatVND(item.price)
+                  : item.price.toFixed(item.category === "FOREX" ? 5 : 2)}
+              </div>
+              {item.symbol.endsWith(".VN") && item.referencePrice && item.ceilingPrice && item.floorPrice && (
+                <div className="flex space-x-2">
+                  <span className="text-yellow-500 text-xs font-medium">R:{formatVND(item.referencePrice)}</span>
+                  <span className="text-purple-500 text-xs font-medium">C:{formatVND(item.ceilingPrice)}</span>
+                  <span className="text-cyan-500 text-xs font-medium">F:{formatVND(item.floorPrice)}</span>
+                </div>
+              )}
+            </div>
+            <div className="flex justify-between text-xs">
+              <div
+                className={`font-mono ${
+                  item.change >= 0 ? "text-green-400" : "text-red-400"
+                }`}
+              >
+                {item.change >= 0 ? "+" : ""}
+                {item.symbol.endsWith(".VN")
+                  ? formatVND(item.change)
+                  : item.change.toFixed(item.category === "FOREX" ? 5 : 2)}
+                <span className="ml-1">
+                  ({item.changePercent >= 0 ? "+" : ""}{item.changePercent.toFixed(2)}%)
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    ));
+  };
+
   return (
     <div
       className={`w-full bg-transparent flex flex-col h-full transition-colors duration-200 ${
@@ -247,15 +362,13 @@ export default function RightSidebar({
         }`}
       >
         <div
-          className={`grid grid-cols-5 gap-2 text-xs font-medium transition-colors duration-200 ${
+          className={`grid grid-cols-12 gap-2 text-xs font-medium transition-colors duration-200 ${
             isDarkMode ? "text-gray-400" : "text-gray-600"
           }`}
         >
-          <div>Symbol</div>
-          <div className="text-right">Pos</div>
-          <div className="text-right">Last</div>
-          <div className="text-right">Chg</div>
-          <div className="text-right">Chg%</div>
+          <div className="col-span-3">Symbol</div>
+          <div className="col-span-2 text-right">Pos</div>
+          <div className="col-span-7 text-right">Last / Bands</div>
         </div>
       </div>
 
@@ -286,11 +399,11 @@ export default function RightSidebar({
         </button>
         {stocksExpanded && (
           <div
-            className={`transition-colors duration-200 ${
+            className={`transition-colors duration-200 overflow-y-auto max-h-[300px] ${
               isDarkMode ? "bg-[#131722]" : "bg-white"
             }`}
           >
-            {renderWatchlistItems(stockWatchlist)}
+            {renderWatchlistItemsWithBands(stockWatchlist)}
           </div>
         )}
       </div>
@@ -322,11 +435,11 @@ export default function RightSidebar({
         </button>
         {forexExpanded && (
           <div
-            className={`transition-colors duration-200 ${
+            className={`transition-colors duration-200 overflow-y-auto max-h-[200px] ${
               isDarkMode ? "bg-[#131722]" : "bg-white"
             }`}
           >
-            {renderWatchlistItems(forexWatchlist)}
+            {renderWatchlistItemsWithBands(forexWatchlist)}
           </div>
         )}
       </div>

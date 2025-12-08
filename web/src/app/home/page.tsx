@@ -14,6 +14,7 @@ import { MarketSimulationService, SimulatedMarketData } from "@/lib/services/mar
 import { orderBookService } from "@/lib/services/orderBookService";
 import { WebSocketService } from "@/lib/services/webSocketService";
 import { NotificationService } from "@/lib/services/notificationService";
+import { splitOrderForExchangeLimit } from "@/lib/position-sizing";
 import TopNavigation from "@/components/trading/TopNavigation";
 import StockInfoBar from "@/components/trading/StockInfoBar";
 import LeftSidebar from "@/components/trading/LeftSidebar";
@@ -114,6 +115,23 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
       }
     };
   }, [updateLastPrice]);
+
+  // Handle Strategy Tester full-screen toggle
+  useEffect(() => {
+    const handleToggleFullscreen = () => {
+      // Toggle between maximized and restored state
+      if (layoutManager.isAccountMaximized) {
+        layoutManager.handleRestorePanel();
+      } else {
+        layoutManager.handleMaximizePanel();
+      }
+    };
+
+    window.addEventListener('toggleStrategyTesterFullscreen', handleToggleFullscreen);
+    return () => {
+      window.removeEventListener('toggleStrategyTesterFullscreen', handleToggleFullscreen);
+    };
+  }, [layoutManager]);
 
   // DEBUG: Log to see if useChart is being called
   console.log("🔍 TradingPlatform render - enableTrendlineDrawing:", enableTrendlineDrawing);
@@ -302,26 +320,31 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
   const handleOrderSubmit = useCallback((side: 'buy' | 'sell', quantity: number, price: number) => {
     console.log(`Order submitted: ${side} ${quantity} shares at ${price}`);
     
-    // Create order object
-    const order: Order = {
-      id: `ORD${Date.now()}`,
-      symbol: selectedSymbol,
-      type: side,
-      orderType: "Market", // Default to market order for immediate execution
-      quantity: quantity,
-      price: price,
-      status: "NEW", // Only NEW or FILLED states
-      timestamp: new Date()
-    };
+    // Split large orders according to exchange limits
+    const orderQuantities = splitOrderForExchangeLimit(quantity);
     
-    // Add order to order book service for tracking
-    orderBookService.addOrder(order);
-    
-    // Subscribe to WebSocket updates for this order
-    const webSocketService = WebSocketService.getInstance();
-    const notificationService = NotificationService.getInstance();
-    
-    webSocketService.subscribe(order.id, (update) => {
+    // Process each order
+    orderQuantities.forEach((orderQty, index) => {
+      // Create order object
+      const order: Order = {
+        id: `ORD${Date.now()}-${index}`,
+        symbol: selectedSymbol,
+        type: side,
+        orderType: "Market", // Default to market order for immediate execution
+        quantity: orderQty,
+        price: price,
+        status: "NEW", // Only NEW or FILLED states
+        timestamp: new Date()
+      };
+      
+      // Add order to order book service for tracking
+      orderBookService.addOrder(order);
+      
+      // Subscribe to WebSocket updates for this order
+      const webSocketService = WebSocketService.getInstance();
+      const notificationService = NotificationService.getInstance();
+      
+      webSocketService.subscribe(order.id, (update) => {
       // Update order in order book service
       orderBookService.updateOrder(update.orderId, {
         status: update.status,
@@ -351,33 +374,34 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
           notificationService.showSuccess(`Order ${update.orderId} filled successfully!`);
         }
       }
+      });
+      
+      // Process order against simulated market - this adds order to pending list for bot processing
+      if (marketSimulationRef.current) {
+        marketSimulationRef.current.processUserOrder(order);
+      }
+      
+      // Order is pending bot processing
+      // Update order in order book service with NEW status
+      orderBookService.updateOrder(order.id, {
+        status: "NEW"
+      });
+      
+      // Update order status - only Pending or Filled states
+      const updatedOrder: Order = {
+        ...order,
+        orderType: "Market",
+        status: "NEW",
+        filledPrice: undefined,
+        filledQuantity: undefined
+      };
+      
+      // Add order to state
+      setOrders(prevOrders => [updatedOrder, ...prevOrders]);
+      
+      // Show notification about order processing delay
+      notificationService.showSuccess(`Order submitted. Bots will decide whether to match your order within 5 seconds.`, 10000);
     });
-    
-    // Process order against simulated market - this adds order to pending list for bot processing
-    if (marketSimulationRef.current) {
-      marketSimulationRef.current.processUserOrder(order);
-    }
-    
-    // Order is pending bot processing
-    // Update order in order book service with NEW status
-    orderBookService.updateOrder(order.id, {
-      status: "NEW"
-    });
-    
-    // Update order status - only Pending or Filled states
-    const updatedOrder: Order = {
-      ...order,
-      orderType: "Market",
-      status: "NEW",
-      filledPrice: undefined,
-      filledQuantity: undefined
-    };
-    
-    // Add order to state
-    setOrders(prevOrders => [updatedOrder, ...prevOrders]);
-    
-    // Show notification about order processing delay
-    notificationService.showSuccess(`Order submitted. Bots will decide whether to match your order within 5 seconds.`, 10000);
     
     setShowOrderPanel(false);
   }, [handleBuy, handleSell, selectedSymbol, tradingPosition]);
@@ -499,6 +523,12 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
               onOpenPanel={layoutManager.handleOpenPanel}
               onMaximizePanel={layoutManager.handleMaximizePanel}
               onRestorePanel={layoutManager.handleRestorePanel}
+              onFullScreenStrategyTester={() => {
+                // For now, we'll just maximize the panel when Strategy Tester is opened
+                if (!layoutManager.isAccountMaximized) {
+                  layoutManager.handleMaximizePanel();
+                }
+              }}
               orders={orders}
               marketSimulation={marketSimulationRef.current}
               selectedSymbol={selectedSymbol}
@@ -528,8 +558,8 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
             style={{
               width: `${100 - layoutManager.horizontalLayout.split}%`,
               gridTemplateRows: showOrderPanel 
-                ? `1fr 12px ${layoutManager.orderPanelHeight}px 12px 1fr 12px 1fr`
-                : `1fr 12px 1fr 12px 1fr`,
+                ? `${layoutManager.watchlistLayout.split}fr 12px ${layoutManager.orderPanelHeight}px 12px ${layoutManager.stockInfoLayout.split}fr 12px ${100 - layoutManager.watchlistLayout.split - layoutManager.stockInfoLayout.split}fr`
+                : `${layoutManager.watchlistLayout.split}fr 12px ${layoutManager.stockInfoLayout.split}fr 12px ${100 - layoutManager.watchlistLayout.split - layoutManager.stockInfoLayout.split}fr`,
             }}
           >
             {/* Watchlist Section */}
@@ -575,13 +605,13 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
                       const containerHeight = containerRect.height;
                       // Reserve space for other sections (watchlist, dividers, stock info, news)
                       // Each divider is 12px, and we need space for other sections
-                      const reservedSpace = containerHeight * 0.4; // Reserve 40% for other sections
+                      const reservedSpace = containerHeight * 0.3; // Reduce reserved space from 40% to 30%
                       const maxHeight = containerHeight - reservedSpace;
                       
                       const deltaY = moveEvent.clientY - startY;
                       // Kéo xuống (deltaY dương) → thu nhỏ (giảm height)
                       // Kéo lên (deltaY âm) → phóng to (tăng height)
-                      const newHeight = Math.max(100, Math.min(maxHeight, startHeight - deltaY));
+                      const newHeight = Math.max(150, Math.min(maxHeight, startHeight - deltaY)); // Increase min height from 100 to 150
                       layoutManager.handleOrderPanelResize(newHeight);
                     };
                       
@@ -619,16 +649,6 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
               </>
             )}
 
-            {/* Stock Info Divider */}
-            <ResizableDivider
-              isVertical={true}
-              isDragging={layoutManager.stockInfoLayout.isDragging}
-              onMouseDown={(e: React.MouseEvent) => layoutManager.stockInfoLayout.handleMouseDown(e, true)}
-              title="Drag up/down to resize stock info and news sections"
-              splitPercentage={layoutManager.stockInfoLayout.split + layoutManager.watchlistLayout.split}
-              isDarkMode={isDarkMode}
-            />
-
             {/* Stock Info Section */}
             <StockInfoSection
               selectedSymbol={selectedSymbol}
@@ -642,7 +662,7 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
               isDragging={layoutManager.stockInfoLayout.isDragging}
               onMouseDown={(e: React.MouseEvent) => layoutManager.stockInfoLayout.handleMouseDown(e, true)}
               title="Drag up/down to resize stock info and news sections"
-              splitPercentage={layoutManager.stockInfoLayout.split + layoutManager.watchlistLayout.split}
+              splitPercentage={layoutManager.stockInfoLayout.split}
               isDarkMode={isDarkMode}
             />
 

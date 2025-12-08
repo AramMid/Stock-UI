@@ -1,6 +1,9 @@
 import { Order } from "../order-management";
 import { WebSocketService } from "./webSocketService";
 import { OrderStatus } from "./orderService";
+import { CandlestickWithVolume } from "../types";
+import { Time } from "lightweight-charts";
+import { getExchangeBySymbol, getFluctuationLimit } from "../position-sizing";
 
 export interface MarketMakerBot {
   id: string;
@@ -2005,7 +2008,13 @@ export class MarketSimulationService {
         }
       }
       
-      return Math.max(1000, Math.min(price, currentPrice * 2));
+      // Apply Vietnamese exchange fluctuation limits
+      const exchange = getExchangeBySymbol(order.symbol);
+      const flucLimit = getFluctuationLimit(exchange);
+      const ceilingPrice = Math.floor(currentPrice * (1 + flucLimit));
+      const floorPrice = Math.ceil(currentPrice * (1 - flucLimit));
+      
+      return Math.max(floorPrice, Math.min(price, ceilingPrice));
     }
   }
   
@@ -2362,5 +2371,62 @@ export class MarketSimulationService {
       overallHealth: Math.round(overallHealth),
       status: overallHealth > 80 ? "Healthy" : overallHealth > 60 ? "Stable" : overallHealth > 40 ? "Warning" : "Critical"
     };
+  }
+  
+  /**
+   * Get historical data for backtesting
+   * @param symbol Stock symbol
+   * @param days Number of days of historical data to retrieve
+   * @returns Array of candlestick data with volume
+   */
+  public getHistoricalData(symbol: string, days: number = 30): CandlestickWithVolume[] {
+    const prices = this.priceHistory.get(symbol) || [];
+    const volumes = this.volumeHistory.get(symbol) || [];
+    
+    if (prices.length === 0) return [];
+    
+    // Generate OHLC data from price history
+    const candles: CandlestickWithVolume[] = [];
+    const now = Math.floor(Date.now() / 1000);
+    const interval = 60; // 1 minute candles
+    
+    // Group prices into time intervals
+    const groupedData: { [key: number]: { prices: number[]; volumes: number[] } } = {};
+    
+    // For simplicity, we'll create synthetic OHLC data
+    // In a real implementation, this would use actual open/high/low/close data
+    for (let i = 0; i < prices.length; i++) {
+      const timeIndex = Math.floor(i / 60); // Group by minute
+      const time = now - (prices.length - i) * interval;
+      
+      if (!groupedData[timeIndex]) {
+        groupedData[timeIndex] = { prices: [], volumes: [] };
+      }
+      
+      groupedData[timeIndex].prices.push(prices[i]);
+      groupedData[timeIndex].volumes.push(volumes[i] || 1000);
+    }
+    
+    // Convert to candlesticks
+    Object.entries(groupedData).forEach(([timeIndex, data]) => {
+      if (data.prices.length > 0) {
+        const open = data.prices[0];
+        const close = data.prices[data.prices.length - 1];
+        const high = Math.max(...data.prices);
+        const low = Math.min(...data.prices);
+        const volume = data.volumes.reduce((sum, v) => sum + v, 0);
+        
+        candles.push({
+          time: (now - (parseInt(timeIndex) * interval)) as Time,
+          open,
+          high,
+          low,
+          close,
+          volume
+        });
+      }
+    });
+    
+    return candles.sort((a, b) => (a.time as number) - (b.time as number));
   }
 }

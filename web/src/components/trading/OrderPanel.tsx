@@ -2,6 +2,7 @@
   import { useState, useEffect } from "react";
   import { ChevronDown, X, Grid, MoreHorizontal, Plus } from "lucide-react";
   import { formatVND } from "@/lib/order-management";
+  import { calculateMaxPositionSize, roundDownToLotSize, sharesToLots, getExchangeBySymbol, calculatePriceBands } from "@/lib/position-sizing";
 
   interface OrderPanelProps {
     symbol: string;
@@ -28,7 +29,7 @@
   }: OrderPanelProps) {
     const [activeTab, setActiveTab] = useState<"order" | "dom">("order");
     const [orderType, setOrderType] = useState<OrderType>("Market");
-    const [quantity, setQuantity] = useState(0.01);
+    const [quantity, setQuantity] = useState(100); // Default to 1 lot (100 shares)
     const [price, setPrice] = useState(currentPrice);
     
     // Exit states
@@ -40,6 +41,10 @@
     const priceStep = 100;
     const bidPrice = Math.floor((currentPrice - priceStep) / priceStep) * priceStep;
     const askPrice = Math.ceil((currentPrice + priceStep) / priceStep) * priceStep;
+    
+    // Calculate price bands
+    const exchange = getExchangeBySymbol(symbol);
+    const priceBands = calculatePriceBands(currentPrice, exchange);
 
     // Defaults for VND
     const defaultTP = 65100; 
@@ -50,14 +55,18 @@
     const [stopLossPrice, setStopLossPrice] = useState(defaultSL);
     const [stopLossTicks, setStopLossTicks] = useState(17);
 
-    const tradeValue = quantity * currentPrice;
+    // Ensure quantity is always a multiple of lot size (100 shares)
+    const validQuantity = roundDownToLotSize(quantity);
+    const tradeValue = validQuantity * currentPrice;
 
     const handleAction = () => {
+      // Ensure quantity is always a multiple of lot size (100 shares)
+      const validQuantity = roundDownToLotSize(quantity);
       const orderPrice = orderType === "Market" ? currentPrice : price;
       if (side === "buy") {
-        onBuy(quantity, orderPrice);
+        onBuy(validQuantity, orderPrice);
       } else {
-        onSell(quantity, orderPrice);
+        onSell(validQuantity, orderPrice);
       }
     };
 
@@ -176,6 +185,22 @@ return (
               </button>
             </div>
 
+            {/* --- PRICE BANDS --- */}
+            <div className={`flex justify-between text-xs px-2 py-1 rounded ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`}>
+              <div className="flex items-center">
+                <span className={`mr-1 ${isDarkMode ? "text-gray-400" : "text-gray-600"}`}>REF:</span>
+                <span className="font-medium text-yellow-500">{formatVND(priceBands.reference)}</span>
+              </div>
+              <div className="flex items-center">
+                <span className={`mr-1 ${isDarkMode ? "text-gray-400" : "text-gray-600"}`}>CEIL:</span>
+                <span className="font-medium text-purple-500">{formatVND(priceBands.ceiling)}</span>
+              </div>
+              <div className="flex items-center">
+                <span className={`mr-1 ${isDarkMode ? "text-gray-400" : "text-gray-600"}`}>FLOOR:</span>
+                <span className="font-medium text-cyan-500">{formatVND(priceBands.floor)}</span>
+              </div>
+            </div>
+
             {/* --- ORDER TYPE TABS --- */}
             <div className={`flex gap-1 p-1 rounded-lg ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`}>
               {(["Market", "Limit", "Stop"] as OrderType[]).map((type) => (
@@ -203,8 +228,8 @@ return (
                     value={quantity}
                     onChange={(e) => setQuantity(parseFloat(e.target.value))}
                     className={inputBaseClasses}
-                    step="0.01"
-                    min="0.01"
+                    step="100"
+                    min="100"
                   />
                 </div>
               </div>
@@ -358,7 +383,7 @@ return (
                 {side === "buy" ? "Buy" : "Sell"} {symbol.split('.')[0]}
               </div>
               <div className="text-[11px] font-normal opacity-90 mt-0.5">
-                {quantity} @ {orderType === 'Market' ? 'MKT' : price}
+                {validQuantity} @ {orderType === 'Market' ? 'MKT' : price}
               </div>
             </button>
             

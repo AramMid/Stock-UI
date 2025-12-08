@@ -26,15 +26,15 @@ export function useLayoutManager() {
 
   // Right section splits
   const watchlistLayout = useResizableLayout({
-    initialSplit: 40,
+    initialSplit: 30,
     minSplit: 20,
-    maxSplit: 70,
+    maxSplit: 50,
     containerRef: rightSectionRef
   });
 
   const stockInfoLayout = useResizableLayout({
-    initialSplit: 30,
-    minSplit: 15,
+    initialSplit: 35,
+    minSplit: 20,
     maxSplit: 60,
     containerRef: rightSectionRef
   });
@@ -42,7 +42,7 @@ export function useLayoutManager() {
   // Account panel states
   const [isAccountCollapsed, setIsAccountCollapsed] = useState(false);
   const [isAccountMaximized, setIsAccountMaximized] = useState(false);
-  const [orderPanelHeight, setOrderPanelHeight] = useState(400); // More balanced default height for order panel
+  const [orderPanelHeight, setOrderPanelHeight] = useState(300); // More balanced default height for order panel
 
   // Account panel controls
   const handleCollapsePanel = useCallback(() => {

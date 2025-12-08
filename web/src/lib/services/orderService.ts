@@ -1,5 +1,6 @@
 import { Order } from "../order-management";
 import { TradingPosition } from "../types";
+import { validateOrderQuantity, roundDownToLotSize, getExchangeBySymbol, getFluctuationLimit } from "../position-sizing";
 
 export type OrderStatus = 'NEW' | 'PARTIALLY_FILLED' | 'FILLED' | 'CANCELED' | 'REJECTED';
 
@@ -41,6 +42,17 @@ export function executeOrder(order: OrderRequest, account: TradingPosition): Exe
     };
   }
 
+  // Validate order quantity according to Vietnamese exchange rules
+  const validation = validateOrderQuantity(order.quantity);
+  if (!validation.isValid) {
+    return {
+      orderId: `ORD${Date.now()}`,
+      status: 'REJECTED',
+      filledQuantity: 0,
+      errorMessage: validation.message
+    };
+  }
+
   // For market orders, use current price
   // For StopLimit orders, we need both stopPrice and price
   let executionPrice = 0;
@@ -65,8 +77,17 @@ export function executeOrder(order: OrderRequest, account: TradingPosition): Exe
 
   // Check if order can be filled
   const cost = order.quantity * executionPrice;
+  const FEE_RATE = 0.0015; // 0.15% phí
+  const TAX_RATE = 0.001;  // 0.1% thuế (chỉ bán)
+
+  let totalCost = cost;
+if (order.type === 'buy') {
+    totalCost = cost * (1 + FEE_RATE);
+  } else if (order.type === 'sell') {
+    totalCost = cost * (1 + FEE_RATE + TAX_RATE);
+  }
   
-  if (order.type === 'buy' && account.cash < cost) {
+  if (order.type === 'buy' && account.cash < totalCost) {
     return {
       orderId: `ORD${Date.now()}`,
       status: 'REJECTED',

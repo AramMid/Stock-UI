@@ -1,5 +1,6 @@
 "use client";
 import { formatVND } from "@/lib/order-management";
+import { getExchangeBySymbol, calculatePriceBands } from "@/lib/position-sizing";
 
 interface StockData {
   name: string;
@@ -159,6 +160,10 @@ export default function StockInfoSection({
     ((stockData.price - stockData.dayLow) /
       (stockData.dayHigh - stockData.dayLow)) *
     100;
+  
+  // Calculate price bands
+  const exchange = getExchangeBySymbol(selectedSymbol);
+  const priceBands = calculatePriceBands(stockData.price, exchange);
 
   return (
     <div
@@ -289,6 +294,34 @@ export default function StockInfoSection({
               {stockData.isVN
                 ? formatVND(stockData.dayHigh)
                 : stockData.dayHigh.toFixed(2)}
+            </span>
+          </div>
+        </div>
+
+        {/* Price Bands */}
+        <div className="space-y-2 mb-4">
+          <div className="flex justify-between items-center">
+            <span className={`text-xs font-medium ${isDarkMode ? "text-gray-400" : "text-gray-600"}`}>
+              REF
+            </span>
+            <span className={`font-medium ${isDarkMode ? "text-yellow-400" : "text-yellow-600"}`}>
+              {stockData.isVN ? formatVND(priceBands.reference) : priceBands.reference.toFixed(2)}
+            </span>
+          </div>
+          <div className="flex justify-between items-center">
+            <span className={`text-xs font-medium ${isDarkMode ? "text-gray-400" : "text-gray-600"}`}>
+              CEIL
+            </span>
+            <span className={`font-medium ${isDarkMode ? "text-purple-400" : "text-purple-600"}`}>
+              {stockData.isVN ? formatVND(priceBands.ceiling) : priceBands.ceiling.toFixed(2)}
+            </span>
+          </div>
+          <div className="flex justify-between items-center">
+            <span className={`text-xs font-medium ${isDarkMode ? "text-gray-400" : "text-gray-600"}`}>
+              FLOOR
+            </span>
+            <span className={`font-medium ${isDarkMode ? "text-cyan-400" : "text-cyan-600"}`}>
+              {stockData.isVN ? formatVND(priceBands.floor) : priceBands.floor.toFixed(2)}
             </span>
           </div>
         </div>

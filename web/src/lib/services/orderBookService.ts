@@ -3,6 +3,7 @@ import { Order } from "../order-management";
 import { OrderStatus } from "./orderService";
 import { MarketSimulationService } from "./marketSimulationService";
 import { MarketDepthLevel, SimulatedMarketData } from "./marketSimulationService";
+import { validateOrderQuantity, getExchangeBySymbol, getFluctuationLimit } from "../position-sizing";
 
 export class OrderBookService {
   private orderBook: OrderBook;
@@ -122,20 +123,25 @@ export class OrderBookService {
       return { valid: false, message: "Limit orders require a valid price" };
     }
 
-    // Check quantity limits
-    const maxQuantity = 100000; // Example limit
-    if (order.quantity > maxQuantity) {
-      return { valid: false, message: `Quantity exceeds maximum limit of ${maxQuantity}` };
+    // Check quantity limits according to Vietnamese exchange rules
+    const validation = validateOrderQuantity(order.quantity);
+    if (!validation.isValid) {
+      return { valid: false, message: validation.message };
     }
 
-    // Check price limits
+    // Check price limits according to Vietnamese exchange fluctuation bands
     const marketData = this.marketSimulation.getMarketData(order.symbol);
     if (marketData && order.orderType === "Limit") {
       const currentPrice = marketData.price;
-      const priceLimit = currentPrice * 2; // 100% above/below
+      const exchange = getExchangeBySymbol(order.symbol);
+      const flucLimit = getFluctuationLimit(exchange);
       
-      if (order.price! > priceLimit || order.price! < currentPrice / 2) {
-        return { valid: false, message: "Price too far from current market price" };
+      // Calculate ceiling and floor prices with proper rounding
+      const ceilingPrice = Math.floor(currentPrice * (1 + flucLimit));
+      const floorPrice = Math.ceil(currentPrice * (1 - flucLimit));
+
+      if (order.price! > ceilingPrice || order.price! < floorPrice) {
+        return { valid: false, message: `Price out of fluctuation band (Trần/Sàn). Valid range: ${floorPrice} - ${ceilingPrice}` };
       }
     }
 

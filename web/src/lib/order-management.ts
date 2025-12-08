@@ -1,4 +1,5 @@
 import { OrderStatus } from "./services/orderService";
+import { roundDownToLotSize } from "./position-sizing";
 
 export interface Order {
   id: string;
@@ -49,7 +50,9 @@ export function executeBuyOrder(account: AccountState, cash: number, quantity: n
     };
   }
   
-  const cost = quantity * price;
+  // Ensure quantity is rounded to lot size
+  const validQuantity = roundDownToLotSize(quantity);
+  const cost = validQuantity * price;
   if (cash < cost) {
     return {
       updatedAccount: account,
@@ -58,7 +61,7 @@ export function executeBuyOrder(account: AccountState, cash: number, quantity: n
     };
   }
 
-  const newQty = account.position + quantity;
+  const newQty = account.position + validQuantity;
   const newAvg = account.position === 0 
     ? price 
     : (account.avgPrice * account.position + cost) / newQty;
@@ -89,7 +92,10 @@ export function executeSellOrder(account: AccountState, cash: number, quantity: 
   success: boolean;
   errorMessage?: string;
 } {
-  if (account.position < quantity) {
+  // Ensure quantity is rounded to lot size
+  const validQuantity = roundDownToLotSize(quantity);
+  
+  if (account.position < validQuantity) {
     return {
       updatedAccount: account,
       success: false,
@@ -97,8 +103,8 @@ export function executeSellOrder(account: AccountState, cash: number, quantity: 
     };
   }
 
-  const proceeds = quantity * price;
-  const newPosition = account.position - quantity;
+  const proceeds = validQuantity * price;
+  const newPosition = account.position - validQuantity;
   
   const updatedAccount: AccountState = {
     ...account,
