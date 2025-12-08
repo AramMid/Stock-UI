@@ -1,4 +1,3 @@
-// File: app/trading/page.tsx - DEBUG VERSION
 "use client";
 import { useRef, useState, useCallback, useEffect } from "react";
 import { Timeframe } from "@/lib/types";
@@ -20,6 +19,7 @@ import StockInfoBar from "@/components/trading/StockInfoBar";
 import LeftSidebar from "@/components/trading/LeftSidebar";
 import ChartSection from "@/components/trading/ChartSection";
 import AccountManagerSection from "@/components/trading/AccountManagerSection";
+import StrategyTester from "@/components/trading/StrategyTester";
 import WatchlistSection from "@/components/trading/WatchlistSection";
 import StockInfoSection from "@/components/trading/StockInfoSection";
 import NewsSection from "@/components/trading/NewsSection";
@@ -120,10 +120,22 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
   useEffect(() => {
     const handleToggleFullscreen = () => {
       // Toggle between maximized and restored state
-      if (layoutManager.isAccountMaximized) {
-        layoutManager.handleRestorePanel();
+      if (isPrivateMode) {
+        // For private mode, we'll implement a simple toggle of the chart/strategy tester split
+        if (layoutManager.chartAccountLayout.split > 50) {
+          // Currently showing more chart, maximize strategy tester
+          layoutManager.chartAccountLayout.setSplit(20); // Show more strategy tester
+        } else {
+          // Currently showing more strategy tester, balance the view
+          layoutManager.chartAccountLayout.setSplit(50); // Balanced view
+        }
       } else {
-        layoutManager.handleMaximizePanel();
+        // For public mode, use the account manager toggle
+        if (layoutManager.isAccountMaximized) {
+          layoutManager.handleRestorePanel();
+        } else {
+          layoutManager.handleMaximizePanel();
+        }
       }
     };
 
@@ -131,7 +143,7 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
     return () => {
       window.removeEventListener('toggleStrategyTesterFullscreen', handleToggleFullscreen);
     };
-  }, [layoutManager]);
+  }, [layoutManager, isPrivateMode]);
 
   // DEBUG: Log to see if useChart is being called
   console.log("🔍 TradingPlatform render - enableTrendlineDrawing:", enableTrendlineDrawing);
@@ -420,7 +432,6 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
     <div
       className={`h-screen flex flex-col transition-colors duration-200 bg-[#131722]`}
     >
-
       {/* Top Navigation Bar */}
       <TopNavigation
         symbol={selectedSymbol}
@@ -457,14 +468,13 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
 
         {/* Main Grid Area */}
         <div ref={layoutManager.mainContainerRef} className="flex-1 flex gap-2 p-2">
-          {/* Left Section - Chart and Account Manager */}
+          {/* Left Section - Chart and Account Manager / Strategy Tester */}
           <div
             ref={layoutManager.leftColumnRef}
             className="grid gap-2 transition-none relative"
             style={{
               width: `${layoutManager.horizontalLayout.split}%`,
-              gridTemplateRows: `${layoutManager.chartAccountLayout.split}fr 12px ${100 - layoutManager.chartAccountLayout.split
-                }fr`,
+              gridTemplateRows: `${layoutManager.chartAccountLayout.split}fr 12px ${100 - layoutManager.chartAccountLayout.split}fr`,
             }}
           >
             {/* Chart Panel */}
@@ -511,33 +521,79 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
               isDarkMode={isDarkMode}
             />
 
-            {/* Account Manager Section */}
-            <AccountManagerSection
-              tradingPosition={tradingPosition}
-              isDarkMode={isDarkMode}
-              isDragging={layoutManager.chartAccountLayout.isDragging}
-              isAccountCollapsed={layoutManager.isAccountCollapsed}
-              isAccountMaximized={layoutManager.isAccountMaximized}
-              chartAccountSplit={layoutManager.chartAccountLayout.split}
-              onCollapsePanel={layoutManager.handleCollapsePanel}
-              onOpenPanel={layoutManager.handleOpenPanel}
-              onMaximizePanel={layoutManager.handleMaximizePanel}
-              onRestorePanel={layoutManager.handleRestorePanel}
-              onFullScreenStrategyTester={() => {
-                // For now, we'll just maximize the panel when Strategy Tester is opened
-                if (!layoutManager.isAccountMaximized) {
-                  layoutManager.handleMaximizePanel();
-                }
-              }}
-              orders={orders}
-              marketSimulation={marketSimulationRef.current}
-              selectedSymbol={selectedSymbol}
-              onOpenOrderPanel={(side, price) => {
-                setShowOrderPanel(true);
-                setOrderPanelSide(side);
-                // In a real implementation, you might want to set a specific price
-              }}
-            />
+            {/* Conditional rendering based on private mode */}
+            {isPrivateMode ? (
+              // Strategy Tester in private mode (using same layout as Account Manager)
+              <div 
+                className="border rounded overflow-hidden relative flex flex-col transition-colors duration-200"
+                style={{
+                  willChange: layoutManager.chartAccountLayout.isDragging ? "height" : "auto",
+                  transform: "translateZ(0)",
+                  height: "100%",
+                }}
+              >
+                <div className="flex-none flex items-center justify-between px-4 py-3 border-b select-none">
+                  <div className="flex items-center gap-2 text-sm opacity-80">
+                    <span className="font-bold bg-gradient-to-r from-blue-500 to-cyan-400 bg-clip-text text-transparent">
+                      BACKTEST MODE
+                    </span>
+                    <span className="text-gray-500">•</span>
+                    <span>{selectedSymbol}</span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => {
+                        const event = new CustomEvent("toggleStrategyTesterFullscreen");
+                        window.dispatchEvent(event);
+                      }}
+                      className="p-1.5 rounded hover:bg-gray-700/50"
+                    >
+                      <svg
+                        width="18"
+                        height="18"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                      >
+                        <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path>
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+                <div className="flex-1 overflow-hidden relative">
+                  <StrategyTester
+                    isDarkMode={isDarkMode}
+                    tradingPosition={tradingPosition}
+                    selectedSymbol={selectedSymbol}
+                    marketSimulation={marketSimulationRef.current}
+                  />
+                </div>
+              </div>
+            ) : (
+              // Account Manager Section in public mode
+              <AccountManagerSection
+                tradingPosition={tradingPosition}
+                isDarkMode={isDarkMode}
+                isDragging={layoutManager.chartAccountLayout.isDragging}
+                isAccountCollapsed={layoutManager.isAccountCollapsed}
+                isAccountMaximized={layoutManager.isAccountMaximized}
+                chartAccountSplit={layoutManager.chartAccountLayout.split}
+                onCollapsePanel={layoutManager.handleCollapsePanel}
+                onOpenPanel={layoutManager.handleOpenPanel}
+                onMaximizePanel={layoutManager.handleMaximizePanel}
+                onRestorePanel={layoutManager.handleRestorePanel}
+
+                orders={orders}
+                marketSimulation={marketSimulationRef.current}
+                selectedSymbol={selectedSymbol}
+                onOpenOrderPanel={(side, price) => {
+                  setShowOrderPanel(true);
+                  setOrderPanelSide(side);
+                  // In a real implementation, you might want to set a specific price
+                }}
+              />
+            )}
           </div>
 
           {/* Horizontal Divider */}

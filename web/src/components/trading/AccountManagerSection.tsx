@@ -9,7 +9,6 @@ import {
   MarketDepthLevel,
   SimulatedMarketData,
 } from "@/lib/services/marketSimulationService";
-import StrategyTester from "./StrategyTester";
 
 // Suggestion data type
 interface SuggestionData {
@@ -682,7 +681,7 @@ export default function AccountManagerSection({
     return colors[condition];
   };
 
-  const tabs = ["Orders", "Order Book", "Order History", "AI Insights", "Strategy Tester"];
+  const tabs = ["Orders", "Order Book", "Order History", "AI Insights"];
 
   const metrics = [
     { label: "Account Balance", value: formatVND(tradingPosition.cash) },
@@ -2278,16 +2277,6 @@ export default function AccountManagerSection({
             )}
 
             {/* STRATEGY TESTER TAB */}
-            {activeTab === "Strategy Tester" && (
-              <div className="h-full overflow-auto trading-scrollbar">
-                <StrategyTester 
-                  isDarkMode={isDarkMode}
-                  tradingPosition={tradingPosition}
-                  selectedSymbol={selectedSymbol}
-                  marketSimulation={marketSimulation}
-                />
-              </div>
-            )}
           </div>
         </div>
       )}
