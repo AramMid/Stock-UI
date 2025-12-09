@@ -1,12 +1,16 @@
 "use client";
-import { useState, useRef, ReactNode } from "react";
+import {
+  useState,
+  useRef,
+  ReactNode,
+  useMemo,
+} from "react";
 import { formatVND } from "@/lib/order-management";
 import { MarketSimulationService } from "@/lib/services/marketSimulationService";
 import { TradingPosition } from "@/lib/types";
 import { BacktestEngine, BacktestTrade } from "@/lib/services/backtestService";
 import { rsiStrategy } from "@/lib/strategies/rsiStrategy";
 import { movingAverageCrossoverStrategy } from "@/lib/strategies/movingAverageCrossover";
-import { Time } from "lightweight-charts";
 
 // ICONS
 import {
@@ -32,6 +36,8 @@ import {
   FiAlertTriangle,
   FiXCircle,
   FiArrowRightCircle,
+  FiArrowLeft,
+  FiDownload,
 } from "react-icons/fi";
 
 // Block types for the strategy builder
@@ -124,41 +130,44 @@ export default function StrategyTester({
 
   const canvasRef = useRef<HTMLDivElement | null>(null);
 
-  // Toolbox items (icon dùng từ react-icons)
-  const toolboxItems: { type: BlockType; label: string; icon: ReactNode }[] = [
-    // Indicators
-    { type: "rsi", label: "RSI", icon: <FiActivity /> },
-    { type: "macd", label: "MACD", icon: <FiBarChart2 /> },
-    { type: "ema", label: "EMA", icon: <FiTrendingUp /> },
-    { type: "sma", label: "SMA", icon: <FiTrendingDown /> },
-    { type: "bollinger", label: "Bollinger Bands", icon: <FiLayers /> },
+  // Toolbox items (memo hóa để tránh re-create nhiều lần)
+  const toolboxItems: { type: BlockType; label: string; icon: ReactNode }[] = useMemo(
+    () => [
+      // Indicators
+      { type: "rsi", label: "RSI", icon: <FiActivity /> },
+      { type: "macd", label: "MACD", icon: <FiBarChart2 /> },
+      { type: "ema", label: "EMA", icon: <FiTrendingUp /> },
+      { type: "sma", label: "SMA", icon: <FiTrendingDown /> },
+      { type: "bollinger", label: "Bollinger Bands", icon: <FiLayers /> },
 
-    // Price
-    { type: "price_open", label: "Open Price", icon: <FiArrowUpRight /> },
-    { type: "price_close", label: "Close Price", icon: <FiArrowDownRight /> },
-    { type: "price_high", label: "High Price", icon: <FiArrowUp /> },
-    { type: "price_low", label: "Low Price", icon: <FiArrowDown /> },
-    { type: "volume", label: "Volume", icon: <FiZap /> },
+      // Price
+      { type: "price_open", label: "Open Price", icon: <FiArrowUpRight /> },
+      { type: "price_close", label: "Close Price", icon: <FiArrowDownRight /> },
+      { type: "price_high", label: "High Price", icon: <FiArrowUp /> },
+      { type: "price_low", label: "Low Price", icon: <FiArrowDown /> },
+      { type: "volume", label: "Volume", icon: <FiZap /> },
 
-    // Logic
-    { type: "cross_over", label: "Cross Over", icon: <FiArrowUpRight /> },
-    { type: "cross_under", label: "Cross Under", icon: <FiArrowDownRight /> },
-    { type: "greater_than", label: "Greater Than", icon: <FiArrowUp /> },
-    { type: "less_than", label: "Less Than", icon: <FiArrowDown /> },
+      // Logic
+      { type: "cross_over", label: "Cross Over", icon: <FiArrowUpRight /> },
+      { type: "cross_under", label: "Cross Under", icon: <FiArrowDownRight /> },
+      { type: "greater_than", label: "Greater Than", icon: <FiArrowUp /> },
+      { type: "less_than", label: "Less Than", icon: <FiArrowDown /> },
 
-    // Actions
-    { type: "buy", label: "Buy", icon: <FiArrowUpRight /> },
-    { type: "sell", label: "Sell", icon: <FiArrowDownRight /> },
-    { type: "close_position", label: "Close Position", icon: <FiXCircle /> },
+      // Actions
+      { type: "buy", label: "Buy", icon: <FiArrowUpRight /> },
+      { type: "sell", label: "Sell", icon: <FiArrowDownRight /> },
+      { type: "close_position", label: "Close Position", icon: <FiXCircle /> },
 
-    // Values
-    { type: "number", label: "Number", icon: <FiHash /> },
-  ];
+      // Values
+      { type: "number", label: "Number", icon: <FiHash /> },
+    ],
+    []
+  );
 
   // Add a new block to the canvas
   const addBlock = (type: BlockType, x: number, y: number) => {
     const newBlock: Block = {
-      id: `block-${Date.now()}`,
+      id: `block-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       type,
       x,
       y,
@@ -288,6 +297,24 @@ export default function StrategyTester({
 
     return { isValid, errors, warnings };
   };
+
+  // Quick validation status cho UI header / panel (memo để tránh tính lại nhiều lần)
+  const quickValidation = useMemo(() => {
+    const hasAction = blocks.some((b) => ["buy", "sell"].includes(b.type));
+    const hasConnections = connections.length > 0;
+    const actionsConnected = blocks
+      .filter((b) => ["buy", "sell"].includes(b.type))
+      .every((ab) => connections.some((c) => c.to === ab.id));
+
+    const level =
+      hasAction && hasConnections && actionsConnected
+        ? "ready"
+        : hasAction || hasConnections
+        ? "partial"
+        : "empty";
+
+    return { hasAction, hasConnections, actionsConnected, level };
+  }, [blocks, connections]);
 
   // Run backtest
   const runBacktest = async () => {
@@ -546,7 +573,7 @@ export default function StrategyTester({
     processActionBlocks(sellBlocks, "SELL");
 
     // Create the complete strategy object
-    const strategyData = {
+    const strategyData: StrategyData = {
       strategy: {
         name: "Custom Strategy",
         description: "Generated from visual strategy builder",
@@ -638,6 +665,16 @@ export default function StrategyTester({
     }
   };
 
+  // Summary info cho header (memo)
+  const headerSummary = useMemo(() => {
+    const capital = formatVND(backtestParams.initialCapital);
+    const range = `${backtestParams.startDate.toISOString().split("T")[0]} → ${
+      backtestParams.endDate.toISOString().split("T")[0]
+    }`;
+
+    return { capital, range };
+  }, [backtestParams]);
+
   return (
     <div
       className={`h-full flex flex-col ${
@@ -664,11 +701,37 @@ export default function StrategyTester({
               <FiCpu className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-lg font-semibold tracking-tight">
+              <h2 className="text-lg font-semibold tracking-tight flex items-center gap-2">
                 Strategy Tester
+                <span
+                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium ${
+                    quickValidation.level === "ready"
+                      ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/40"
+                      : quickValidation.level === "partial"
+                      ? "bg-amber-500/10 text-amber-400 border border-amber-500/40"
+                      : "bg-slate-500/10 text-slate-400 border border-slate-500/40"
+                  }`}
+                >
+                  <FiActivity className="w-3 h-3" />
+                  {quickValidation.level === "ready"
+                    ? "Ready to backtest"
+                    : quickValidation.level === "partial"
+                    ? "Need more wiring"
+                    : "Start building"}
+                </span>
               </h2>
-              <p className="text-xs text-gray-400">
+              <p className="text-[11px] text-gray-400 flex flex-wrap items-center gap-2">
                 Kéo thả block để tạo chiến lược &amp; backtest nhanh
+                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full border border-gray-600/40 text-[10px]">
+                  <FiDollarSign className="w-3 h-3" />
+                  {backtestParams.symbol || "VN30"}
+                </span>
+                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full border border-gray-600/40 text-[10px]">
+                  {headerSummary.range}
+                </span>
+                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full border border-gray-600/40 text-[10px]">
+                  Capital: {headerSummary.capital}
+                </span>
               </p>
             </div>
           </div>
@@ -722,7 +785,7 @@ export default function StrategyTester({
                 isDarkMode
                   ? "border-gray-700 bg-gray-900 hover:bg-gray-800"
                   : "border-slate-200 bg-white hover:bg-slate-50"
-              }`}
+              } transition-colors`}
             >
               <FiMaximizeIcon />
               Fullscreen
@@ -895,9 +958,15 @@ export default function StrategyTester({
                           Strategy Stats
                         </h4>
                       </div>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 inline-flex items-center gap-1">
+                      <span
+                        className={`text-[10px] px-1.5 py-0.5 rounded-full inline-flex items-center gap-1 ${
+                          quickValidation.level === "ready"
+                            ? "bg-emerald-500/10 text-emerald-400"
+                            : "bg-amber-500/10 text-amber-400"
+                        }`}
+                      >
                         <FiActivity className="w-3 h-3" />
-                        Live
+                        {blocks.length} blocks
                       </span>
                     </div>
                     <div className="grid grid-cols-3 gap-2 text-center text-[11px]">
@@ -976,17 +1045,15 @@ export default function StrategyTester({
 
                     <div className="space-y-1 text-[11px]">
                       <ValidationRow
-                        ok={blocks.some((b) => ["buy", "sell"].includes(b.type))}
+                        ok={quickValidation.hasAction}
                         label="Has action block"
                       />
                       <ValidationRow
-                        ok={connections.length > 0}
+                        ok={quickValidation.hasConnections}
                         label="Has connections"
                       />
                       <ValidationRow
-                        ok={blocks
-                          .filter((b) => ["buy", "sell"].includes(b.type))
-                          .every((ab) => connections.some((c) => c.to === ab.id))}
+                        ok={quickValidation.actionsConnected}
                         label="Action blocks connected"
                       />
                     </div>
@@ -1222,7 +1289,7 @@ export default function StrategyTester({
                     : isDarkMode
                     ? "bg-emerald-600 hover:bg-emerald-700"
                     : "bg-emerald-500 hover:bg-emerald-600"
-                } text-white`}
+                } text-white transition-colors`}
               >
                 {isRunning ? (
                   <>
@@ -1266,7 +1333,7 @@ export default function StrategyTester({
                 className="absolute inset-0 opacity-30 pointer-events-none"
                 style={{
                   backgroundImage:
-                    "linear-gradient(to right, rgba(148,163,184,0.25) 1px, transparent 1px), linear-gradient(to bottom, rgba(148,163,184,0.25) 1px, transparent 1px)",
+                    "linear-gradient(to right, rgba(148,163,184,0.18) 1px, transparent 1px), linear-gradient(to bottom, rgba(148,163,184,0.18) 1px, transparent 1px)",
                   backgroundSize: "24px 24px",
                 }}
               />
@@ -1308,6 +1375,7 @@ export default function StrategyTester({
                   if (types.includes("blockType")) e.dataTransfer.dropEffect = "copy";
                   else if (types.includes("moveBlockId")) e.dataTransfer.dropEffect = "move";
                 }}
+                onClick={() => setSelectedBlock(null)}
               >
                 {/* Render connections */}
                 <svg
@@ -1368,7 +1436,7 @@ export default function StrategyTester({
                 {blocks.map((block) => (
                   <div
                     key={block.id}
-                    className={`absolute w-28 h-12 rounded-xl flex items-center justify-center cursor-move shadow-lg shadow-black/25 hover:shadow-xl transition-all duration-150 border ${
+                    className={`absolute w-28 h-12 rounded-xl flex items-center justify-center cursor-move shadow-lg shadow-black/25 hover:shadow-2xl hover:scale-[1.03] transition-all duration-150 border ${
                       selectedBlock === block.id
                         ? isDarkMode
                           ? "ring-2 ring-blue-400 border-blue-400"
@@ -1410,7 +1478,6 @@ export default function StrategyTester({
                   >
                     <div className="text-center w-full px-1">
                       <div className="text-[11px] font-semibold truncate leading-tight flex items-center justify-center gap-1">
-                        {/* nhỏ icon trong block cho đẹp */}
                         <span className="inline-flex items-center">
                           {
                             toolboxItems.find((i) => i.type === block.type)?.icon ?? (
@@ -1499,7 +1566,6 @@ export default function StrategyTester({
           </div>
         </div>
       ) : (
-        /* RESULTS VIEW (giữ nguyên như trước) */
         <ResultsView
           isDarkMode={isDarkMode}
           backtestResult={backtestResult}
@@ -1605,7 +1671,11 @@ function StatCard({
   isDarkMode: boolean;
 }) {
   return (
-    <div className={`${isDarkMode ? "bg-gray-900" : "bg-slate-100"} p-2 rounded-lg`}>
+    <div
+      className={`${
+        isDarkMode ? "bg-gray-900/80 border-gray-800" : "bg-slate-100 border-slate-200"
+      } p-2 rounded-lg border`}
+    >
       <div className="text-[10px] text-gray-400 mb-1">{label}</div>
       <div className="font-semibold text-sm">{value}</div>
     </div>
@@ -1627,7 +1697,8 @@ function ValidationRow({ ok, label }: { ok: boolean; label: string }) {
   );
 }
 
-/* Results View tách ra cho gọn (giữ nguyên logic gốc) */
+/* ===== RESULTS VIEW ===== */
+
 function ResultsView({
   isDarkMode,
   backtestResult,
@@ -1670,19 +1741,425 @@ function ResultsView({
     );
   }
 
-  /* To keep câu trả lời không quá dài, phần RESULTS VIEW em giữ đúng logic, chỉ
-     tinh chỉnh nhẹ nền theo isDarkMode (như bản anh gửi). Nếu anh cần em
-     refactor đẹp thêm phần này nữa, nói em làm tiếp nhé. */
+  // Derived metrics
+  const { netProfit, totalTrades, winRate, maxDrawdown, profitFactor } = backtestResult;
 
-  // ... ở đây anh giữ nguyên phần JSX Results cũ của anh
-  // (do message ban đầu đã rất dài, em không lặp lại để tránh vượt giới hạn).
-  // Khi copy code, anh chỉ cần thay phần ResultsView bằng phần anh đang dùng,
-  // hoặc nếu muốn em làm đẹp tiếp, gửi lại riêng phần RESULTS để em style tiếp.
+  const totalProfit = backtestResult.trades
+    .filter((t) => t.profit > 0)
+    .reduce((sum, t) => sum + t.profit, 0);
+
+  const totalLoss = backtestResult.trades
+    .filter((t) => t.profit < 0)
+    .reduce((sum, t) => sum + t.profit, 0);
+
+  const avgTrade = totalTrades > 0 ? netProfit / totalTrades : 0;
+
+  const bestTrade = backtestResult.trades.reduce(
+    (best, t) => (t.profit > best ? t.profit : best),
+    Number.NEGATIVE_INFINITY
+  );
+  const worstTrade = backtestResult.trades.reduce(
+    (worst, t) => (t.profit < worst ? t.profit : worst),
+    Number.POSITIVE_INFINITY
+  );
+
+  const equityCurve = backtestResult.equityCurve || [];
+  const underwater = backtestResult.underwater || [];
+
+  // Sparkline helper
+  const renderSparkline = (
+    data: { value: number }[],
+    options?: { positiveColor?: string; negativeColor?: string; isUnderwater?: boolean }
+  ) => {
+    if (!data.length) return null;
+
+    const width = 260;
+    const height = 80;
+    const values = data.map((d) => d.value);
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const range = max - min || 1;
+
+    const points = data
+      .map((d, idx) => {
+        const x = (idx / Math.max(data.length - 1, 1)) * width;
+        const y = height - ((d.value - min) / range) * height;
+        return `${x},${y}`;
+      })
+      .join(" ");
+
+    const isUp = data[data.length - 1].value >= data[0].value;
+    const strokeColor =
+      options?.isUnderwater
+        ? "#f97316"
+        : isUp
+        ? options?.positiveColor || "#22c55e"
+        : options?.negativeColor || "#ef4444";
+
+    return (
+      <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-20">
+        <defs>
+          <linearGradient id="sparklineFill" x1="0" x2="0" y1="0" y2="1">
+            <stop
+              offset="0%"
+              stopColor={strokeColor}
+              stopOpacity={0.28}
+            />
+            <stop
+              offset="100%"
+              stopColor={strokeColor}
+              stopOpacity={0.02}
+            />
+          </linearGradient>
+        </defs>
+        <polyline
+          fill="none"
+          stroke={strokeColor}
+          strokeWidth="2"
+          points={points}
+        />
+        <polygon
+          points={`${points} ${width},${height} 0,${height}`}
+          fill="url(#sparklineFill)"
+        />
+      </svg>
+    );
+  };
 
   return (
-    <div className="flex-1 overflow-auto p-4">
-      {/* Dán lại phần RESULTS VIEW của anh ở đây nếu muốn giữ nguyên hoàn toàn */}
-      {/* hoặc sử dụng nguyên phần Results trong file gốc của anh */}
+    <div
+      className={`flex-1 overflow-auto ${
+        isDarkMode ? "bg-gray-950 text-slate-100" : "bg-slate-50 text-slate-900"
+      }`}
+    >
+      <div className="px-4 py-3 border-b border-gray-800/60 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setActiveView("builder")}
+            className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs border ${
+              isDarkMode
+                ? "border-gray-700 bg-gray-900 hover:bg-gray-800"
+                : "border-slate-200 bg-white hover:bg-slate-100"
+            }`}
+          >
+            <FiArrowLeft className="w-3 h-3" />
+            Builder
+          </button>
+          <div className="text-xs text-gray-400 ml-2">
+            Results for{" "}
+            <span className="font-semibold">{backtestParams.symbol || "VN30"}</span> •{" "}
+            {backtestParams.startDate.toISOString().split("T")[0]} →{" "}
+            {backtestParams.endDate.toISOString().split("T")[0]}
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 text-xs">
+          <button
+            onClick={() => exportResults("csv")}
+            className={`inline-flex items-center gap-1 rounded-lg px-3 py-1 border ${
+              isDarkMode
+                ? "border-gray-700 bg-gray-900 hover:bg-gray-800"
+                : "border-slate-200 bg-white hover:bg-slate-100"
+            }`}
+          >
+            <FiDownload className="w-3 h-3" />
+            Export CSV
+          </button>
+          <button
+            onClick={() => exportResults("pdf")}
+            className="inline-flex items-center gap-1 rounded-lg px-3 py-1 border border-gray-700/40 text-gray-400 text-[11px] cursor-not-allowed"
+          >
+            <FiDownload className="w-3 h-3" />
+            PDF (coming soon)
+          </button>
+        </div>
+      </div>
+
+      <div className="p-4 space-y-4">
+        {/* Top summary cards */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+          <div
+            className={`rounded-xl p-3 border ${
+              isDarkMode
+                ? "border-gray-800 bg-gradient-to-br from-emerald-900/40 to-emerald-700/20"
+                : "border-emerald-100 bg-emerald-50"
+            }`}
+          >
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[11px] font-medium text-emerald-400 flex items-center gap-1">
+                <FiTrendingUp className="w-3 h-3" />
+                Net Profit
+              </span>
+              <span className="text-[10px] uppercase tracking-wide text-emerald-300/80">
+                P&amp;L
+              </span>
+            </div>
+            <div
+              className={`text-lg font-semibold ${
+                netProfit >= 0 ? "text-emerald-400" : "text-red-400"
+              }`}
+            >
+              {netProfit >= 0 ? "+" : ""}
+              {formatVND(netProfit)}
+            </div>
+            <div className="text-[11px] text-gray-400 mt-1">
+              Initial capital: {formatVND(backtestParams.initialCapital)}
+            </div>
+          </div>
+
+          <div
+            className={`rounded-xl p-3 border ${
+              isDarkMode ? "border-gray-800 bg-gray-900/80" : "border-slate-200 bg-white"
+            }`}
+          >
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[11px] font-medium text-blue-400">Win Rate</span>
+              <span className="text-[10px] text-gray-500">
+                {backtestResult.trades.length} trades
+              </span>
+            </div>
+            <div className="text-lg font-semibold text-blue-400">
+              {(winRate * 100).toFixed(1)}%
+            </div>
+            <div className="text-[11px] text-gray-400 mt-1">
+              Avg trade: {avgTrade >= 0 ? "+" : ""}
+              {formatVND(avgTrade)}
+            </div>
+          </div>
+
+          <div
+            className={`rounded-xl p-3 border ${
+              isDarkMode ? "border-gray-800 bg-gray-900/80" : "border-slate-200 bg-white"
+            }`}
+          >
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[11px] font-medium text-amber-400">
+                Max Drawdown
+              </span>
+              <span className="text-[10px] text-gray-500">Risk</span>
+            </div>
+            <div className="text-lg font-semibold text-amber-400">
+              {(maxDrawdown * 100).toFixed(1)}%
+            </div>
+            <div className="text-[11px] text-gray-400 mt-1">
+              Profit factor: {profitFactor.toFixed(2)}
+            </div>
+          </div>
+
+          <div
+            className={`rounded-xl p-3 border ${
+              isDarkMode ? "border-gray-800 bg-gray-900/80" : "border-slate-200 bg-white"
+            }`}
+          >
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[11px] font-medium text-gray-300">
+                Distribution
+              </span>
+              <span className="text-[10px] text-gray-500">PnL breakdown</span>
+            </div>
+            <div className="flex items-end gap-3 mt-1">
+              <div className="flex-1">
+                <div className="text-[10px] text-emerald-400">Profit</div>
+                <div className="text-sm font-semibold text-emerald-400">
+                  +{formatVND(totalProfit)}
+                </div>
+              </div>
+              <div className="flex-1">
+                <div className="text-[10px] text-red-400">Loss</div>
+                <div className="text-sm font-semibold text-red-400">
+                  {formatVND(totalLoss)}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Charts row */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {/* Equity curve */}
+          <div
+            className={`rounded-xl p-3 border ${
+              isDarkMode ? "border-gray-800 bg-gray-900/90" : "border-slate-200 bg-white"
+            }`}
+          >
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <FiTrendingUp className="w-4 h-4 text-emerald-400" />
+                <div>
+                  <div className="text-xs font-semibold">Equity Curve</div>
+                  <div className="text-[11px] text-gray-500">
+                    {backtestParams.startDate.toISOString().split("T")[0]} →{" "}
+                    {backtestParams.endDate.toISOString().split("T")[0]}
+                  </div>
+                </div>
+              </div>
+              <div className="text-[10px] text-gray-500">
+                Final equity:{" "}
+                <span className="font-semibold">
+                  {formatVND(backtestParams.initialCapital + netProfit)}
+                </span>
+              </div>
+            </div>
+            <div className="mt-1">
+              {renderSparkline(equityCurve)}
+            </div>
+          </div>
+
+          {/* Drawdown / underwater */}
+          <div
+            className={`rounded-xl p-3 border ${
+              isDarkMode ? "border-gray-800 bg-gray-900/90" : "border-slate-200 bg-white"
+            }`}
+          >
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <FiActivity className="w-4 h-4 text-amber-400" />
+                <div>
+                  <div className="text-xs font-semibold">Drawdown (Underwater)</div>
+                  <div className="text-[11px] text-gray-500">
+                    Peak-to-trough equity declines
+                  </div>
+                </div>
+              </div>
+              <div className="text-[10px] text-gray-500">
+                Max DD:{" "}
+                <span className="font-semibold text-amber-400">
+                  {(maxDrawdown * 100).toFixed(1)}%
+                </span>
+              </div>
+            </div>
+            <div className="mt-1">
+              {renderSparkline(underwater, { isUnderwater: true })}
+            </div>
+          </div>
+        </div>
+
+        {/* Trades table */}
+        <div
+          className={`rounded-xl border ${
+            isDarkMode ? "border-gray-800 bg-gray-900/90" : "border-slate-200 bg-white"
+          }`}
+        >
+          <div className="px-3 py-2 border-b border-gray-800/60 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <FiBarChart2 className="w-4 h-4 text-blue-400" />
+              <div>
+                <div className="text-xs font-semibold">Trade History</div>
+                <div className="text-[11px] text-gray-500">
+                  {backtestResult.trades.length} closed trades
+                </div>
+              </div>
+            </div>
+          </div>
+          <div className="max-h-72 overflow-auto text-xs">
+            <table className="w-full border-collapse">
+              <thead>
+                <tr
+                  className={`text-[11px] ${
+                    isDarkMode ? "bg-gray-900" : "bg-slate-100"
+                  }`}
+                >
+                  <th className="px-3 py-2 text-left font-medium border-b border-gray-800/40">
+                    Entry
+                  </th>
+                  <th className="px-3 py-2 text-left font-medium border-b border-gray-800/40">
+                    Exit
+                  </th>
+                  <th className="px-3 py-2 text-right font-medium border-b border-gray-800/40">
+                    Side
+                  </th>
+                  <th className="px-3 py-2 text-right font-medium border-b border-gray-800/40">
+                    Qty
+                  </th>
+                  <th className="px-3 py-2 text-right font-medium border-b border-gray-800/40">
+                    Entry Px
+                  </th>
+                  <th className="px-3 py-2 text-right font-medium border-b border-gray-800/40">
+                    Exit Px
+                  </th>
+                  <th className="px-3 py-2 text-right font-medium border-b border-gray-800/40">
+                    P&amp;L
+                  </th>
+                  <th className="px-3 py-2 text-right font-medium border-b border-gray-800/40">
+                    Return %
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {backtestResult.trades.map((trade, idx) => {
+                  const investment = trade.entryPrice * trade.quantity;
+                  const returnPercent =
+                    investment > 0 ? (trade.profit / investment) * 100 : 0;
+                  const isWin = trade.profit >= 0;
+
+                  return (
+                    <tr
+                      key={idx}
+                      className={`${
+                        idx % 2 === 0
+                          ? isDarkMode
+                            ? "bg-gray-900/40"
+                            : "bg-white"
+                          : isDarkMode
+                          ? "bg-gray-900/10"
+                          : "bg-slate-50"
+                      }`}
+                    >
+                      <td className="px-3 py-1.5 border-b border-gray-800/20">
+                        {new Date(trade.entryTime * 1000).toLocaleString()}
+                      </td>
+                      <td className="px-3 py-1.5 border-b border-gray-800/20">
+                        {new Date(trade.exitTime * 1000).toLocaleString()}
+                      </td>
+                      <td className="px-3 py-1.5 border-b border-gray-800/20 text-right">
+                        <span
+                          className={`inline-flex items-center justify-end gap-1 px-1.5 py-0.5 rounded-full text-[10px] ${
+                            trade.side.toLowerCase() === "buy"
+                              ? "bg-emerald-500/15 text-emerald-400"
+                              : "bg-red-500/15 text-red-400"
+                          }`}
+                        >
+                          {trade.side.toUpperCase()}
+                        </span>
+                      </td>
+                      <td className="px-3 py-1.5 border-b border-gray-800/20 text-right">
+                        {trade.quantity}
+                      </td>
+                      <td className="px-3 py-1.5 border-b border-gray-800/20 text-right">
+                        {trade.entryPrice.toFixed(2)}
+                      </td>
+                      <td className="px-3 py-1.5 border-b border-gray-800/20 text-right">
+                        {trade.exitPrice.toFixed(2)}
+                      </td>
+                      <td
+                        className={`px-3 py-1.5 border-b border-gray-800/20 text-right ${
+                          isWin ? "text-emerald-400" : "text-red-400"
+                        }`}
+                      >
+                        {isWin ? "+" : ""}
+                        {formatVND(trade.profit)}
+                      </td>
+                      <td
+                        className={`px-3 py-1.5 border-b border-gray-800/20 text-right ${
+                          isWin ? "text-emerald-400" : "text-red-400"
+                        }`}
+                      >
+                        {isWin ? "+" : ""}
+                        {returnPercent.toFixed(2)}%
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {backtestResult.trades.length === 0 && (
+              <div className="p-4 text-center text-gray-500 text-xs">
+                No trades generated by this strategy.
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
