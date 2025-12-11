@@ -11,6 +11,7 @@ interface QuickTradingButtonsProps {
   currentVolume?: number;
   dayRange?: { low: number; high: number };
   fiftyTwoWeekRange?: { low: number; high: number };
+  isPrivateMode?: boolean; // Thêm prop isPrivateMode
 }
 
 export default function QuickTradingButtons({
@@ -23,6 +24,7 @@ export default function QuickTradingButtons({
   currentVolume = 0,
   dayRange = { low: 240.21, high: 246.3 },
   fiftyTwoWeekRange = { low: 180.5, high: 260.8 },
+  isPrivateMode = false, // Mặc định là false
 }: QuickTradingButtonsProps) {
   // Format volume for display
   const formatVolume = (vol: number) => {
@@ -51,6 +53,11 @@ export default function QuickTradingButtons({
   const spread = 0.02; // Example spread value
   const bidPrice = (currentPrice - spread / 2).toFixed(2);
   const askPrice = (currentPrice + spread / 2).toFixed(2);
+
+  // Nếu đang ở chế độ private, không hiển thị các button buy/sell
+  if (isPrivateMode) {
+    return null;
+  }
 
   return (
     <div
@@ -180,110 +187,66 @@ export default function QuickTradingButtons({
                   <span
                     className={isDarkMode ? "text-gray-400" : "text-gray-500"}
                   >
-                    Avg Vol:
+                    Day Range:
                   </span>
                   <span
                     className={`font-mono ${
                       isDarkMode ? "text-[#d9d9d9]" : "text-gray-900"
                     }`}
                   >
-                    {currentVolume > 0
-                      ? formatVolume(currentVolume * 0.65)
-                      : "N/A"}
+                    {dayRange.low.toFixed(2)} - {dayRange.high.toFixed(2)}
                   </span>
                 </div>
                 <div className="flex justify-between">
                   <span
                     className={isDarkMode ? "text-gray-400" : "text-gray-500"}
                   >
-                    52W High:
+                    52W Range:
                   </span>
-                  <span className="font-mono text-green-400">
-                    {fiftyTwoWeekRange.high.toFixed(1)}
-                  </span>
-                </div>
-                <div className="flex justify-between">
                   <span
-                    className={isDarkMode ? "text-gray-400" : "text-gray-500"}
+                    className={`font-mono ${
+                      isDarkMode ? "text-[#d9d9d9]" : "text-gray-900"
+                    }`}
                   >
-                    52W Low:
-                  </span>
-                  <span className="font-mono text-red-400">
-                    {fiftyTwoWeekRange.low.toFixed(1)}
+                    {fiftyTwoWeekRange.low.toFixed(2)} -{" "}
+                    {fiftyTwoWeekRange.high.toFixed(2)}
                   </span>
                 </div>
               </div>
             </div>
 
-            {/* Trading Info */}
-            <div
-              className={`border-b pb-2 ${
-                isDarkMode ? "border-[#2a2e39]" : "border-gray-200"
-              }`}
-            >
-              <h4 className="font-semibold text-sm mb-2 text-green-400">
-                Position Info
-              </h4>
-              <div className="space-y-1">
-                <div className="flex justify-between">
-                  <span
-                    className={isDarkMode ? "text-gray-400" : "text-gray-500"}
-                  >
-                    Bid:
-                  </span>
-                  <span className="font-mono text-red-400">{bidPrice}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span
-                    className={isDarkMode ? "text-gray-400" : "text-gray-500"}
-                  >
-                    Ask:
-                  </span>
-                  <span className="font-mono text-green-400">{askPrice}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span
-                    className={isDarkMode ? "text-gray-400" : "text-gray-500"}
-                  >
-                    Spread:
-                  </span>
-                  <span className="font-mono text-orange-400">
-                    {spread.toFixed(2)}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* P&L Info */}
+            {/* Price Info */}
             <div>
-              <h4 className="font-semibold text-sm mb-2 text-purple-400">
-                P&L Summary
+              <h4 className="font-semibold text-sm mb-2 text-blue-400">
+                Price Info
               </h4>
-              <div className="space-y-1">
+              <div className="grid grid-cols-2 gap-2">
                 <div className="flex justify-between">
                   <span
                     className={isDarkMode ? "text-gray-400" : "text-gray-500"}
                   >
-                    Unrealized:
+                    Open:
                   </span>
-                  <span className="font-mono text-green-400">+$127.50</span>
+                  <span
+                    className={`font-mono ${
+                      isDarkMode ? "text-[#d9d9d9]" : "text-gray-900"
+                    }`}
+                  >
+                    {currentPrice.toFixed(2)}
+                  </span>
                 </div>
                 <div className="flex justify-between">
                   <span
                     className={isDarkMode ? "text-gray-400" : "text-gray-500"}
                   >
-                    Realized:
+                    Change:
                   </span>
-                  <span className="font-mono text-blue-400">+$89.32</span>
-                </div>
-                <div className="flex justify-between">
                   <span
-                    className={isDarkMode ? "text-gray-400" : "text-gray-500"}
+                    className={`font-mono ${changeColor}`}
                   >
-                    Total P&L:
-                  </span>
-                  <span className="font-mono text-green-400 font-semibold">
-                    +$216.82
+                    {changeSymbol}
+                    {formattedChange} ({changeSymbol}
+                    {formattedChangePercent}%)
                   </span>
                 </div>
               </div>

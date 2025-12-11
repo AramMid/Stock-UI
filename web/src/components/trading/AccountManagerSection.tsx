@@ -1,14 +1,20 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { TradingPosition } from "@/lib/types";
-import { Order, formatVND } from "@/lib/order-management";
-import { orderBookService } from "@/lib/services/orderBookService";
+import { Order, formatVND, formatVNDCurrency } from "@/lib/order-management";
 import { OrderBook, OrderBookLevel } from "@/lib/types";
 import {
   MarketSimulationService,
   MarketDepthLevel,
   SimulatedMarketData,
 } from "@/lib/services/marketSimulationService";
+import {
+  getOrders,
+  OrderResponse as BackendOrder,
+  CreateOrderDto,
+} from "@/lib/services/orderApiService";
+import { WebSocketService } from "@/lib/services/webSocketService";
+import { OrderUpdate, OrderUpdateCallback } from "@/lib/services/webSocketService";
 
 // Suggestion data type
 interface SuggestionData {
@@ -93,6 +99,243 @@ export default function AccountManagerSection({
   const [debugInfo, setDebugInfo] = useState<string>("Initializing...");
   const [lastUpdateTime, setLastUpdateTime] = useState<Date>(new Date());
 
+  // ========================
+  // BACKEND ORDER HISTORY
+  // ========================
+  const [orderHistory, setOrderHistory] = useState<BackendOrder[]>([]);
+  const [loadingOrderHistory, setLoadingOrderHistory] = useState(false);
+  const [orderHistoryError, setOrderHistoryError] = useState<string | null>(
+    null
+  );
+
+  // ========================
+  // ORDER SYNC STATE
+  // ========================
+  /**
+   * Lưu lại status cuối cùng đã được POST cho từng order.id
+   * để tránh POST lặp lại nhiều lần, đồng thời đảm bảo
+   * chỉ POST khi order chuyển sang trạng thái cuối.
+   */
+  const orderSyncStatusRef = useRef<Record<string, string>>({});
+
+  // ========================
+  // LẤY ORDER HISTORY TỪ BACKEND
+  // ========================
+  useEffect(() => {
+    if (activeTab !== "Order History") return;
+
+    let cancelled = false;
+
+    const fetchHistory = async () => {
+      try {
+        setLoadingOrderHistory(true);
+        setOrderHistoryError(null);
+
+        const data = await getOrders({
+          limit: 50,
+          offset: 0,
+        });
+
+        if (!cancelled) {
+          setOrderHistory(data);
+        }
+      } catch (err: unknown) {
+        console.error("Error fetching backend order history:", err);
+        if (!cancelled) {
+          setOrderHistoryError(
+            (err as Error)?.message || "Failed to load order history"
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingOrderHistory(false);
+        }
+      }
+    };
+
+    fetchHistory();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab]);
+
+  // =========================================================================
+  // EFFECT: WEBSOCKET SUBSCRIPTION FOR REAL-TIME ORDER UPDATES
+  // =========================================================================
+  useEffect(() => {
+    // Only subscribe when on Orders tab
+    if (activeTab !== "Orders") return;
+
+    // WebSocket service instance
+    const webSocketService = WebSocketService.getInstance();
+
+    // Track active subscriptions to clean up later
+    const subscriptions: { orderId: string; callback: OrderUpdateCallback }[] = [];
+
+    // Callback function to handle order updates
+    const handleOrderUpdate = (update: OrderUpdate) => {
+      // Since orders is a prop, we can't directly update it
+      // The parent component should handle order updates
+      // We'll just log the update for now
+      console.log("Received order update via WebSocket:", update);
+    };
+
+    // Subscribe to all existing orders
+    orders.forEach(order => {
+      webSocketService.subscribe(order.id, handleOrderUpdate);
+      subscriptions.push({ orderId: order.id, callback: handleOrderUpdate });
+    });
+
+    // Cleanup subscriptions when component unmounts or tab changes
+    return () => {
+      subscriptions.forEach(({ orderId, callback }) => {
+        webSocketService.unsubscribe(orderId, callback);
+      });
+    };
+  }, [activeTab, orders]);
+
+  // =========================================================================
+  // HELPER: MAP STATUS FRONTEND -> BACKEND
+  // =========================================================================
+  // Only map final statuses that should be saved to database
+  const mapFrontendStatusToBackendStatus = (
+    status: string
+  ): "filled" | "cancelled" => {
+    switch (status) {
+      case "FILLED":
+        return "filled";
+      case "CANCELLED":
+        return "cancelled";
+      case "REJECTED":         // ⬅️ gom về cancelled
+        return "cancelled";
+      // Any other status should not be saved to database
+      default:
+        throw new Error(`Unexpected status for database sync: ${status}`);
+    }
+  };
+
+  // =========================================================================
+  // HELPER: POST ORDER LÊN BACKEND (CHỈ KHI ĐÃ ĐỔI STATUS)
+  // =========================================================================
+  const syncOrderToBackend = async (order: Order, backendStatus: "filled" | "cancelled") => {
+    // Create payload matching the NestJS DTO
+    const payload: CreateOrderDto = {
+      stockSymbol: order.symbol,
+      side: order.type, // "buy" | "sell"
+      quantity: order.quantity,
+      orderType: order.orderType?.toLowerCase() ?? "limit", // Convert to lowercase to match DTO
+      price: order.price !== undefined ? order.price : undefined, // Use undefined instead of null for optional fields
+      status: backendStatus, // Only "filled" or "cancelled" statuses
+      // Optional fields from DTO
+      filledQuantity: order.filledQuantity ?? undefined, // Use undefined for optional fields
+      filledPrice: order.filledPrice ?? order.price ?? undefined, // Use undefined for optional fields
+      commission: 0,
+      filledAt: 
+        (order as unknown as { filledAt?: Date }).filledAt?.toISOString?.() ??
+        order.timestamp?.toISOString?.() ??
+        new Date().toISOString(),
+    };
+    
+    try {
+      // Log the payload for debugging
+      console.log("[OrderSync] Sending payload to backend:", JSON.stringify(payload, null, 2));
+
+      // Import the createOrder function
+      const orderApiService = await import("@/lib/services/orderApiService");
+      
+      // Call the createOrder function which handles the correct API endpoint
+      await orderApiService.createOrder(payload);
+
+      console.log("[OrderSync] Synced order to backend:", {
+        id: order.id,
+        status: backendStatus,
+      });
+    } catch (error) {
+      console.error("[OrderSync] Error syncing order:", order.id, error);
+      // Không cập nhật ref ở đây để lần sau có thể retry nếu cần
+      throw error;
+    }
+  };
+
+  // =========================================================================
+  // EFFECT: CHỈ POST ORDER LÊN BACKEND KHI STATUS ĐÃ ĐỔI
+  // =========================================================================
+  // DISABLED: Order syncing is now handled by the home page component to prevent duplicates
+  // useEffect(() => {
+  //   if (!orders || orders.length === 0) return;
+  //
+  //   // Các trạng thái được coi là "cuối" / đáng để sync
+  //   // Theo yêu cầu: chỉ sync khi order có trạng thái FILLED hoặc REJECTED/CANCELLED
+  //   const finalStatuses = new Set(["FILLED", "REJECTED", "CANCELLED"]);
+  //   
+  //   // Store timeout IDs for cleanup
+  //   const timeouts: NodeJS.Timeout[] = [];
+  //
+  //   orders.forEach((order) => {
+  //     const id = String(order.id);
+  //     const currentStatus = order.status;
+  //     const prevStatus = orderSyncStatusRef.current[id];
+  //
+  //     // Nếu status không thay đổi => không làm gì
+  //     if (currentStatus === prevStatus) return;
+  //
+  //     // Nếu status hiện tại chưa phải trạng thái cuối
+  //     // => chỉ cập nhật cache, không POST
+  //     if (!finalStatuses.has(currentStatus)) {
+  //       orderSyncStatusRef.current[id] = currentStatus;
+  //       return;
+  //     }
+  //
+  //     // Nếu trước đó đã từng sync 1 trạng thái cuối rồi
+  //     // => tránh POST lặp lại nhiều lần
+  //     if (prevStatus && finalStatuses.has(prevStatus)) {
+  //       orderSyncStatusRef.current[id] = currentStatus;
+  //       return;
+  //     }
+  //
+  //     // Only map and sync if this is a final status that should be saved to database
+  //     let timeoutId: NodeJS.Timeout | null = null;
+  //     try {
+  //       const backendStatus = mapFrontendStatusToBackendStatus(currentStatus);
+  //
+  //       // Thêm 1 giây delay trước khi gọi API (theo yêu cầu)
+  //       timeoutId = setTimeout(async () => {
+  //         try {
+  //           await syncOrderToBackend(order, backendStatus);
+  //           // Chỉ khi POST thành công mới đánh dấu là đã sync trạng thái này
+  //           orderSyncStatusRef.current[id] = currentStatus;
+  //         } catch (err) {
+  //           // Nếu lỗi, không cập nhật ref để có thể thử lại khi orders update
+  //           console.error(
+  //             "[OrderSync] Sync failed for order, will retry on next status change:",
+  //             id
+  //           );
+  //         }
+  //       }, 1000); // 1 giây delay theo yêu cầu
+  //       
+  //       // Store timeout ID for cleanup
+  //       timeouts.push(timeoutId);
+  //     } catch (err) {
+  //       // This status should not be synced to database, just update the cache
+  //       console.debug("Status not synced to database (expected):", currentStatus);
+  //       orderSyncStatusRef.current[id] = currentStatus;
+  //       // Clean up timeout if it was created
+  //       if (timeoutId) {
+  //         clearTimeout(timeoutId);
+  //       }
+  //     }
+  //   });
+  //   
+  //   // Cleanup all timeouts when component unmounts or orders change
+  //   return () => {
+  //     timeouts.forEach(timeoutId => clearTimeout(timeoutId));
+  //   };
+  // }, [orders]); // ⬅️ chỉ phụ thuộc vào orders
+
+  // ========================
+  // MARKET SIMULATION EFFECT
+  // ========================
   useEffect(() => {
     const analyzeMarket = (
       marketData: SimulatedMarketData,
@@ -155,7 +398,7 @@ export default function AccountManagerSection({
       let buySuggestion: SuggestionData | null = null;
       let sellSuggestion: SuggestionData | null = null;
 
-      // BUY logic (long)
+      // BUY logic
       const buyCondition =
         analysis.trendStrength > 0.2 || isOversold || vwapDiff < -0.5;
 
@@ -225,7 +468,7 @@ export default function AccountManagerSection({
         }
       }
 
-      // SELL logic (short)
+      // SELL logic
       const sellCondition =
         analysis.trendStrength < -0.15 || isOverbought || vwapDiff > 0.3;
 
@@ -290,8 +533,12 @@ export default function AccountManagerSection({
         }
       }
 
-      // Fallback basic signals from trend
-      if (!buySuggestion && !sellSuggestion && Math.abs(analysis.trendStrength) > 0.1) {
+      // Fallback basic signals
+      if (
+        !buySuggestion &&
+        !sellSuggestion &&
+        Math.abs(analysis.trendStrength) > 0.1
+      ) {
         if (analysis.trendStrength > 0.1) {
           buySuggestion = {
             price: Math.round((currentPrice * 0.998) / 100) * 100,
@@ -516,7 +763,9 @@ export default function AccountManagerSection({
     let baseProbability = 50;
 
     baseProbability +=
-      type === "buy" ? analysis.trendStrength * 20 : -analysis.trendStrength * 20;
+      type === "buy"
+        ? analysis.trendStrength * 20
+        : -analysis.trendStrength * 20;
 
     if (type === "buy" && rsi < 35) baseProbability += 10;
     if (type === "sell" && rsi > 65) baseProbability += 10;
@@ -586,7 +835,8 @@ export default function AccountManagerSection({
     if (analysis.volumeAnalysis === "HIGH")
       reasons.push("High volume confirming demand");
 
-    if (reasons.length === 0) return "Potential long opportunity based on technical confluence";
+    if (reasons.length === 0)
+      return "Potential long opportunity based on technical confluence";
     return reasons.slice(0, 3).join(" • ");
   };
 
@@ -684,16 +934,16 @@ export default function AccountManagerSection({
   const tabs = ["Orders", "Order Book", "Order History", "AI Insights"];
 
   const metrics = [
-    { label: "Account Balance", value: formatVND(tradingPosition.cash) },
+    { label: "Account Balance", value: formatVNDCurrency(tradingPosition.cash) },
     {
       label: "Equity",
-      value: formatVND(tradingPosition.cash + tradingPosition.pnl),
+      value: formatVNDCurrency(tradingPosition.cash + tradingPosition.pnl),
     },
-    { label: "Realized P&L", value: formatVND(0) },
-    { label: "Unrealized P&L", value: formatVND(tradingPosition.pnl) },
+    { label: "Realized P&L", value: formatVNDCurrency(0) },
+    { label: "Unrealized P&L", value: formatVNDCurrency(tradingPosition.pnl) },
     {
       label: "Available Funds",
-      value: formatVND(tradingPosition.cash),
+      value: formatVNDCurrency(tradingPosition.cash),
       info: true,
     },
   ];
@@ -985,7 +1235,7 @@ export default function AccountManagerSection({
                               {order.quantity}
                             </td>
                             <td className="py-3 px-4 text-right font-mono text-gray-300">
-                              {formatVND(order.price || 0)}
+                              {formatVNDCurrency(order.price || 0)}
                             </td>
                             <td className="py-3 px-4">
                               <span className="bg-amber-900/30 text-amber-400 px-2 py-1 rounded text-[10px]">
@@ -1268,7 +1518,7 @@ export default function AccountManagerSection({
                                     : "text-gray-900"
                                 }`}
                               >
-                                {formatVND(suggestedOrders.buy.price)}
+                                {formatVNDCurrency(suggestedOrders.buy.price)}
                               </span>
                               <span className="text-sm text-gray-400">
                                 VND
@@ -1344,7 +1594,9 @@ export default function AccountManagerSection({
                                   Stop loss
                                 </div>
                                 <div className="text-sm font-bold text-rose-500">
-                                  {formatVND(suggestedOrders.buy.stopLoss!)}
+                                  {formatVNDCurrency(
+                                    suggestedOrders.buy.stopLoss!
+                                  )}
                                 </div>
                                 <div className="text-xs text-rose-400">
                                   -
@@ -1530,7 +1782,7 @@ export default function AccountManagerSection({
                                     : "text-gray-900"
                                 }`}
                               >
-                                {formatVND(suggestedOrders.sell.price)}
+                                {formatVNDCurrency(suggestedOrders.sell.price)}
                               </span>
                               <span className="text-sm text-gray-400">
                                 VND
@@ -1606,7 +1858,9 @@ export default function AccountManagerSection({
                                   Stop loss
                                 </div>
                                 <div className="text-sm font-bold text-emerald-500">
-                                  {formatVND(suggestedOrders.sell.stopLoss!)}
+                                  {formatVNDCurrency(
+                                    suggestedOrders.sell.stopLoss!
+                                  )}
                                 </div>
                                 <div className="text-xs text-emerald-400">
                                   -
@@ -1743,7 +1997,7 @@ export default function AccountManagerSection({
                                   style={{ width: `${widthPercent}%` }}
                                 ></td>
                                 <td className="relative z-10 py-1.5 px-3 font-mono text-emerald-400 font-medium">
-                                  {formatVND(level.price)}
+                                  {formatVNDCurrency(level.price)}
                                 </td>
                                 <td className="relative z-10 py-1.5 px-3 text-right font-mono text-gray-300">
                                   {level.totalQuantity.toLocaleString()}
@@ -1827,7 +2081,7 @@ export default function AccountManagerSection({
                                   style={{ width: `${widthPercent}%` }}
                                 ></td>
                                 <td className="relative z-10 py-1.5 px-3 font-mono text-rose-400 font-medium">
-                                  {formatVND(level.price)}
+                                  {formatVNDCurrency(level.price)}
                                 </td>
                                 <td className="relative z-10 py-1.5 px-3 text-right font-mono text-gray-300">
                                   {level.totalQuantity.toLocaleString()}
@@ -1856,7 +2110,7 @@ export default function AccountManagerSection({
               </div>
             )}
 
-            {/* ORDER HISTORY TAB */}
+            {/* ORDER HISTORY TAB (KẾT NỐI BACKEND) */}
             {activeTab === "Order History" && (
               <div className="h-full overflow-auto trading-scrollbar p-4">
                 <div
@@ -1881,50 +2135,140 @@ export default function AccountManagerSection({
                         <th className="py-3 px-4 font-medium text-right">
                           Filled Price
                         </th>
-                        <th className="py-3 px-4">Status</th>
+                        <th className="py-3 px-4 font-medium">Status</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {orders.map((order) => (
-                        <tr
-                          key={order.id}
-                          className={`border-t ${
-                            isDarkMode
-                              ? "border-gray-800 hover:bg-gray-800/50"
-                              : "border-gray-200 hover:bg-gray-50"
-                          }`}
-                        >
-                          <td className="py-3 px-4 text-gray-500">
-                            {order.timestamp.toLocaleTimeString()}
-                          </td>
-                          <td className="py-3 px-4 font-mono text-gray-200">
-                            {order.symbol}
-                          </td>
+                      {loadingOrderHistory && (
+                        <tr>
                           <td
-                            className={`py-3 px-4 ${
-                              order.type === "buy"
-                                ? "text-emerald-400"
-                                : "text-rose-400"
-                            }`}
+                            colSpan={5}
+                            className="py-6 text-center text-gray-500"
                           >
-                            {order.type.toUpperCase()}
-                          </td>
-                          <td className="py-3 px-4 text-right font-mono text-gray-300">
-                            {formatVND(order.price || 0)}
-                          </td>
-                          <td className="py-3 px-4">
-                            <span
-                              className={`px-2 py-0.5 rounded text-[10px] ${
-                                order.status === "FILLED"
-                                  ? "bg-emerald-900/30 text-emerald-400"
-                                  : "bg-gray-700 text-gray-400"
-                              }`}
-                            >
-                              {order.status}
-                            </span>
+                            Loading order history...
                           </td>
                         </tr>
-                      ))}
+                      )}
+
+                      {!loadingOrderHistory && orderHistoryError && (
+                        <tr>
+                          <td
+                            colSpan={5}
+                            className="py-6 text-center text-red-400 text-xs"
+                          >
+                            {orderHistoryError}
+                          </td>
+                        </tr>
+                      )}
+
+                      {!loadingOrderHistory &&
+                        !orderHistoryError &&
+                        orderHistory.length === 0 &&
+                        orders.length === 0 && (
+                          <tr>
+                            <td
+                              colSpan={5}
+                              className="py-8 text-center text-gray-500"
+                            >
+                              No order history found. Place some orders to
+                              see them here.
+                            </td>
+                          </tr>
+                        )}
+
+                      {!loadingOrderHistory &&
+                        !orderHistoryError &&
+                        orderHistory.length === 0 &&
+                        orders.length > 0 &&
+                        orders.map((order) => (
+                          <tr
+                            key={order.id}
+                            className={`border-t ${
+                              isDarkMode
+                                ? "border-gray-800 hover:bg-gray-800/50"
+                                : "border-gray-200 hover:bg-gray-50"
+                            }`}
+                          >
+                            <td className="py-3 px-4 text-gray-500">
+                              {order.timestamp.toLocaleString()}
+                            </td>
+                            <td className="py-3 px-4 font-mono text-gray-200">
+                              {order.symbol}
+                            </td>
+                            <td
+                              className={`py-3 px-4 ${
+                                order.type === "buy"
+                                  ? "text-emerald-400"
+                                  : "text-rose-400"
+                              }`}
+                            >
+                              {order.type.toUpperCase()}
+                            </td>
+                            <td className="py-3 px-4 text-right font-mono text-gray-300">
+                              {formatVNDCurrency(order.price || 0)}
+                            </td>
+                            <td className="py-3 px-4">
+                              <span
+                                className={`px-2 py-0.5 rounded text-[10px] ${
+                                  order.status === "FILLED"
+                                    ? "bg-emerald-900/30 text-emerald-400"
+                                    : "bg-gray-700 text-gray-400"
+                                }`}
+                              >
+                                {order.status}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+
+                      {!loadingOrderHistory &&
+                        !orderHistoryError &&
+                        orderHistory.length > 0 &&
+                        orderHistory.map((order) => (
+                          <tr
+                            key={order.id}
+                            className={`border-t ${
+                              isDarkMode
+                                ? "border-gray-800 hover:bg-gray-800/50"
+                                : "border-gray-200 hover:bg-gray-50"
+                            }`}
+                          >
+                            <td className="py-3 px-4 text-gray-500">
+                              {new Date(order.createdAt).toLocaleString()}
+                            </td>
+                            <td className="py-3 px-4 font-mono text-gray-200">
+                              {order.stockSymbol}
+                            </td>
+                            <td
+                              className={`py-3 px-4 ${
+                                order.side === "buy"
+                                  ? "text-emerald-400"
+                                  : "text-rose-400"
+                              }`}
+                            >
+                              {order.side.toUpperCase()}
+                            </td>
+                            <td className="py-3 px-4 text-right font-mono text-gray-300">
+                              {order.price
+                                ? formatVNDCurrency(order.price)
+                                : "Market"}
+                            </td>
+                            <td className="py-3 px-4">
+                              <span
+                                className={`px-2 py-0.5 rounded text-[10px] ${
+                                  order.status === "FILLED"
+                                    ? "bg-emerald-900/30 text-emerald-400"
+                                    : order.status === "PENDING" ||
+                                      order.status === "NEW"
+                                    ? "bg-amber-900/30 text-amber-400"
+                                    : "bg-gray-700 text-gray-400"
+                                }`}
+                              >
+                                {order.status}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
                     </tbody>
                   </table>
                 </div>
@@ -2086,7 +2430,7 @@ export default function AccountManagerSection({
                                   Level {idx + 1}
                                 </span>
                                 <span className="font-mono font-bold text-emerald-500">
-                                  {formatVND(level)}
+                                  {formatVNDCurrency(level)}
                                 </span>
                               </div>
                             ))}
@@ -2124,7 +2468,7 @@ export default function AccountManagerSection({
                                   Level {idx + 1}
                                 </span>
                                 <span className="font-mono font-bold text-rose-500">
-                                  {formatVND(level)}
+                                  {formatVNDCurrency(level)}
                                 </span>
                               </div>
                             ))}
@@ -2201,7 +2545,7 @@ export default function AccountManagerSection({
                               </span>
                             </div>
                             <span className="text-sm font-bold">
-                              {formatVND(suggestion.price)}
+                              {formatVNDCurrency(suggestion.price)}
                             </span>
                           </div>
 
@@ -2276,7 +2620,7 @@ export default function AccountManagerSection({
               </div>
             )}
 
-            {/* STRATEGY TESTER TAB */}
+            {/* STRATEGY TESTER TAB (placeholder) */}
           </div>
         </div>
       )}

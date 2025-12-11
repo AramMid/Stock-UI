@@ -129,6 +129,20 @@ export function formatVND(value: number): string {
 }
 
 /**
+ * Format currency in VND with currency symbol
+ * @param value Amount to format
+ * @returns Formatted VND string with currency symbol
+ */
+export function formatVNDCurrency(value: number): string {
+  return new Intl.NumberFormat('vi-VN', {
+    style: 'currency',
+    currency: 'VND',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0
+  }).format(value);
+}
+
+/**
  * Calculate PnL based on current position and price
  * @param position Number of shares held
  * @param avgPrice Average purchase price

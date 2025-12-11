@@ -1,14 +1,16 @@
 "use client";
+
 import {
   useState,
   useRef,
   ReactNode,
   useMemo,
+  useEffect,
 } from "react";
-import { formatVND } from "@/lib/order-management";
+import { formatVND, formatVNDCurrency } from "@/lib/order-management";
 import { MarketSimulationService } from "@/lib/services/marketSimulationService";
 import { TradingPosition } from "@/lib/types";
-import { BacktestEngine, BacktestTrade } from "@/lib/services/backtestService";
+import { BacktestTrade } from "@/lib/services/backtestService";
 import { rsiStrategy } from "@/lib/strategies/rsiStrategy";
 import { movingAverageCrossoverStrategy } from "@/lib/strategies/movingAverageCrossover";
 
@@ -86,11 +88,33 @@ interface BacktestResult {
   trades: BacktestTrade[];
 }
 
+interface BacktestParams {
+  initialCapital: number;
+  startDate: Date;
+  endDate: Date;
+  symbol: string;
+  feeRate: number;
+  taxRate: number;
+  priceSource: "HISTORICAL" | "LIVE";
+  stopLoss: number; // 0.05 -> 5%
+  takeProfit: number; // 0.1  -> 10%
+}
+
 interface StrategyTesterProps {
   isDarkMode: boolean;
   tradingPosition: TradingPosition;
   selectedSymbol: string;
   marketSimulation: MarketSimulationService | null;
+}
+
+interface BacktestJobSummary {
+  id: number;
+  symbol: string;
+  status: string;
+  data_from: string;
+  data_to: string;
+  initial_capital: string;
+  created_at: string;
 }
 
 // Kích thước block (khớp với Tailwind w-28 h-12)
@@ -115,16 +139,28 @@ export default function StrategyTester({
     { id: "block-4", type: "buy", x: 620, y: 80 },
   ]);
   const [connections, setConnections] = useState<Connection[]>([]);
-  const [backtestParams, setBacktestParams] = useState({
-    initialCapital: 200000000, // 200 million VND
-    startDate: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000), // 30 days ago
+  const [backtestParams, setBacktestParams] = useState<BacktestParams>({
+    initialCapital: 200_000_000, // 200M VND
+    startDate: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000), // 30 ngày trước
     endDate: new Date(),
     symbol: selectedSymbol,
     feeRate: 0.0015, // 0.15%
     taxRate: 0.001, // 0.1% (sell only)
+    priceSource: "HISTORICAL",
+    stopLoss: 0.05,
+    takeProfit: 0.1,
   });
   const [backtestResult, setBacktestResult] = useState<BacktestResult | null>(null);
+
+  // isRunning: dành cho POST tạo job
   const [isRunning, setIsRunning] = useState(false);
+
+  // ----- danh sách backtest & trạng thái load -----
+  const [jobList, setJobList] = useState<BacktestJobSummary[]>([]);
+  const [isLoadingJobs, setIsLoadingJobs] = useState(false);
+  const [selectedJobId, setSelectedJobId] = useState<number | null>(null);
+  const [isLoadingResult, setIsLoadingResult] = useState(false);
+
   const [selectedBlock, setSelectedBlock] = useState<string | null>(null);
   const [connectingFrom, setConnectingFrom] = useState<string | null>(null);
 
@@ -163,6 +199,89 @@ export default function StrategyTester({
     ],
     []
   );
+
+  // ====== API LOAD DANH SÁCH BACKTEST ======
+  const fetchBacktestJobs = async () => {
+    try {
+      setIsLoadingJobs(true);
+      const res = await fetch("http://localhost:3001/api/backtests");
+      if (!res.ok) {
+        throw new Error(`Failed to fetch backtests: ${res.status} ${res.statusText}`);
+      }
+      const json = await res.json();
+      const list = (json.data ?? json) as BacktestJobSummary[];
+      setJobList(list);
+    } catch (error) {
+      console.error("Error fetching backtest list:", error);
+      alert("Không tải được danh sách backtest: " + (error as Error).message);
+    } finally {
+      setIsLoadingJobs(false);
+    }
+  };
+
+  // Khi chuyển sang tab Results thì tự load danh sách backtest
+  useEffect(() => {
+    if (activeView === "results") {
+      fetchBacktestJobs();
+      setBacktestResult(null);
+      setSelectedJobId(null);
+    }
+  }, [activeView]);
+
+  // ====== chọn 1 backtest để xem chi tiết ======
+  const handleSelectJob = async (jobId: number) => {
+    setSelectedJobId(jobId);
+    setIsLoadingResult(true);
+    setBacktestResult(null);
+
+    try {
+      const res = await fetch(`http://localhost:3001/api/backtests/${jobId}`);
+      if (!res.ok) {
+        throw new Error(
+          `Failed to fetch backtest result: ${res.status} ${res.statusText}`
+        );
+      }
+
+      const json = await res.json();
+      console.log("Raw detail result:", json);
+      const dataLevel = json.data ?? json;
+      const status = dataLevel.status ?? dataLevel.jobStatus;
+
+      if (status !== "COMPLETED") {
+        alert(`Backtest #${jobId} hiện đang ở trạng thái ${status}, kết quả chưa sẵn sàng.`);
+        return;
+      }
+
+      const transformedResult: BacktestResult = {
+        netProfit: Number(dataLevel.netProfit ?? 0),
+        winRate: Number(dataLevel.winRate ?? 0),
+        maxDrawdown: Number(dataLevel.maxDrawdown ?? 0),
+        profitFactor: Number(dataLevel.profitFactor ?? 0),
+        totalTrades: Number(dataLevel.totalTrades ?? 0),
+        equityCurve: dataLevel.equityCurve ?? [],
+        underwater: dataLevel.underwater ?? [],
+        trades: dataLevel.trades ?? [],
+      };
+
+      setBacktestResult(transformedResult);
+
+      // Đồng bộ lại meta (symbol, date range, capital) từ job
+      setBacktestParams((prev) => ({
+        ...prev,
+        symbol: dataLevel.symbol ?? prev.symbol,
+        initialCapital: dataLevel.initialCapital
+          ? Number(dataLevel.initialCapital)
+          : prev.initialCapital,
+        startDate: dataLevel.dataFrom ? new Date(dataLevel.dataFrom) : prev.startDate,
+        endDate: dataLevel.dataTo ? new Date(dataLevel.dataTo) : prev.endDate,
+      }));
+    } catch (error) {
+      console.error("Error fetching backtest result:", error);
+      alert("Không tải được kết quả backtest: " + (error as Error).message);
+    } finally {
+      setIsLoadingResult(false);
+    }
+  };
 
   // Add a new block to the canvas
   const addBlock = (type: BlockType, x: number, y: number) => {
@@ -316,16 +435,23 @@ export default function StrategyTester({
     return { hasAction, hasConnections, actionsConnected, level };
   }, [blocks, connections]);
 
-  // Run backtest
+  // Thống kê riêng BUY / SELL để show bên Stats & Results
+  const actionStats = useMemo(() => {
+    const buyBlocks = blocks.filter((b) => b.type === "buy").length;
+    const sellBlocks = blocks.filter((b) => b.type === "sell").length;
+    const closeBlocks = blocks.filter((b) => b.type === "close_position").length;
+    return { buyBlocks, sellBlocks, closeBlocks };
+  }, [blocks]);
+
+  // ====== RUN BACKTEST (CHỈ TẠO JOB, KHÔNG LẤY KẾT QUẢ NGAY) ======
   const runBacktest = async () => {
-    // Validate strategy first
+    // 1) Validate strategy trước
     const validation = validateStrategyWithVisualization();
     if (!validation.isValid) {
       alert("Strategy validation failed:\n" + validation.errors.join("\n"));
       return;
     }
 
-    // Show warnings if any
     if (validation.warnings.length > 0) {
       const warningMessage =
         "Strategy warnings:\n" +
@@ -337,24 +463,43 @@ export default function StrategyTester({
     }
 
     setIsRunning(true);
+    setBacktestResult(null);
 
     try {
-      if (!marketSimulation) {
-        throw new Error("Market simulation service not available");
+      // 2) Convert strategy sang JSON để gửi lên Nest
+      const strategyData = convertToJSONStrategy();
+      console.log("Sending strategy data:", strategyData);
+
+      // 3) Gọi POST /api/backtests
+      const response = await fetch("http://localhost:3001/api/backtests", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(strategyData),
+      }).catch((error) => {
+        console.error("Network error when sending strategy:", error);
+        throw new Error(`Network error: ${error.message}`);
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to start backtest: ${response.status} ${response.statusText}`);
       }
 
-      // Initialize backtest engine
-      const backtestEngine = new BacktestEngine(marketSimulation);
+      const startResult = await response.json();
+      console.log("Start backtest response:", startResult);
 
-      // Run backtest with real data
-      const result = await backtestEngine.runBacktest(
-        blocks,
-        connections,
-        backtestParams
-      );
+      const startData = startResult.data ?? startResult;
+      const jobId = startData.jobId ?? startData.job_id ?? startData.id;
 
-      setBacktestResult(result);
+      if (!jobId) {
+        throw new Error("Cannot find jobId from backtest start response");
+      }
+
+      alert(`Backtest job #${jobId} đã được tạo, hãy mở tab Results để xem danh sách.`);
       setActiveView("results");
+      // load lại list
+      fetchBacktestJobs();
     } catch (error) {
       console.error("Backtest failed:", error);
       alert("Backtest failed: " + (error as Error).message);
@@ -410,8 +555,8 @@ export default function StrategyTester({
       cross_under: "Detects when one value crosses below another",
       greater_than: "Checks if first value is greater than second value",
       less_than: "Checks if first value is less than second value",
-      buy: "Generate a buy signal",
-      sell: "Generate a sell signal",
+      buy: "Generate a BUY signal",
+      sell: "Generate a SELL signal",
       close_position: "Close any open position",
       number: "Numeric value for comparison",
     };
@@ -582,13 +727,13 @@ export default function StrategyTester({
       symbol: backtestParams.symbol,
       dataFrom: backtestParams.startDate.toISOString().split("T")[0],
       dataTo: backtestParams.endDate.toISOString().split("T")[0],
-      priceSource: "HISTORICAL",
+      priceSource: backtestParams.priceSource,
       sessionId: null,
       initialCapital: backtestParams.initialCapital,
       commissionRate: backtestParams.feeRate,
       jobConfig: {
-        stop_loss: 0.05,
-        take_profit: 0.1,
+        stop_loss: backtestParams.stopLoss,
+        take_profit: backtestParams.takeProfit,
       },
     };
 
@@ -596,18 +741,20 @@ export default function StrategyTester({
     return strategyData;
   };
 
-  // Send strategy data to backend
+  // Gửi thẳng JSON (nếu vẫn dùng nút Send JSON)
   const sendStrategyToBackend = async () => {
     try {
       const strategyData = convertToJSONStrategy();
 
-      // Send to backend API
-      const response = await fetch("/api/backtest", {
+      const response = await fetch("http://localhost:3001/api/backtests", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify(strategyData),
+      }).catch((error) => {
+        console.error("Network error when sending strategy:", error);
+        throw new Error(`Network error: ${error.message}`);
       });
 
       if (!response.ok) {
@@ -683,13 +830,13 @@ export default function StrategyTester({
     >
       {/* Header */}
       <div
-        className={`px-4 py-3 border-b ${
+        className={`px-5 py-3 border-b ${
           isDarkMode
             ? "border-gray-800 bg-gray-950/90"
             : "border-slate-200 bg-white/80"
         } backdrop-blur-sm`}
       >
-        <div className="flex justify-between items-center gap-3">
+        <div className="flex justify-between items-center gap-4">
           <div className="flex items-center gap-3">
             <div
               className={`w-9 h-9 rounded-xl flex items-center justify-center shadow-sm ${
@@ -700,16 +847,16 @@ export default function StrategyTester({
             >
               <FiCpu className="w-5 h-5" />
             </div>
-            <div>
+            <div className="space-y-0.5">
               <h2 className="text-lg font-semibold tracking-tight flex items-center gap-2">
                 Strategy Tester
                 <span
-                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium ${
+                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium border ${
                     quickValidation.level === "ready"
-                      ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/40"
+                      ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/40"
                       : quickValidation.level === "partial"
-                      ? "bg-amber-500/10 text-amber-400 border border-amber-500/40"
-                      : "bg-slate-500/10 text-slate-400 border border-slate-500/40"
+                      ? "bg-amber-500/10 text-amber-400 border-amber-500/40"
+                      : "bg-slate-500/10 text-slate-400 border-slate-500/40"
                   }`}
                 >
                   <FiActivity className="w-3 h-3" />
@@ -804,15 +951,15 @@ export default function StrategyTester({
           >
             {/* Tabs hàng ngang */}
             <div
-              className={`px-4 pt-3 pb-2 border-b ${
+              className={`px-4 pt-3 pb-3 border-b ${
                 isDarkMode ? "border-gray-800" : "border-slate-200"
               }`}
             >
-              <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center justify-between mb-3">
                 <div className="text-[10px] uppercase tracking-[0.15em] text-gray-500">
                   Strategy Panel
                 </div>
-                <div className="flex gap-1">
+                <div className="flex gap-1.5">
                   <button
                     onClick={() => loadExampleStrategy("rsi")}
                     className={`text-[10px] px-2 py-1 rounded-full border flex items-center gap-1 ${
@@ -868,7 +1015,7 @@ export default function StrategyTester({
             </div>
 
             {/* Nội dung theo TAB */}
-            <div className="flex-1 overflow-auto px-4 py-3 space-y-3 text-xs">
+            <div className="flex-1 overflow-auto px-4 py-4 space-y-4 text-xs">
               {sidebarTab === "toolbox" && (
                 <>
                   {/* Legend */}
@@ -890,8 +1037,8 @@ export default function StrategyTester({
                       <LegendDot color="bg-purple-500" label="Indicators" />
                       <LegendDot color="bg-green-500" label="Price / Volume" />
                       <LegendDot color="bg-yellow-500" label="Logic" />
-                      <LegendDot color="bg-emerald-500" label="Buy" />
-                      <LegendDot color="bg-red-500" label="Sell" />
+                      <LegendDot color="bg-emerald-500" label="BUY action" />
+                      <LegendDot color="bg-red-500" label="SELL action" />
                       <LegendDot color="bg-blue-500" label="Number" />
                     </div>
                   </div>
@@ -927,7 +1074,7 @@ export default function StrategyTester({
                     isDarkMode={isDarkMode}
                   />
                   <ToolboxGroup
-                    title="Actions"
+                    title="Actions (BUY / SELL)"
                     items={toolboxItems.filter((item) =>
                       ["buy", "sell", "close_position"].includes(item.type)
                     )}
@@ -945,13 +1092,13 @@ export default function StrategyTester({
                 <>
                   {/* Strategy Stats */}
                   <div
-                    className={`rounded-xl p-3 border ${
+                    className={`rounded-xl p-3 border space-y-3 ${
                       isDarkMode
                         ? "border-gray-800 bg-gray-900/90"
                         : "border-slate-200 bg-slate-50"
                     }`}
                   >
-                    <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center justify-between mb-1">
                       <div className="flex items-center gap-2">
                         <FiBarChart2 className="w-4 h-4 text-blue-400" />
                         <h4 className="text-xs font-semibold tracking-wide">
@@ -969,7 +1116,7 @@ export default function StrategyTester({
                         {blocks.length} blocks
                       </span>
                     </div>
-                    <div className="grid grid-cols-3 gap-2 text-center text-[11px]">
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-center text-[11px]">
                       <StatCard
                         label="Blocks"
                         value={blocks.length.toString()}
@@ -981,10 +1128,13 @@ export default function StrategyTester({
                         isDarkMode={isDarkMode}
                       />
                       <StatCard
-                        label="Actions"
-                        value={blocks
-                          .filter((b) => ["buy", "sell", "close_position"].includes(b.type))
-                          .length.toString()}
+                        label="BUY actions"
+                        value={actionStats.buyBlocks.toString()}
+                        isDarkMode={isDarkMode}
+                      />
+                      <StatCard
+                        label="SELL actions"
+                        value={actionStats.sellBlocks.toString()}
                         isDarkMode={isDarkMode}
                       />
                     </div>
@@ -992,7 +1142,7 @@ export default function StrategyTester({
 
                   {/* Strategy Validation */}
                   <div
-                    className={`rounded-xl p-3 border space-y-2 ${
+                    className={`rounded-xl p-3 border space-y-3 ${
                       isDarkMode
                         ? "border-gray-800 bg-gray-900/90"
                         : "border-slate-200 bg-slate-50"
@@ -1043,10 +1193,10 @@ export default function StrategyTester({
                       </div>
                     </div>
 
-                    <div className="space-y-1 text-[11px]">
+                    <div className="space-y-1.5 text-[11px]">
                       <ValidationRow
                         ok={quickValidation.hasAction}
-                        label="Has action block"
+                        label="Has BUY / SELL action block"
                       />
                       <ValidationRow
                         ok={quickValidation.hasConnections}
@@ -1054,7 +1204,7 @@ export default function StrategyTester({
                       />
                       <ValidationRow
                         ok={quickValidation.actionsConnected}
-                        label="Action blocks connected"
+                        label="Action blocks connected to logic"
                       />
                     </div>
                   </div>
@@ -1065,23 +1215,26 @@ export default function StrategyTester({
                 <>
                   {/* Backtest Parameters */}
                   <div
-                    className={`rounded-xl p-3 border space-y-2 ${
+                    className={`rounded-xl p-3 border space-y-3 ${
                       isDarkMode
                         ? "border-gray-800 bg-gray-900/90"
                         : "border-slate-200 bg-slate-50"
                     }`}
                   >
-                    <div className="flex items-center gap-2 mb-1.5">
+                    <div className="flex items-center gap-2 mb-1">
                       <FiSliders className="w-4 h-4 text-blue-400" />
                       <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-400">
                         Backtest Parameters
                       </h3>
                     </div>
 
-                    <div className="space-y-2 text-xs">
-                      <div>
-                        <label className="block mb-1">Initial Capital (VND)</label>
-                        <div className="flex gap-1.5">
+                    <div className="space-y-3 text-xs">
+                      {/* Initial Capital */}
+                      <div className="space-y-1.5">
+                        <label className="block text-[11px] text-gray-300">
+                          Initial Capital (VND)
+                        </label>
+                        <div className="flex gap-2">
                           <input
                             type="number"
                             value={backtestParams.initialCapital}
@@ -1091,7 +1244,7 @@ export default function StrategyTester({
                                 initialCapital: Number(e.target.value),
                               }))
                             }
-                            className={`flex-1 p-1.5 rounded-lg border text-xs ${
+                            className={`flex-1 px-2 py-1.5 rounded-lg border text-xs ${
                               isDarkMode
                                 ? "bg-gray-950 border-gray-700"
                                 : "bg-white border-slate-300"
@@ -1107,7 +1260,7 @@ export default function StrategyTester({
                                     initialCapital: v * 1_000_000,
                                   }))
                                 }
-                                className={`text-[11px] px-2 py-1 rounded-lg border ${
+                                className={`text-[11px] px-2 py-1 rounded-lg border whitespace-nowrap ${
                                   isDarkMode
                                     ? "border-gray-700 bg-gray-900 hover:bg-gray-800"
                                     : "border-slate-200 bg-white hover:bg-slate-100"
@@ -1120,9 +1273,12 @@ export default function StrategyTester({
                         </div>
                       </div>
 
+                      {/* Date range */}
                       <div className="grid grid-cols-2 gap-2">
-                        <div>
-                          <label className="block mb-1">Start Date</label>
+                        <div className="space-y-1.5">
+                          <label className="block text-[11px] text-gray-300">
+                            Start Date
+                          </label>
                           <input
                             type="date"
                             value={backtestParams.startDate.toISOString().split("T")[0]}
@@ -1132,15 +1288,17 @@ export default function StrategyTester({
                                 startDate: new Date(e.target.value),
                               }))
                             }
-                            className={`w-full p-1.5 rounded-lg border text-xs ${
+                            className={`w-full px-2 py-1.5 rounded-lg border text-xs ${
                               isDarkMode
                                 ? "bg-gray-950 border-gray-700"
                                 : "bg-white border-slate-300"
                             }`}
                           />
                         </div>
-                        <div>
-                          <label className="block mb-1">End Date</label>
+                        <div className="space-y-1.5">
+                          <label className="block text-[11px] text-gray-300">
+                            End Date
+                          </label>
                           <input
                             type="date"
                             value={backtestParams.endDate.toISOString().split("T")[0]}
@@ -1150,7 +1308,7 @@ export default function StrategyTester({
                                 endDate: new Date(e.target.value),
                               }))
                             }
-                            className={`w-full p-1.5 rounded-lg border text-xs ${
+                            className={`w-full px-2 py-1.5 rounded-lg border text-xs ${
                               isDarkMode
                                 ? "bg-gray-950 border-gray-700"
                                 : "bg-white border-slate-300"
@@ -1159,8 +1317,9 @@ export default function StrategyTester({
                         </div>
                       </div>
 
-                      <div>
-                        <label className="block mb-1">Symbol</label>
+                      {/* Symbol */}
+                      <div className="space-y-1.5">
+                        <label className="block text-[11px] text-gray-300">Symbol</label>
                         <div className="flex items-center gap-1.5">
                           <div
                             className={`px-2 py-1 rounded-lg text-[11px] inline-flex items-center gap-1 ${
@@ -1181,19 +1340,46 @@ export default function StrategyTester({
                                 symbol: e.target.value,
                               }))
                             }
-                            className={`flex-1 p-1.5 rounded-lg border text-xs ${
+                            className={`flex-1 px-2 py-1.5 rounded-lg border text-xs ${
                               isDarkMode
                                 ? "bg-gray-950 border-gray-700"
                                 : "bg-white border-slate-300"
                             }`}
-                            placeholder="e.g. VIC.VN"
+                            placeholder="e.g. FPT.VN"
                           />
                         </div>
                       </div>
 
+                      {/* Price source */}
+                      <div className="space-y-1.5">
+                        <label className="block text-[11px] text-gray-300">
+                          Price Source
+                        </label>
+                        <select
+                          value={backtestParams.priceSource}
+                          onChange={(e) =>
+                            setBacktestParams((prev) => ({
+                              ...prev,
+                              priceSource: e.target.value as BacktestParams["priceSource"],
+                            }))
+                          }
+                          className={`w-full px-2 py-1.5 rounded-lg border text-xs ${
+                            isDarkMode
+                              ? "bg-gray-950 border-gray-700"
+                              : "bg-white border-slate-300"
+                          }`}
+                        >
+                          <option value="HISTORICAL">HISTORICAL</option>
+                          <option value="LIVE">LIVE (simulation)</option>
+                        </select>
+                      </div>
+
+                      {/* Fee & Tax */}
                       <div className="grid grid-cols-2 gap-2">
-                        <div>
-                          <label className="block mb-1">Fee Rate (%)</label>
+                        <div className="space-y-1.5">
+                          <label className="block text-[11px] text-gray-300">
+                            Fee Rate (%)
+                          </label>
                           <input
                             type="number"
                             step="0.01"
@@ -1204,15 +1390,17 @@ export default function StrategyTester({
                                 feeRate: Number(e.target.value) / 100,
                               }))
                             }
-                            className={`w-full p-1.5 rounded-lg border text-xs ${
+                            className={`w-full px-2 py-1.5 rounded-lg border text-xs ${
                               isDarkMode
                                 ? "bg-gray-950 border-gray-700"
                                 : "bg-white border-slate-300"
                             }`}
                           />
                         </div>
-                        <div>
-                          <label className="block mb-1">Tax Rate (%)</label>
+                        <div className="space-y-1.5">
+                          <label className="block text-[11px] text-gray-300">
+                            Tax Rate (%)
+                          </label>
                           <input
                             type="number"
                             step="0.01"
@@ -1223,12 +1411,61 @@ export default function StrategyTester({
                                 taxRate: Number(e.target.value) / 100,
                               }))
                             }
-                            className={`w-full p-1.5 rounded-lg border text-xs ${
+                            className={`w-full px-2 py-1.5 rounded-lg border text-xs ${
                               isDarkMode
                                 ? "bg-gray-950 border-gray-700"
                                 : "bg-white border-slate-300"
                             }`}
                           />
+                        </div>
+                      </div>
+
+                      {/* JobConfig: SL/TP */}
+                      <div className="space-y-1.5">
+                        <label className="block text-[11px] text-gray-300">
+                          Risk Management (SL / TP)
+                        </label>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[11px] w-16">Stop Loss</span>
+                            <input
+                              type="number"
+                              step="0.1"
+                              value={backtestParams.stopLoss * 100}
+                              onChange={(e) =>
+                                setBacktestParams((prev) => ({
+                                  ...prev,
+                                  stopLoss: Number(e.target.value) / 100,
+                                }))
+                              }
+                              className={`flex-1 px-2 py-1.5 rounded-lg border text-xs ${
+                                isDarkMode
+                                  ? "bg-gray-950 border-gray-700"
+                                  : "bg-white border-slate-300"
+                              }`}
+                            />
+                            <span className="text-[11px] text-gray-400">%</span>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[11px] w-16">Take Profit</span>
+                            <input
+                              type="number"
+                              step="0.1"
+                              value={backtestParams.takeProfit * 100}
+                              onChange={(e) =>
+                                setBacktestParams((prev) => ({
+                                  ...prev,
+                                  takeProfit: Number(e.target.value) / 100,
+                                }))
+                              }
+                              className={`flex-1 px-2 py-1.5 rounded-lg border text-xs ${
+                                isDarkMode
+                                  ? "bg-gray-950 border-gray-700"
+                                  : "bg-white border-slate-300"
+                              }`}
+                            />
+                            <span className="text-[11px] text-gray-400">%</span>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -1313,7 +1550,7 @@ export default function StrategyTester({
                         d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
                       ></path>
                     </svg>
-                    Running...
+                    Running Backtest...
                   </>
                 ) : (
                   <>
@@ -1330,7 +1567,7 @@ export default function StrategyTester({
             <div className={`absolute inset-0 ${isDarkMode ? "bg-gray-950" : "bg-slate-100"}`}>
               {/* Grid */}
               <div
-                className="absolute inset-0 opacity-30 pointer-events-none"
+                className="absolute inset-3 rounded-xl opacity-30 pointer-events-none"
                 style={{
                   backgroundImage:
                     "linear-gradient(to right, rgba(148,163,184,0.18) 1px, transparent 1px), linear-gradient(to bottom, rgba(148,163,184,0.18) 1px, transparent 1px)",
@@ -1341,7 +1578,7 @@ export default function StrategyTester({
               {/* Drop layer */}
               <div
                 ref={canvasRef}
-                className="absolute inset-0"
+                className="absolute inset-3 rounded-xl"
                 onDrop={(e) => {
                   e.preventDefault();
                   const blockType = e.dataTransfer.getData("blockType") as BlockType;
@@ -1572,6 +1809,12 @@ export default function StrategyTester({
           backtestParams={backtestParams}
           exportResults={exportResults}
           setActiveView={setActiveView}
+          jobs={jobList}
+          isLoadingJobs={isLoadingJobs}
+          selectedJobId={selectedJobId}
+          onSelectJob={handleSelectJob}
+          onRefreshJobs={fetchBacktestJobs}
+          isLoadingResult={isLoadingResult}
         />
       )}
     </div>
@@ -1596,7 +1839,7 @@ function SidebarTabButton({
   return (
     <button
       onClick={onClick}
-      className={`flex items-center justify-center gap-1.5 px-2 py-1 rounded-lg text-[11px] font-medium transition ${
+      className={`flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition ${
         active
           ? isDarkMode
             ? "bg-blue-600 text-white shadow-sm"
@@ -1631,8 +1874,8 @@ function ToolboxGroup({
   isDarkMode: boolean;
 }) {
   return (
-    <div>
-      <div className="font-semibold text-gray-400 mb-1.5 uppercase tracking-wide text-[11px]">
+    <div className="space-y-2">
+      <div className="font-semibold text-gray-400 mb-0.5 uppercase tracking-wide text-[11px]">
         {title}
       </div>
       <div className="space-y-1.5">
@@ -1644,7 +1887,7 @@ function ToolboxGroup({
               e.dataTransfer.setData("blockType", item.type);
               e.dataTransfer.effectAllowed = "copy";
             }}
-            className={`p-2 rounded-lg cursor-move flex items-center gap-2 border text-xs shadow-sm ${
+            className={`px-2.5 py-2 rounded-lg cursor-move flex items-center gap-2 border text-xs shadow-sm ${
               isDarkMode
                 ? "bg-gray-950 hover:bg-gray-900 border-gray-800"
                 : "bg-white hover:bg-slate-100 border-slate-200"
@@ -1674,7 +1917,7 @@ function StatCard({
     <div
       className={`${
         isDarkMode ? "bg-gray-900/80 border-gray-800" : "bg-slate-100 border-slate-200"
-      } p-2 rounded-lg border`}
+      } p-2.5 rounded-lg border`}
     >
       <div className="text-[10px] text-gray-400 mb-1">{label}</div>
       <div className="font-semibold text-sm">{value}</div>
@@ -1705,66 +1948,26 @@ function ResultsView({
   backtestParams,
   exportResults,
   setActiveView,
+  jobs,
+  isLoadingJobs,
+  selectedJobId,
+  onSelectJob,
+  onRefreshJobs,
+  isLoadingResult,
 }: {
   isDarkMode: boolean;
   backtestResult: BacktestResult | null;
-  backtestParams: {
-    initialCapital: number;
-    startDate: Date;
-    endDate: Date;
-    symbol: string;
-    feeRate: number;
-    taxRate: number;
-  };
+  backtestParams: BacktestParams;
   exportResults: (format: "csv" | "pdf") => void;
   setActiveView: (v: "builder" | "results") => void;
+  jobs: BacktestJobSummary[];
+  isLoadingJobs: boolean;
+  selectedJobId: number | null;
+  onSelectJob: (id: number) => void;
+  onRefreshJobs: () => void;
+  isLoadingResult: boolean;
 }) {
-  if (!backtestResult) {
-    return (
-      <div className="flex-1 flex items-center justify-center">
-        <div className="text-center">
-          <div className="text-5xl mb-4">📊</div>
-          <h3 className="text-xl font-bold mb-2">No Backtest Results</h3>
-          <p className="text-gray-500 mb-4">
-            Run a backtest to see performance metrics and trade history
-          </p>
-          <button
-            onClick={() => setActiveView("builder")}
-            className={`px-6 py-3 rounded-lg font-bold ${
-              isDarkMode ? "bg-blue-600 hover:bg-blue-700" : "bg-blue-500 hover:bg-blue-600"
-            } text-white`}
-          >
-            Build Strategy
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  // Derived metrics
-  const { netProfit, totalTrades, winRate, maxDrawdown, profitFactor } = backtestResult;
-
-  const totalProfit = backtestResult.trades
-    .filter((t) => t.profit > 0)
-    .reduce((sum, t) => sum + t.profit, 0);
-
-  const totalLoss = backtestResult.trades
-    .filter((t) => t.profit < 0)
-    .reduce((sum, t) => sum + t.profit, 0);
-
-  const avgTrade = totalTrades > 0 ? netProfit / totalTrades : 0;
-
-  const bestTrade = backtestResult.trades.reduce(
-    (best, t) => (t.profit > best ? t.profit : best),
-    Number.NEGATIVE_INFINITY
-  );
-  const worstTrade = backtestResult.trades.reduce(
-    (worst, t) => (t.profit < worst ? t.profit : worst),
-    Number.POSITIVE_INFINITY
-  );
-
-  const equityCurve = backtestResult.equityCurve || [];
-  const underwater = backtestResult.underwater || [];
+  const hasResult = !!backtestResult && selectedJobId !== null;
 
   // Sparkline helper
   const renderSparkline = (
@@ -1800,24 +2003,11 @@ function ResultsView({
       <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-20">
         <defs>
           <linearGradient id="sparklineFill" x1="0" x2="0" y1="0" y2="1">
-            <stop
-              offset="0%"
-              stopColor={strokeColor}
-              stopOpacity={0.28}
-            />
-            <stop
-              offset="100%"
-              stopColor={strokeColor}
-              stopOpacity={0.02}
-            />
+            <stop offset="0%" stopColor={strokeColor} stopOpacity={0.28} />
+            <stop offset="100%" stopColor={strokeColor} stopOpacity={0.02} />
           </linearGradient>
         </defs>
-        <polyline
-          fill="none"
-          stroke={strokeColor}
-          strokeWidth="2"
-          points={points}
-        />
+        <polyline fill="none" stroke={strokeColor} strokeWidth="2" points={points} />
         <polygon
           points={`${points} ${width},${height} 0,${height}`}
           fill="url(#sparklineFill)"
@@ -1826,58 +2016,77 @@ function ResultsView({
     );
   };
 
-  return (
-    <div
-      className={`flex-1 overflow-auto ${
-        isDarkMode ? "bg-gray-950 text-slate-100" : "bg-slate-50 text-slate-900"
-      }`}
-    >
-      <div className="px-4 py-3 border-b border-gray-800/60 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setActiveView("builder")}
-            className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs border ${
-              isDarkMode
-                ? "border-gray-700 bg-gray-900 hover:bg-gray-800"
-                : "border-slate-200 bg-white hover:bg-slate-100"
-            }`}
-          >
-            <FiArrowLeft className="w-3 h-3" />
-            Builder
-          </button>
-          <div className="text-xs text-gray-400 ml-2">
-            Results for{" "}
-            <span className="font-semibold">{backtestParams.symbol || "VN30"}</span> •{" "}
-            {backtestParams.startDate.toISOString().split("T")[0]} →{" "}
-            {backtestParams.endDate.toISOString().split("T")[0]}
-          </div>
-        </div>
+  // Status badge màu
+  const statusBadge = (status: string) => {
+    const st = status.toUpperCase();
+    if (st === "COMPLETED") {
+      return (
+        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/40">
+          <FiCheckCircle className="w-3 h-3 mr-1" />
+          {st}
+        </span>
+      );
+    }
+    if (st === "PENDING") {
+      return (
+        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] bg-amber-500/10 text-amber-400 border border-amber-500/40">
+          <FiActivity className="w-3 h-3 mr-1" />
+          {st}
+        </span>
+      );
+    }
+    return (
+      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] bg-slate-500/10 text-slate-300 border border-slate-500/40">
+        {st}
+      </span>
+    );
+  };
 
-        <div className="flex items-center gap-2 text-xs">
-          <button
-            onClick={() => exportResults("csv")}
-            className={`inline-flex items-center gap-1 rounded-lg px-3 py-1 border ${
-              isDarkMode
-                ? "border-gray-700 bg-gray-900 hover:bg-gray-800"
-                : "border-slate-200 bg-white hover:bg-slate-100"
-            }`}
-          >
-            <FiDownload className="w-3 h-3" />
-            Export CSV
-          </button>
-          <button
-            onClick={() => exportResults("pdf")}
-            className="inline-flex items-center gap-1 rounded-lg px-3 py-1 border border-gray-700/40 text-gray-400 text-[11px] cursor-not-allowed"
-          >
-            <FiDownload className="w-3 h-3" />
-            PDF (coming soon)
-          </button>
-        </div>
-      </div>
+  // Nếu đã có kết quả, tính thêm các metric
+  let summaryContent: ReactNode = null;
+  if (hasResult && backtestResult) {
+    const { netProfit, totalTrades, winRate, maxDrawdown, profitFactor } = backtestResult;
 
-      <div className="p-4 space-y-4">
+    const totalProfit = backtestResult.trades
+      .filter((t) => t.profit > 0)
+      .reduce((sum, t) => sum + t.profit, 0);
+
+    const totalLoss = backtestResult.trades
+      .filter((t) => t.profit < 0)
+      .reduce((sum, t) => sum + t.profit, 0);
+
+    const avgTrade = totalTrades > 0 ? netProfit / totalTrades : 0;
+
+    const equityCurve = backtestResult.equityCurve || [];
+    const underwater = backtestResult.underwater || [];
+
+    const roi =
+      backtestParams.initialCapital > 0
+        ? (netProfit / backtestParams.initialCapital) * 100
+        : 0;
+
+    const buyTrades = backtestResult.trades.filter(
+      (t) => t.side.toLowerCase() === "buy"
+    );
+    const sellTrades = backtestResult.trades.filter(
+      (t) => t.side.toLowerCase() === "sell"
+    );
+
+    const buyWins = buyTrades.filter((t) => t.profit > 0).length;
+    const sellWins = sellTrades.filter((t) => t.profit > 0).length;
+
+    const buyWinRate = buyTrades.length
+      ? (buyWins / buyTrades.length) * 100
+      : 0;
+    const sellWinRate = sellTrades.length
+      ? (sellWins / sellTrades.length) * 100
+      : 0;
+
+    summaryContent = (
+      <>
         {/* Top summary cards */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+          {/* Net Profit + ROI */}
           <div
             className={`rounded-xl p-3 border ${
               isDarkMode
@@ -1899,14 +2108,21 @@ function ResultsView({
                 netProfit >= 0 ? "text-emerald-400" : "text-red-400"
               }`}
             >
-              {netProfit >= 0 ? "+" : ""}
-              {formatVND(netProfit)}
+              {formatVNDCurrency(netProfit)}
             </div>
-            <div className="text-[11px] text-gray-400 mt-1">
-              Initial capital: {formatVND(backtestParams.initialCapital)}
+            <div className="text-[11px] text-gray-300 mt-1 flex flex-col gap-0.5">
+              <span>Initial capital: {formatVND(backtestParams.initialCapital)}</span>
+              <span>
+                ROI:{" "}
+                <span className="font-semibold">
+                  {roi >= 0 ? "+" : ""}
+                  {roi.toFixed(2)}%
+                </span>
+              </span>
             </div>
           </div>
 
+          {/* Win Rate / Avg trade */}
           <div
             className={`rounded-xl p-3 border ${
               isDarkMode ? "border-gray-800 bg-gray-900/80" : "border-slate-200 bg-white"
@@ -1919,14 +2135,14 @@ function ResultsView({
               </span>
             </div>
             <div className="text-lg font-semibold text-blue-400">
-              {(winRate * 100).toFixed(1)}%
+              {winRate.toFixed(1)}%
             </div>
             <div className="text-[11px] text-gray-400 mt-1">
-              Avg trade: {avgTrade >= 0 ? "+" : ""}
-              {formatVND(avgTrade)}
+              Avg trade: {formatVNDCurrency(avgTrade)}
             </div>
           </div>
 
+          {/* Risk / DD / PF */}
           <div
             className={`rounded-xl p-3 border ${
               isDarkMode ? "border-gray-800 bg-gray-900/80" : "border-slate-200 bg-white"
@@ -1939,36 +2155,105 @@ function ResultsView({
               <span className="text-[10px] text-gray-500">Risk</span>
             </div>
             <div className="text-lg font-semibold text-amber-400">
-              {(maxDrawdown * 100).toFixed(1)}%
+              {maxDrawdown.toFixed(1)}%
             </div>
             <div className="text-[11px] text-gray-400 mt-1">
               Profit factor: {profitFactor.toFixed(2)}
             </div>
           </div>
 
+          {/* BUY / SELL action focus */}
           <div
             className={`rounded-xl p-3 border ${
               isDarkMode ? "border-gray-800 bg-gray-900/80" : "border-slate-200 bg-white"
             }`}
           >
             <div className="flex items-center justify-between mb-1">
-              <span className="text-[11px] font-medium text-gray-300">
-                Distribution
+              <span className="text-[11px] font-medium text-gray-300 flex items-center gap-1">
+                <FiArrowUpRight className="w-3 h-3 text-emerald-400" />
+                <FiArrowDownRight className="w-3 h-3 text-red-400" />
+                BUY / SELL Stats
               </span>
-              <span className="text-[10px] text-gray-500">PnL breakdown</span>
+              <span className="text-[10px] text-gray-500">Signal quality</span>
             </div>
-            <div className="flex items-end gap-3 mt-1">
+            <div className="flex items-end gap-3 mt-1 text-[11px]">
               <div className="flex-1">
-                <div className="text-[10px] text-emerald-400">Profit</div>
-                <div className="text-sm font-semibold text-emerald-400">
-                  +{formatVND(totalProfit)}
+                <div className="text-emerald-400 flex items-center gap-1">
+                  <span className="inline-flex items-center px-1 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-[10px]">
+                    BUY
+                  </span>
+                </div>
+                <div className="mt-0.5 text-gray-300">
+                  Trades:{" "}
+                  <span className="font-semibold text-emerald-300">
+                    {buyTrades.length}
+                  </span>
+                </div>
+                <div className="text-gray-400">
+                  Win rate:{" "}
+                  <span className="font-semibold text-emerald-300">
+                    {buyWinRate.toFixed(1)}%
+                  </span>
                 </div>
               </div>
-              <div className="flex-1">
-                <div className="text-[10px] text-red-400">Loss</div>
-                <div className="text-sm font-semibold text-red-400">
-                  {formatVND(totalLoss)}
+              <div className="flex-1 border-l border-gray-700/60 pl-3">
+                <div className="text-red-400 flex items-center gap-1">
+                  <span className="inline-flex items-center px-1 py-0.5 rounded-full bg-red-500/10 border border-red-500/30 text-[10px]">
+                    SELL
+                  </span>
                 </div>
+                <div className="mt-0.5 text-gray-300">
+                  Trades:{" "}
+                  <span className="font-semibold text-red-300">
+                    {sellTrades.length}
+                  </span>
+                </div>
+                <div className="text-gray-400">
+                  Win rate:{" "}
+                  <span className="font-semibold text-red-300">
+                    {sellWinRate.toFixed(1)}%
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Profit/Loss Summary */}
+        <div
+          className={`rounded-xl p-3 border ${
+            isDarkMode ? "border-gray-800 bg-gray-900/80" : "border-slate-200 bg-white"
+          }`}
+        >
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[11px] font-medium text-blue-400">Profit/Loss Summary</span>
+            <span className="text-[10px] text-gray-500">Total gains/losses</span>
+          </div>
+          <div className="flex items-end gap-3 mt-1 text-[11px]">
+            <div className="flex-1">
+              <div className="text-emerald-400 flex items-center gap-1">
+                <span className="inline-flex items-center px-1 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-[10px]">
+                  Total Profit
+                </span>
+              </div>
+              <div className="mt-0.5 text-gray-300">
+                Amount: 
+                <span className="font-semibold text-emerald-300">
+                  {formatVNDCurrency(totalProfit)}
+                </span>
+              </div>
+            </div>
+            <div className="flex-1 border-l border-gray-700/60 pl-3">
+              <div className="text-red-400 flex items-center gap-1">
+                <span className="inline-flex items-center px-1 py-0.5 rounded-full bg-red-500/10 border border-red-500/30 text-[10px]">
+                  Total Loss
+                </span>
+              </div>
+              <div className="mt-0.5 text-gray-300">
+                Amount: 
+                <span className="font-semibold text-red-300">
+                  {formatVNDCurrency(totalLoss)}
+                </span>
               </div>
             </div>
           </div>
@@ -2000,9 +2285,7 @@ function ResultsView({
                 </span>
               </div>
             </div>
-            <div className="mt-1">
-              {renderSparkline(equityCurve)}
-            </div>
+            <div className="mt-1">{renderSparkline(equityCurve)}</div>
           </div>
 
           {/* Drawdown / underwater */}
@@ -2020,12 +2303,6 @@ function ResultsView({
                     Peak-to-trough equity declines
                   </div>
                 </div>
-              </div>
-              <div className="text-[10px] text-gray-500">
-                Max DD:{" "}
-                <span className="font-semibold text-amber-400">
-                  {(maxDrawdown * 100).toFixed(1)}%
-                </span>
               </div>
             </div>
             <div className="mt-1">
@@ -2046,7 +2323,7 @@ function ResultsView({
               <div>
                 <div className="text-xs font-semibold">Trade History</div>
                 <div className="text-[11px] text-gray-500">
-                  {backtestResult.trades.length} closed trades
+                  {backtestResult.trades.length} closed trades • BUY / SELL detail
                 </div>
               </div>
             </div>
@@ -2136,8 +2413,7 @@ function ResultsView({
                           isWin ? "text-emerald-400" : "text-red-400"
                         }`}
                       >
-                        {isWin ? "+" : ""}
-                        {formatVND(trade.profit)}
+                        {formatVNDCurrency(trade.profit)}
                       </td>
                       <td
                         className={`px-3 py-1.5 border-b border-gray-800/20 text-right ${
@@ -2159,6 +2435,190 @@ function ResultsView({
             )}
           </div>
         </div>
+      </>
+    );
+  }
+
+  return (
+    <div
+      className={`flex-1 overflow-auto ${
+        isDarkMode ? "bg-gray-950 text-slate-100" : "bg-slate-50 text-slate-900"
+      }`}
+    >
+      <div className="px-4 py-3 border-b border-gray-800/60 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setActiveView("builder")}
+            className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs border ${
+              isDarkMode
+                ? "border-gray-700 bg-gray-900 hover:bg-gray-800"
+                : "border-slate-200 bg-white hover:bg-slate-100"
+            }`}
+          >
+            <FiArrowLeft className="w-3 h-3" />
+            Builder
+          </button>
+          <div className="text-xs text-gray-400 ml-2">
+            Backtest history • click 1 job để xem chi tiết
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 text-xs">
+          <button
+            onClick={onRefreshJobs}
+            className={`inline-flex items-center gap-1 rounded-lg px-3 py-1 border ${
+              isDarkMode
+                ? "border-gray-700 bg-gray-900 hover:bg-gray-800"
+                : "border-slate-200 bg-white hover:bg-slate-100"
+            }`}
+          >
+            <FiRotateCw className="w-3 h-3" />
+            Refresh list
+          </button>
+          <button
+            onClick={() => exportResults("csv")}
+            disabled={!hasResult}
+            className={`inline-flex items-center gap-1 rounded-lg px-3 py-1 border ${
+              hasResult
+                ? isDarkMode
+                  ? "border-gray-700 bg-gray-900 hover:bg-gray-800"
+                  : "border-slate-200 bg-white hover:bg-slate-100"
+                : "border-gray-800/60 bg-gray-900/70 text-gray-500 cursor-not-allowed"
+            }`}
+          >
+            <FiDownload className="w-3 h-3" />
+            Export CSV
+          </button>
+        </div>
+      </div>
+
+      <div className="p-4 space-y-4">
+        {/* DANH SÁCH BACKTEST */}
+        <div
+          className={`rounded-xl border ${
+            isDarkMode ? "border-gray-800 bg-gray-900/90" : "border-slate-200 bg-white"
+          }`}
+        >
+          <div className="px-3 py-2 border-b border-gray-800/60 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <FiBarChart2 className="w-4 h-4 text-blue-400" />
+              <div>
+                <div className="text-xs font-semibold">Backtest History</div>
+                <div className="text-[11px] text-gray-500">
+                  {isLoadingJobs
+                    ? "Đang tải danh sách..."
+                    : `${jobs.length} jobs (mới nhất ở trên)`}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="max-h-64 overflow-auto text-xs">
+            {isLoadingJobs ? (
+              <div className="p-4 text-center text-gray-400 text-xs">
+                Đang tải danh sách backtest...
+              </div>
+            ) : jobs.length === 0 ? (
+              <div className="p-4 text-center text-gray-400 text-xs">
+                Chưa có backtest nào. Hãy quay lại tab Builder và chạy backtest.
+              </div>
+            ) : (
+              <table className="w-full border-collapse">
+                <thead>
+                  <tr
+                    className={`text-[11px] ${
+                      isDarkMode ? "bg-gray-900" : "bg-slate-100"
+                    }`}
+                  >
+                    <th className="px-3 py-2 text-left font-medium border-b border-gray-800/40">
+                      Job ID
+                    </th>
+                    <th className="px-3 py-2 text-left font-medium border-b border-gray-800/40">
+                      Symbol
+                    </th>
+                    <th className="px-3 py-2 text-left font-medium border-b border-gray-800/40">
+                      Date range
+                    </th>
+                    <th className="px-3 py-2 text-right font-medium border-b border-gray-800/40">
+                      Capital
+                    </th>
+                    <th className="px-3 py-2 text-left font-medium border-b border-gray-800/40">
+                      Status
+                    </th>
+                    <th className="px-3 py-2 text-left font-medium border-b border-gray-800/40">
+                      Created at
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {jobs.map((job) => {
+                    const isSelected = selectedJobId === job.id;
+                    return (
+                      <tr
+                        key={job.id}
+                        onClick={() => onSelectJob(job.id)}
+                        className={`cursor-pointer ${
+                          isSelected
+                            ? isDarkMode
+                              ? "bg-blue-900/40"
+                              : "bg-blue-50"
+                            : isDarkMode
+                            ? "hover:bg-gray-900/70"
+                            : "hover:bg-slate-50"
+                        }`}
+                      >
+                        <td className="px-3 py-1.5 border-b border-gray-800/20 text-left">
+                          <span className="font-semibold">#{job.id}</span>
+                        </td>
+                        <td className="px-3 py-1.5 border-b border-gray-800/20 text-left">
+                          {job.symbol}
+                        </td>
+                        <td className="px-3 py-1.5 border-b border-gray-800/20 text-left">
+                          {job.data_from?.slice(0, 10)} → {job.data_to?.slice(0, 10)}
+                        </td>
+                        <td className="px-3 py-1.5 border-b border-gray-800/20 text-right">
+                          {formatVND(Number(job.initial_capital))}
+                        </td>
+                        <td className="px-3 py-1.5 border-b border-gray-800/20 text-left">
+                          {statusBadge(job.status)}
+                        </td>
+                        <td className="px-3 py-1.5 border-b border-gray-800/20 text-left">
+                          {new Date(job.created_at).toLocaleString()}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          {isLoadingResult && (
+            <div className="px-3 py-2 border-t border-gray-800/60 text-[11px] text-blue-400 flex items-center gap-2">
+              <div className="animate-spin h-3 w-3 border-t-2 border-b-2 border-blue-400 rounded-full" />
+              Đang tải kết quả backtest...
+            </div>
+          )}
+        </div>
+
+        {/* VÙNG HIỂN THỊ CHI TIẾT BACKTEST ĐÃ CHỌN */}
+        {!hasResult ? (
+          <div
+            className={`rounded-xl border text-center py-10 text-xs ${
+              isDarkMode ? "border-gray-800 bg-gray-900/70" : "border-dashed border-slate-300 bg-white"
+            }`}
+          >
+            <div className="text-4xl mb-3">📊</div>
+            <div className="text-sm font-semibold mb-1">
+              Chưa có kết quả để hiển thị
+            </div>
+            <div className="text-gray-400">
+              Hãy chọn 1 backtest ở bảng phía trên (trạng thái COMPLETED) để xem chi tiết.
+            </div>
+          </div>
+        ) : (
+          summaryContent
+        )}
       </div>
     </div>
   );

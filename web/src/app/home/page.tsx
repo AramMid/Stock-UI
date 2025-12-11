@@ -26,6 +26,9 @@ import NewsSection from "@/components/trading/NewsSection";
 import ResizableDivider from "@/components/trading/ResizableDivider";
 import OrderPanel from "@/components/trading/OrderPanel";
 
+// Import the new order API service
+import { createOrder, CreateOrderDto, getOrders } from "@/lib/services/orderApiService";
+
 interface TradingPageProps {
   symbol?: string;
 }
@@ -357,35 +360,105 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
       const notificationService = NotificationService.getInstance();
       
       webSocketService.subscribe(order.id, (update) => {
-      // Update order in order book service
-      orderBookService.updateOrder(update.orderId, {
-        status: update.status,
-        filledPrice: update.filledPrice,
-        filledQuantity: update.filledQuantity
-      });
-      
-      // Update local order state
-      setOrders(prevOrders => 
-        prevOrders.map(o => 
-          o.id === update.orderId 
-            ? { ...o, status: update.status, filledPrice: update.filledPrice, filledQuantity: update.filledQuantity } 
-            : o
-        )
-      );
-      
-      // Execute the trade and show notification if order is filled
-      if (update.status === "FILLED" && update.filledPrice) {
-        let success = false;
-        if (side === 'buy') {
-          success = handleBuy(selectedSymbol, update.filledQuantity || quantity, update.filledPrice);
-        } else {
-          success = handleSell(selectedSymbol, update.filledQuantity || quantity, update.filledPrice);
+        // Update order in order book service
+        orderBookService.updateOrder(update.orderId, {
+          status: update.status,
+          filledPrice: update.filledPrice,
+          filledQuantity: update.filledQuantity
+        });
+        
+        // Update local order state
+        setOrders(prevOrders => 
+          prevOrders.map(o => 
+            o.id === update.orderId 
+              ? { ...o, status: update.status, filledPrice: update.filledPrice, filledQuantity: update.filledQuantity } 
+              : o
+          )
+        );
+        
+        // Local logic to determine order status based on filled quantity
+        let localStatus = "pending";
+        if (update.filledQuantity !== undefined && update.filledQuantity === orderQty) {
+          localStatus = "filled";
+        } else if (update.filledQuantity !== undefined && update.filledQuantity > 0 && update.filledQuantity < orderQty) {
+          localStatus = "partial";
+        } else if (update.status === "CANCELED") {
+          localStatus = "cancelled";
         }
         
-        if (success) {
-          notificationService.showSuccess(`Order ${update.orderId} filled successfully!`);
+        // Execute the trade and show notification if order is filled
+        if (localStatus === "filled" && update.filledPrice) {
+          let success = false;
+          if (side === 'buy') {
+            success = handleBuy(selectedSymbol, update.filledQuantity || quantity, update.filledPrice);
+          } else {
+            success = handleSell(selectedSymbol, update.filledQuantity || quantity, update.filledPrice);
+          }
+          
+          if (success) {
+            notificationService.showSuccess(`Order ${update.orderId} filled successfully!`);
+          }
         }
-      }
+        
+        // Call API to save order to database AFTER receiving final status update
+        // Only call once per order when we get a definitive final status update from WebSocket
+        if (update.status === "FILLED" || update.status === "REJECTED" || update.status === "CANCELED") {
+          // Check if we've already called the API for this order
+          const hasCalledApi = sessionStorage.getItem(`order_api_called_${order.id}`);
+          if (!hasCalledApi) {
+            sessionStorage.setItem(`order_api_called_${order.id}`, "true");
+            
+            // Map WebSocket status directly to database status
+            // Only FILLED and CANCELLED/REJECTED statuses should be saved to database
+            let dbStatus: string | null = null;
+            
+            // Direct mapping from WebSocket status to database status
+            if (update.status === "FILLED") {
+              dbStatus = "filled";
+            } else if (update.status === "CANCELED") {
+              dbStatus = "cancelled";
+            } else if (update.status === "REJECTED") {
+              dbStatus = "cancelled"; // Map REJECTED to cancelled in database
+            }
+            
+            // Safety check - should never happen due to the condition above
+            if (dbStatus === null) {
+              console.warn("Unexpected status received, not saving to database:", update.status);
+              return;
+            }
+            
+            // Create payload matching the NestJS DTO
+            const payload: CreateOrderDto = {
+              stockSymbol: selectedSymbol,
+              side: side,
+              quantity: orderQty,
+              orderType: order.orderType?.toLowerCase() ?? "limit", // Use the actual order type
+              price: price !== undefined ? price : undefined,
+              status: dbStatus, // Only "filled" or "cancelled" statuses
+              // Optional fields from DTO
+              filledQuantity: order.filledQuantity ?? undefined,
+              filledPrice: order.filledPrice ?? price ?? undefined,
+              commission: 0,
+              filledAt:
+                (order as unknown as { filledAt?: Date }).filledAt?.toISOString?.() ??
+                order.timestamp?.toISOString?.() ??
+                new Date().toISOString(),
+            };
+
+            // Log the payload for debugging
+            console.log("[OrderSync] Sending payload to backend:", JSON.stringify(payload, null, 2));
+            
+            createOrder(payload)
+              .then(response => {
+                console.log("Order saved to database with status:", dbStatus, response);
+              })
+              .catch(error => {
+                console.error("Error saving order to database:", error);
+                // Log the payload that caused the error
+                console.error("[OrderSync] Payload that caused error:", JSON.stringify(payload, null, 2));
+              });
+          }
+        }
       });
       
       // Process order against simulated market - this adds order to pending list for bot processing
@@ -408,11 +481,27 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
         filledQuantity: undefined
       };
       
+      // After 1 second, update status to PARTIALLY_FILLED as a temporary status
+      setTimeout(() => {
+        orderBookService.updateOrder(order.id, {
+          status: "PARTIALLY_FILLED"
+        });
+        
+        // Update local order state
+        setOrders(prevOrders => 
+          prevOrders.map(o => 
+            o.id === order.id 
+              ? { ...o, status: "PARTIALLY_FILLED" } 
+              : o
+          )
+        );
+      }, 1000);
+      
       // Add order to state
       setOrders(prevOrders => [updatedOrder, ...prevOrders]);
-      
-      // Show notification about order processing delay
-      notificationService.showSuccess(`Order submitted. Bots will decide whether to match your order within 5 seconds.`, 10000);
+
+      // Show notification about order submission
+      notificationService.showSuccess(`Order submitted. Waiting for status update from server.`, 5000);
     });
     
     setShowOrderPanel(false);
@@ -484,10 +573,13 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
               selectedSymbol={selectedSymbol}
               isDarkMode={isDarkMode}
               timeframe={timeframe}
-              onTimeframeChange={handleTimeframeChange}
-              onBuyClick={handleBuyClick}
-              onSellClick={handleSellClick}
-              currentPrice={ohlcData?.close || lastPriceRef.current}
+              onTimeframeChange={setTimeframe}
+              onBuyClick={() => setShowOrderPanel(true)}
+              onSellClick={() => {
+                setOrderPanelSide("sell");
+                setShowOrderPanel(true);
+              }}
+              currentPrice={lastPriceRef.current}
               change={ohlcData?.change || 0}
               changePercent={ohlcData?.changePercent || 0}
               showRSI={showRSI}
@@ -504,6 +596,7 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
                 low: selectedSymbol.includes(".VN") ? lastPriceRef.current * 0.8 : lastPriceRef.current * 0.7,
                 high: selectedSymbol.includes(".VN") ? lastPriceRef.current * 1.2 : lastPriceRef.current * 1.3,
               }}
+              isPrivateMode={isPrivateMode} // Truyền isPrivateMode vào ChartSection
             />
 
             {/* Vertical Divider */}
@@ -607,28 +700,60 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
             isDarkMode={isDarkMode}
           />
 
-          {/* Right Section - Balanced layout with working resize */}
+          {/* Right Section - Completely redesigned layout */}
           <div
             ref={layoutManager.rightSectionRef}
             className="grid gap-2 transition-none"
             style={{
               width: `${100 - layoutManager.horizontalLayout.split}%`,
+              // Completely redesigned grid layout for right section
+              // Structure: Watchlist, Divider, [OrderPanel, Divider,] StockInfo, Divider, News
+              // When order panel is shown: 5 sections + 3 dividers = 8 grid rows
+              // When order panel is hidden: 3 sections + 2 dividers = 5 grid rows
               gridTemplateRows: showOrderPanel 
-                ? `${layoutManager.watchlistLayout.split}fr 12px ${layoutManager.orderPanelHeight}px 12px ${layoutManager.stockInfoLayout.split}fr 12px ${100 - layoutManager.watchlistLayout.split - layoutManager.stockInfoLayout.split}fr`
-                : `${layoutManager.watchlistLayout.split}fr 12px ${layoutManager.stockInfoLayout.split}fr 12px ${100 - layoutManager.watchlistLayout.split - layoutManager.stockInfoLayout.split}fr`,
+                ? `${Math.max(15, layoutManager.watchlistLayout.split)}fr 12px ${layoutManager.orderPanelHeight}px 12px ${Math.max(20, layoutManager.stockInfoLayout.split)}fr 12px ${Math.max(20, 100 - layoutManager.watchlistLayout.split - layoutManager.stockInfoLayout.split)}fr`
+                : `${Math.max(20, layoutManager.watchlistLayout.split)}fr 12px ${Math.max(25, layoutManager.stockInfoLayout.split)}fr 12px ${Math.max(25, 100 - layoutManager.watchlistLayout.split - layoutManager.stockInfoLayout.split)}fr`,
             }}
           >
             {/* Watchlist Section */}
-            <WatchlistSection
-              selectedSymbol={selectedSymbol}
-              onSymbolSelect={handleSymbolChange}
+            <div className="rounded-lg overflow-hidden bg-[#131722] h-full">
+              <WatchlistSection
+                selectedSymbol={selectedSymbol}
+                onSymbolSelect={handleSymbolChange}
+                isDarkMode={isDarkMode}
+                positions={positionsMap}
+                isPrivateMode={isPrivateMode} // Truyền isPrivateMode vào WatchlistSection
+                marketSimulation={marketSimulationRef.current || undefined} // Truyền marketSimulation instance
+              />
+            </div>
+
+            {/* Divider between Watchlist and Stock Info/New Sections */}
+            <ResizableDivider
+              isVertical={true}
+              isDragging={layoutManager.watchlistLayout.isDragging}
+              onMouseDown={(e: React.MouseEvent) => layoutManager.watchlistLayout.handleMouseDown(e, true)}
+              title="Drag up/down to resize watchlist and other sections"
+              splitPercentage={layoutManager.watchlistLayout.split}
               isDarkMode={isDarkMode}
-              positions={positionsMap}
             />
 
-            {/* Divider and Order Panel - Only shown when buy/sell is clicked */}
+            {/* Conditional Order Panel Section */}
             {showOrderPanel && (
               <>
+                <div className="rounded-lg overflow-hidden bg-[#131722] h-full">
+                  <OrderPanel
+                    symbol={selectedSymbol}
+                    currentPrice={ohlcData?.close || lastPriceRef.current}
+                    onClose={handleCloseOrderPanel}
+                    onBuy={(quantity: number, price: number) => handleOrderSubmit('buy', quantity, price)}
+                    onSell={(quantity: number, price: number) => handleOrderSubmit('sell', quantity, price)}
+                    isDarkMode={isDarkMode}
+                    side={orderPanelSide}
+                    onSideChange={setOrderPanelSide}
+                  />
+                </div>
+                
+                {/* Divider between Order Panel and Stock Info */}
                 <ResizableDivider
                   isVertical={true}
                   isDragging={isOrderPanelDragging}
@@ -647,13 +772,12 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
                       setIsOrderPanelDragging(false);
                       return;
                     }
-                      
+                    
                     const handleMouseMove = (moveEvent: MouseEvent) => {
+                      // Prevent text selection during drag
                       moveEvent.preventDefault();
                       
-                      if (!container) return;
-                      
-                      // Mark that user has manually resized
+                      // Update order panel height based on drag direction
                       hasManuallyResizedOrderPanel.current = true;
                       
                       // Calculate available space for order panel
@@ -661,13 +785,13 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
                       const containerHeight = containerRect.height;
                       // Reserve space for other sections (watchlist, dividers, stock info, news)
                       // Each divider is 12px, and we need space for other sections
-                      const reservedSpace = containerHeight * 0.3; // Reduce reserved space from 40% to 30%
+                      const reservedSpace = containerHeight * 0.3;
                       const maxHeight = containerHeight - reservedSpace;
                       
                       const deltaY = moveEvent.clientY - startY;
                       // Kéo xuống (deltaY dương) → thu nhỏ (giảm height)
                       // Kéo lên (deltaY âm) → phóng to (tăng height)
-                      const newHeight = Math.max(150, Math.min(maxHeight, startHeight - deltaY)); // Increase min height from 100 to 150
+                      const newHeight = Math.max(150, Math.min(maxHeight, startHeight - deltaY));
                       layoutManager.handleOrderPanelResize(newHeight);
                     };
                       
@@ -690,27 +814,17 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
                   splitPercentage={75}
                   isDarkMode={isDarkMode}
                 />
-                <div className="rounded-lg overflow-hidden bg-[#131722] h-full">
-                  <OrderPanel
-                    symbol={selectedSymbol}
-                    currentPrice={ohlcData?.close || lastPriceRef.current}
-                    onClose={handleCloseOrderPanel}
-                    onBuy={(quantity: number, price: number) => handleOrderSubmit('buy', quantity, price)}
-                    onSell={(quantity: number, price: number) => handleOrderSubmit('sell', quantity, price)}
-                    isDarkMode={isDarkMode}
-                    side={orderPanelSide} // Pass the side that was clicked
-                    onSideChange={setOrderPanelSide} // Handle side changes from within the panel
-                  />
-                </div>
               </>
             )}
 
             {/* Stock Info Section */}
-            <StockInfoSection
-              selectedSymbol={selectedSymbol}
-              isDarkMode={isDarkMode}
-              currentVolume={currentVolume}
-            />
+            <div className="rounded-lg overflow-hidden bg-[#131722] h-full">
+              <StockInfoSection
+                selectedSymbol={selectedSymbol}
+                isDarkMode={isDarkMode}
+                currentVolume={currentVolume}
+              />
+            </div>
 
             {/* Stock Info to News Divider */}
             <ResizableDivider
@@ -723,7 +837,9 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
             />
 
             {/* News Section */}
-            <NewsSection isDarkMode={isDarkMode} />
+            <div className="rounded-lg overflow-hidden bg-[#131722] h-full">
+              <NewsSection isDarkMode={isDarkMode} />
+            </div>
           </div>
 
           {/* Remove any modal overlay for order panel */}

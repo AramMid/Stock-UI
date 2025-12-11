@@ -1,11 +1,14 @@
 "use client";
 import RightSidebar from "./RightSidebar";
+import { MarketSimulationService } from "@/lib/services/marketSimulationService";
 
 interface WatchlistSectionProps {
   selectedSymbol: string;
   onSymbolSelect: (symbol: string) => void;
   isDarkMode: boolean;
   positions?: Map<string, number>; // symbol -> quantity mapping
+  isPrivateMode?: boolean; // Thêm isPrivateMode vào props
+  marketSimulation?: MarketSimulationService; // Add market simulation service
 }
 
 export default function WatchlistSection({
@@ -13,6 +16,8 @@ export default function WatchlistSection({
   onSymbolSelect,
   isDarkMode,
   positions = new Map(),
+  isPrivateMode = false, // Mặc định là false
+  marketSimulation
 }: WatchlistSectionProps) {
   return (
     <div
@@ -27,6 +32,8 @@ export default function WatchlistSection({
         onSymbolSelect={onSymbolSelect}
         isDarkMode={isDarkMode}
         positions={positions}
+        isPrivateMode={isPrivateMode} // Truyền isPrivateMode vào RightSidebar
+        marketSimulation={marketSimulation} // Truyền marketSimulation vào RightSidebar
       />
     </div>
   );

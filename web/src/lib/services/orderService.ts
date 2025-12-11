@@ -175,3 +175,17 @@ export function updateOrderStatus(
 export function formatVND(value: number): string {
   return new Intl.NumberFormat('vi-VN').format(value);
 }
+
+/**
+ * Format currency in VND with currency symbol
+ * @param value Amount to format
+ * @returns Formatted VND string with currency symbol
+ */
+export function formatVNDCurrency(value: number): string {
+  return new Intl.NumberFormat('vi-VN', {
+    style: 'currency',
+    currency: 'VND',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0
+  }).format(value);
+}

@@ -1,7 +1,9 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { Plus, ChevronDown, TrendingUp, TrendingDown } from "lucide-react";
 import { formatVND } from "@/lib/order-management";
+import { useMarketData } from "@/lib/hooks/useMarketData";
+import { MarketSimulationService } from "@/lib/services/marketSimulationService";
 
 interface WatchlistItem {
   symbol: string;
@@ -20,6 +22,8 @@ interface RightSidebarProps {
   onSymbolSelect: (symbol: string) => void;
   isDarkMode?: boolean;
   positions?: Map<string, number>; // symbol -> quantity mapping
+  isPrivateMode?: boolean; // Thêm isPrivateMode vào props
+  marketSimulation?: MarketSimulationService; // Add market simulation service
 }
 
 export default function RightSidebar({
@@ -27,119 +31,97 @@ export default function RightSidebar({
   onSymbolSelect,
   isDarkMode = true,
   positions = new Map(),
+  isPrivateMode = false, // Mặc định là false
+  marketSimulation
 }: RightSidebarProps) {
   const [stocksExpanded, setStocksExpanded] = useState(true);
   const [forexExpanded, setForexExpanded] = useState(true);
 
-  const stockWatchlist: WatchlistItem[] = [
-    {
-      symbol: "VIC.VN",
-      name: "Vingroup JSC",
-      price: 45200,
-      change: 800,
-      changePercent: 1.8,
+  // Define the symbols we want to track - memoized to prevent re-renders
+  const stockSymbols = useMemo(() => [
+    "VIC.VN", "VHM.VN", "VCB.VN", "TCB.VN", 
+    "FPT.VN", "VNM.VN", "HPG.VN", "MSN.VN"
+  ], []);
+  
+  const forexSymbols = useMemo(() => [
+    "EURUSD", "GBPUSD", "USDJPY", "AUDUSD"
+  ], []);
+
+  // Getter function for market simulation service
+  const getMarketSimulation = useCallback(() => {
+    return marketSimulation || null;
+  }, [marketSimulation]);
+
+  // Use the market data hook
+  const { marketData: stockMarketData, loading: stockLoading } = useMarketData(stockSymbols, getMarketSimulation);
+  const { marketData: forexMarketData, loading: forexLoading } = useMarketData(forexSymbols, getMarketSimulation);
+
+  // Static data for names and categories (in a real app, this would come from an API too)
+  const stockStaticData: Record<string, { name: string; category: "STOCKS"; referencePrice?: number; ceilingPrice?: number; floorPrice?: number }> = {
+    "VIC.VN": { 
+      name: "Vingroup JSC", 
       category: "STOCKS",
       referencePrice: 45000,
       ceilingPrice: 48150,
-      floorPrice: 42150,
+      floorPrice: 42150
     },
-    {
-      symbol: "VHM.VN",
-      name: "Vinhomes JSC",
-      price: 55500,
-      change: -500,
-      changePercent: -0.89,
+    "VHM.VN": { 
+      name: "Vinhomes JSC", 
       category: "STOCKS",
-      referencePrice: 55800,
-      ceilingPrice: 59706,
-      floorPrice: 51894,
+      referencePrice: 55000,
+      ceilingPrice: 58850,
+      floorPrice: 51450
     },
-    {
-      symbol: "VCB.VN",
-      name: "Vietcombank",
-      price: 82700,
-      change: 1200,
-      changePercent: 1.47,
+    "VCB.VN": { 
+      name: "Vietcombank", 
       category: "STOCKS",
       referencePrice: 82000,
       ceilingPrice: 87740,
-      floorPrice: 77560,
+      floorPrice: 76540
     },
-    {
-      symbol: "TCB.VN",
-      name: "Techcombank",
-      price: 22950,
-      change: 350,
-      changePercent: 1.55,
+    "TCB.VN": { 
+      name: "Techcombank", 
       category: "STOCKS",
-      referencePrice: 22800,
-      ceilingPrice: 24396,
-      floorPrice: 21204,
+      referencePrice: 23000,
+      ceilingPrice: 24610,
+      floorPrice: 21490
     },
-    {
-      symbol: "FPT.VN",
-      name: "FPT Corporation",
-      price: 123500,
-      change: -1500,
-      changePercent: -1.2,
+    "FPT.VN": { 
+      name: "FPT Corporation", 
       category: "STOCKS",
-      referencePrice: 124000,
-      ceilingPrice: 132680,
-      floorPrice: 115320,
+      referencePrice: 123000,
+      ceilingPrice: 131610,
+      floorPrice: 114690
     },
-    {
-      symbol: "VNM.VN",
-      name: "Vietnam Dairy Products",
-      price: 48200,
-      change: 600,
-      changePercent: 1.26,
+    "VNM.VN": { 
+      name: "Vinamilk", 
       category: "STOCKS",
-      referencePrice: 47900,
-      ceilingPrice: 51253,
-      floorPrice: 44847,
+      referencePrice: 48000,
+      ceilingPrice: 51360,
+      floorPrice: 44880
     },
-    {
-      symbol: "HPG.VN",
-      name: "Hoa Phat Group",
-      price: 18850,
-      change: -250,
-      changePercent: -1.31,
+    "HPG.VN": { 
+      name: "Hoa Phat Group", 
       category: "STOCKS",
       referencePrice: 19000,
       ceilingPrice: 20330,
-      floorPrice: 17670,
+      floorPrice: 17670
     },
-    {
-      symbol: "MSN.VN",
-      name: "Masan Group",
-      price: 67800,
-      change: 2100,
-      changePercent: 3.2,
+    "MSN.VN": { 
+      name: "Masan Group", 
       category: "STOCKS",
       referencePrice: 67000,
       ceilingPrice: 71690,
-      floorPrice: 62910,
-    },
-  ];
+      floorPrice: 62910
+    }
+  };
 
-  const forexWatchlist: WatchlistItem[] = [
-    {
-      symbol: "EURUSD",
-      name: "Euro / US Dollar",
-      price: 1.1744,
-      change: -0.00411,
-      changePercent: -0.35,
-      category: "FOREX",
-    },
-    {
-      symbol: "GBPUSD",
-      name: "British Pound / US Dollar",
-      price: 1.34605,
-      change: -0.0094,
-      changePercent: -0.69,
-      category: "FOREX",
-    },
-  ];
+  const forexStaticData: Record<string, { name: string; category: "FOREX" }> = {
+    "EURUSD": { name: "Euro / US Dollar", category: "FOREX" },
+    "GBPUSD": { name: "British Pound / US Dollar", category: "FOREX" },
+    "USDJPY": { name: "US Dollar / Japanese Yen", category: "FOREX" },
+    "AUDUSD": { name: "Australian Dollar / US Dollar", category: "FOREX" }
+  };
 
   const renderWatchlistItems = (items: WatchlistItem[]) => {
     return items.map((item) => (
@@ -157,7 +139,7 @@ export default function RightSidebar({
         }`}
       >
         {/* Symbol with flag/icon */}
-        <div className="flex items-center space-x-1">
+        <div className="col-span-2 flex items-center space-x-1">
           {item.category === "STOCKS" && (
             <div className="w-3 h-3 rounded bg-blue-500 flex items-center justify-center text-[8px] font-bold text-white">
               {item.symbol.charAt(0)}
@@ -175,15 +157,6 @@ export default function RightSidebar({
           >
             {item.symbol}
           </span>
-        </div>
-
-        {/* Position (shares owned) */}
-        <div
-          className={`text-right font-mono transition-colors duration-200 ${
-            isDarkMode ? "text-white" : "text-gray-900"
-          }`}
-        >
-          {formatVND(positions.get(item.symbol) || 0)}
         </div>
 
         {/* Price */}
@@ -260,38 +233,20 @@ export default function RightSidebar({
             </span>
           </div>
 
-          {/* Position (shares owned) */}
-          <div
-            className={`col-span-2 text-right font-mono transition-colors duration-200 ${
-              isDarkMode ? "text-white" : "text-gray-900"
-            }`}
-          >
-            {formatVND(positions.get(item.symbol) || 0)}
-          </div>
-
-          {/* Price with bands for Vietnamese stocks */}
-          <div className="col-span-7">
-            <div className="flex justify-between items-center">
-              <div
-                className={`text-right font-mono transition-colors duration-200 ${
+          {/* Price and Change */}
+          <div className="col-span-5">
+            <div className="flex items-center justify-between">
+              <span
+                className={`font-mono transition-colors duration-200 ${
                   isDarkMode ? "text-white" : "text-gray-900"
                 }`}
               >
                 {item.symbol.endsWith(".VN")
                   ? formatVND(item.price)
                   : item.price.toFixed(item.category === "FOREX" ? 5 : 2)}
-              </div>
-              {item.symbol.endsWith(".VN") && item.referencePrice && item.ceilingPrice && item.floorPrice && (
-                <div className="flex space-x-2">
-                  <span className="text-yellow-500 text-xs font-medium">R:{formatVND(item.referencePrice)}</span>
-                  <span className="text-purple-500 text-xs font-medium">C:{formatVND(item.ceilingPrice)}</span>
-                  <span className="text-cyan-500 text-xs font-medium">F:{formatVND(item.floorPrice)}</span>
-                </div>
-              )}
-            </div>
-            <div className="flex justify-between text-xs">
-              <div
-                className={`font-mono ${
+              </span>
+              <span
+                className={`font-mono text-xs ${
                   item.change >= 0 ? "text-green-400" : "text-red-400"
                 }`}
               >
@@ -302,13 +257,55 @@ export default function RightSidebar({
                 <span className="ml-1">
                   ({item.changePercent >= 0 ? "+" : ""}{item.changePercent.toFixed(2)}%)
                 </span>
-              </div>
+              </span>
             </div>
           </div>
+
+          {/* Price Bands for Stocks */}
+          {item.category === "STOCKS" && item.referencePrice && item.ceilingPrice && item.floorPrice && (
+            <div className="col-span-4 flex justify-end space-x-2">
+              <span className="text-gray-500 text-xs font-medium">R:{formatVND(item.referencePrice)}</span>
+              <span className="text-purple-500 text-xs font-medium">C:{formatVND(item.ceilingPrice)}</span>
+              <span className="text-cyan-500 text-xs font-medium">F:{formatVND(item.floorPrice)}</span>
+            </div>
+          )}
         </div>
       </div>
     ));
   };
+
+  // Prepare stock watchlist data
+  const stockWatchlist: WatchlistItem[] = stockSymbols.map(symbol => {
+    const staticData = stockStaticData[symbol];
+    const marketData = stockMarketData[symbol];
+    
+    return {
+      symbol,
+      name: staticData?.name || symbol,
+      price: marketData?.price || 0,
+      change: marketData?.change || 0,
+      changePercent: marketData?.changePercent || 0,
+      category: "STOCKS",
+      referencePrice: staticData?.referencePrice,
+      ceilingPrice: staticData?.ceilingPrice,
+      floorPrice: staticData?.floorPrice
+    };
+  });
+
+  // Prepare forex watchlist data
+  const forexWatchlist: WatchlistItem[] = forexSymbols.map(symbol => {
+    const staticData = forexStaticData[symbol];
+    const marketData = forexMarketData[symbol];
+    
+    return {
+      symbol,
+      name: staticData?.name || symbol,
+      price: marketData?.price || 0,
+      change: marketData?.change || 0,
+      changePercent: marketData?.changePercent || 0,
+      category: "FOREX"
+    };
+  });
 
   return (
     <div
@@ -361,14 +358,10 @@ export default function RightSidebar({
           isDarkMode ? "border-[#2a2e39]" : "border-gray-200"
         }`}
       >
-        <div
-          className={`grid grid-cols-12 gap-2 text-xs font-medium transition-colors duration-200 ${
-            isDarkMode ? "text-gray-400" : "text-gray-600"
-          }`}
-        >
-          <div className="col-span-3">Symbol</div>
-          <div className="col-span-2 text-right">Pos</div>
-          <div className="col-span-7 text-right">Last / Bands</div>
+        <div className="grid grid-cols-12 gap-2 text-xs">
+          <div className="col-span-3 font-medium">Symbol</div>
+          <div className="col-span-5 font-medium">Price</div>
+          <div className="col-span-4 font-medium text-right">Bands</div>
         </div>
       </div>
 
@@ -399,11 +392,17 @@ export default function RightSidebar({
         </button>
         {stocksExpanded && (
           <div
-            className={`transition-colors duration-200 overflow-y-auto max-h-[300px] ${
+            className={`transition-colors duration-200 overflow-y-auto max-h-[400px] ${
               isDarkMode ? "bg-[#131722]" : "bg-white"
             }`}
           >
-            {renderWatchlistItemsWithBands(stockWatchlist)}
+            {stockLoading ? (
+              <div className="px-3 py-2 text-center text-gray-500">
+                Loading...
+              </div>
+            ) : (
+              renderWatchlistItemsWithBands(stockWatchlist)
+            )}
           </div>
         )}
       </div>
@@ -435,11 +434,17 @@ export default function RightSidebar({
         </button>
         {forexExpanded && (
           <div
-            className={`transition-colors duration-200 overflow-y-auto max-h-[200px] ${
+            className={`transition-colors duration-200 overflow-y-auto max-h-[300px] ${
               isDarkMode ? "bg-[#131722]" : "bg-white"
             }`}
           >
-            {renderWatchlistItemsWithBands(forexWatchlist)}
+            {forexLoading ? (
+              <div className="px-3 py-2 text-center text-gray-500">
+                Loading...
+              </div>
+            ) : (
+              renderWatchlistItems(forexWatchlist)
+            )}
           </div>
         )}
       </div>

@@ -38,6 +38,7 @@ interface ChartSectionProps {
   currentVolume: number;
   dayRange?: { low: number; high: number };
   fiftyTwoWeekRange?: { low: number; high: number };
+  isPrivateMode?: boolean; // Thêm isPrivateMode vào props
 }
 
 export default function ChartSection({
@@ -60,6 +61,7 @@ export default function ChartSection({
   currentVolume,
   dayRange,
   fiftyTwoWeekRange,
+  isPrivateMode = false, // Mặc định là false
 }: ChartSectionProps) {
   const { activeTool } = useDrawing();
 
@@ -96,6 +98,7 @@ export default function ChartSection({
           currentVolume={currentVolume}
           dayRange={dayRange}
           fiftyTwoWeekRange={fiftyTwoWeekRange}
+          isPrivateMode={isPrivateMode} // Truyền isPrivateMode vào QuickTradingButtons
         />
 
         {/* Main Chart Container - Optimized for smooth resizing */}
