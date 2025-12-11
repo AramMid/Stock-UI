@@ -4,6 +4,7 @@ import { useDrawing } from "@/contexts/DrawingContext";
 import { drawingService } from "@/lib/drawing-service";
 import { tools, ToolItem } from "@/lib/data/tools";
 import CursorPopupMenu from "./CursorPopupMenu";
+import { useRouter } from "next/navigation";
 
 interface LeftSidebarProps {
   onToolSelect?: (toolId: string) => void;
@@ -18,6 +19,7 @@ export default function LeftSidebar({
   onMenuOpen,
   onSettingsOpen
 }: LeftSidebarProps) {
+  const router = useRouter();
   const { activeTool, setActiveTool } = useDrawing();
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
   const [cursorMenuOpen, setCursorMenuOpen] = useState(false);
@@ -66,7 +68,7 @@ export default function LeftSidebar({
     }
     
     if (toolId === "settings") {
-      if (onSettingsOpen) onSettingsOpen();
+      router.push('/setting');
       return;
     }
     

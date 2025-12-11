@@ -26,6 +26,7 @@ import NewsSection from "@/components/trading/NewsSection";
 import ResizableDivider from "@/components/trading/ResizableDivider";
 import OrderPanel from "@/components/trading/OrderPanel";
 
+
 // Import the new order API service
 import { createOrder, CreateOrderDto, getOrders } from "@/lib/services/orderApiService";
 
@@ -66,6 +67,14 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
   const [isOrderPanelDragging, setIsOrderPanelDragging] = useState(false); // State for order panel resize dragging
   const hasManuallyResizedOrderPanel = useRef(false); // Track if user has manually resized order panel
   const [orderPanelSide, setOrderPanelSide] = useState<"buy" | "sell">("buy"); // Track which side to show in order panel
+  
+  // User data state
+  const [userData, setUserData] = useState({
+    name: "John Doe",
+    email: "john.doe@example.com",
+    phone: "+84 123 456 789",
+    balance: 200000000 // Default balance
+  });
   
   // Orders state
   const [orders, setOrders] = useState<Order[]>([]);
@@ -118,6 +127,14 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
       }
     };
   }, [updateLastPrice]);
+
+  // Update user data when trading position changes
+  useEffect(() => {
+    setUserData(prev => ({
+      ...prev,
+      balance: tradingPosition.cash
+    }));
+  }, [tradingPosition.cash]);
 
   // Handle Strategy Tester full-screen toggle
   useEffect(() => {
@@ -324,9 +341,6 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
     console.log("Menu opened");
   }, []);
 
-  const handleSettingsOpen = useCallback(() => {
-    console.log("Settings opened");
-  }, []);
 
   const handleCloseOrderPanel = useCallback(() => {
     setShowOrderPanel(false);
@@ -552,7 +566,6 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
           onToolSelect={handleToolSelect}
           onGroupToggle={handleGroupToggle}
           onMenuOpen={handleMenuOpen}
-          onSettingsOpen={handleSettingsOpen}
         />
 
         {/* Main Grid Area */}
@@ -843,6 +856,8 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
           </div>
 
           {/* Remove any modal overlay for order panel */}
+          
+
         </div>
       </div>
     </div>

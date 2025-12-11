@@ -131,6 +131,14 @@ export function useChart({
   const isDraggingRef = useRef<boolean>(false);
   const wasDraggingRef = useRef<boolean>(false); // Lưu trạng thái drag để kiểm tra trong click handler
   const rafIdRef = useRef<number | null>(null); // Để throttle cập nhật với requestAnimationFrame
+  // Store references to event handlers for proper cleanup
+  const eventHandlersRef = useRef<{
+    chartResizeHandler: (() => void) | null;
+    resizeHandler: (() => void) | null;
+  }>({
+    chartResizeHandler: null,
+    resizeHandler: null,
+  });
 
   // helpers
   const chartToCanvas = useCallback((time: number, price: number): { x: number; y: number } | null => {
@@ -387,7 +395,7 @@ export function useChart({
         const distanceToLine = distancePointToLine(x, y, start.x, start.y, end.x, end.y);
         
         if (distanceToLine <= 5) { // 5px tolerance
-          // Kiểm tra xem người dùng click gần điểm bắt đầu, kết thúc hay thân đoạn thẳng
+          // Kiểm tra xem người dùng click gần điểm đầu hoặc điểm cuối, thân đoạn thẳng
           const distanceToStart = Math.sqrt(Math.pow(x - start.x, 2) + Math.pow(y - start.y, 2));
           const distanceToEnd = Math.sqrt(Math.pow(x - end.x, 2) + Math.pow(y - end.y, 2));
           
@@ -578,17 +586,35 @@ export function useChart({
     if (isInitializedRef.current === currentKey && !isDisposedRef.current) {
       return;
     }
-    // run previous cleanup if exists
+    
+    // Check if charts are already disposed before cleanup
     if (cleanupRef.current && !isDisposedRef.current) {
-      cleanupRef.current();
+      try {
+        cleanupRef.current();
+      } catch (error) {
+        console.warn("Cleanup error:", error);
+      }
       cleanupRef.current = null;
     }
+    
+    // Reset disposal state
     isDisposedRef.current = false;
     isInitializedRef.current = currentKey;
     setChartsReady(false);
+    
     const container = containerRef.current;
     if (!container) return;
-    container.innerHTML = "";
+    
+    // Clear container but check if it's still connected to DOM
+    try {
+      if (container.parentNode) {
+        container.innerHTML = "";
+      }
+    } catch (error) {
+      console.warn("Container clear error:", error);
+      return;
+    }
+    
     const chartTheme = isDarkMode
       ? {
           layout: { background: { color: "#131722" }, textColor: "#d9d9d9" },
@@ -874,43 +900,155 @@ const startReplay = () => {
   }, 2000); // Still update every 2 seconds for smooth price movements
 };
     const handleChartResize = () => {
+      // Immediate exit if disposed
+      if (isDisposedRef.current) return;
+      
+      // Additional guard: check if window is still available (prevents errors in some edge cases)
+      if (typeof window === 'undefined') return;
+      
+      // Check if container still exists in DOM
+      if (!container || !document.contains(container)) {
+        return;
+      }
+      
+      // Another disposal check after async operations
+      if (isDisposedRef.current) return;
+      
       if (resizeTimeoutRef.current) {
         window.clearTimeout(resizeTimeoutRef.current);
       }
+      
+      // Final disposal check before heavy operations
+      if (isDisposedRef.current) return;
+      
       const { mainChartHeight: newMainHeight, rsiHeight: newRsiHeight, macdHeight: newMacdHeight } = createChartsWithDynamicSizing();
+      
       try {
-        if (mainChart) {
-          mainChart.resize(container.clientWidth, newMainHeight);
-          if (canvasRef.current) {
+        // Check if charts still exist and are not disposed
+        if (mainChart && typeof mainChart.resize === 'function' && !isDisposedRef.current) {
+          // Additional check for chart validity before resize
+          try {
+            // Try to access a property to check if chart is still valid
+            if (isDisposedRef.current) return;
+            mainChart.timeScale();
+            if (isDisposedRef.current) return;
+            mainChart.resize(container.clientWidth, newMainHeight);
+          } catch (chartError) {
+            console.warn("Main chart access error (might be disposed):", chartError);
+            return;
+          }
+          
+          if (canvasRef.current && !isDisposedRef.current) {
             canvasRef.current.width = container.clientWidth;
             canvasRef.current.height = newMainHeight;
             redrawTrendlines();
           }
         }
-        if (rsiChart) rsiChart.resize(container.clientWidth, newRsiHeight);
-        if (macdChart) macdChart.resize(container.clientWidth, newMacdHeight);
+        if (rsiChart && typeof rsiChart.resize === 'function' && !isDisposedRef.current) {
+          try {
+            // Try to access a property to check if chart is still valid
+            if (isDisposedRef.current) return;
+            rsiChart.timeScale();
+            if (isDisposedRef.current) return;
+            rsiChart.resize(container.clientWidth, newRsiHeight);
+          } catch (chartError) {
+            console.warn("RSI chart access error (might be disposed):", chartError);
+          }
+        }
+        if (macdChart && typeof macdChart.resize === 'function' && !isDisposedRef.current) {
+          try {
+            // Try to access a property to check if chart is still valid
+            if (isDisposedRef.current) return;
+            macdChart.timeScale();
+            if (isDisposedRef.current) return;
+            macdChart.resize(container.clientWidth, newMacdHeight);
+          } catch (chartError) {
+            console.warn("MACD chart access error (might be disposed):", chartError);
+          }
+        }
       } catch (error) {
         console.warn("Chart resize error:", error);
+        return; // Exit early on resize error
       }
+      
       resizeTimeoutRef.current = window.setTimeout(() => {
+        // Check again after timeout
+        if (isDisposedRef.current || !container || !document.contains(container)) return;
+        
         // second pass to ensure layout
         try {
           const { mainChartHeight: nm, rsiHeight: nr, macdHeight: nm2 } = createChartsWithDynamicSizing();
-          if (mainChart) mainChart.resize(container.clientWidth, nm);
-          if (rsiChart) rsiChart.resize(container.clientWidth, nr);
-          if (macdChart) macdChart.resize(container.clientWidth, nm2);
-          if (canvasRef.current && mainChart) {
+          if (mainChart && typeof mainChart.resize === 'function' && !isDisposedRef.current) {
+            try {
+              if (isDisposedRef.current) return;
+              mainChart.timeScale();
+              if (isDisposedRef.current) return;
+              mainChart.resize(container.clientWidth, nm);
+            } catch (chartError) {
+              console.warn("Main chart second pass access error:", chartError);
+            }
+          }
+          if (rsiChart && typeof rsiChart.resize === 'function' && !isDisposedRef.current) {
+            try {
+              if (isDisposedRef.current) return;
+              rsiChart.timeScale();
+              if (isDisposedRef.current) return;
+              rsiChart.resize(container.clientWidth, nr);
+            } catch (chartError) {
+              console.warn("RSI chart second pass access error:", chartError);
+            }
+          }
+          if (macdChart && typeof macdChart.resize === 'function' && !isDisposedRef.current) {
+            try {
+              if (isDisposedRef.current) return;
+              macdChart.timeScale();
+              if (isDisposedRef.current) return;
+              macdChart.resize(container.clientWidth, nm2);
+            } catch (chartError) {
+              console.warn("MACD chart second pass access error:", chartError);
+            }
+          }
+          if (canvasRef.current && mainChart && !isDisposedRef.current) {
             canvasRef.current.width = container.clientWidth;
             canvasRef.current.height = nm;
             redrawTrendlines();
           }
-        } catch {}
+        } catch (error) {
+          console.warn("Second pass chart resize error:", error);
+        }
       }, 16);
     };
-    window.addEventListener("chartResize", handleChartResize);
-    window.addEventListener("resize", handleChartResize);
-    const resizeObserver = new ResizeObserver(() => requestAnimationFrame(() => handleChartResize()));
-    resizeObserver.observe(container);
+
+    // Create a wrapper function for resize events that checks disposal state
+    const handleChartResizeWrapper = () => {
+      if (!isDisposedRef.current) {
+        handleChartResize();
+      }
+    };
+    
+    // Store event handler references for proper cleanup
+    eventHandlersRef.current.chartResizeHandler = handleChartResizeWrapper;
+    eventHandlersRef.current.resizeHandler = handleChartResizeWrapper;
+    
+    window.addEventListener("chartResize", handleChartResizeWrapper);
+    window.addEventListener("resize", handleChartResizeWrapper);
+    
+    let resizeObserver: ResizeObserver | null = null;
+    try {
+      resizeObserver = new ResizeObserver(() => {
+        if (!isDisposedRef.current) {
+          requestAnimationFrame(() => {
+            if (!isDisposedRef.current) {
+              handleChartResize();
+            }
+          });
+        }
+      });
+      resizeObserver.observe(container);
+    } catch (observerError) {
+      console.warn("Failed to create ResizeObserver:", observerError);
+    }
+
     // fetch and init
     (async () => {
       try {
@@ -925,25 +1063,58 @@ const startReplay = () => {
     })();
     // cleanup function (store to cleanupRef)
     const cleanup = () => {
+      // Early exit if already disposed
       if (isDisposedRef.current) return;
+      
       isDisposedRef.current = true;
-      window.removeEventListener("chartResize", handleChartResize);
-      window.removeEventListener("resize", handleChartResize);
-      if (resizeObserver) resizeObserver.disconnect();
+      
+      // Remove event listeners using stored references
+      if (eventHandlersRef.current.chartResizeHandler) {
+        window.removeEventListener("chartResize", eventHandlersRef.current.chartResizeHandler);
+      }
+      if (eventHandlersRef.current.resizeHandler) {
+        window.removeEventListener("resize", eventHandlersRef.current.resizeHandler);
+      }
+      
+      // Clear event handler references
+      eventHandlersRef.current.chartResizeHandler = null;
+      eventHandlersRef.current.resizeHandler = null;
+      
+      if (resizeObserver) {
+        try {
+          resizeObserver.disconnect();
+        } catch (error) {
+          console.warn("ResizeObserver disconnect error:", error);
+        }
+      }
+      
       if (resizeTimeoutRef.current) {
         window.clearTimeout(resizeTimeoutRef.current);
         resizeTimeoutRef.current = null;
       }
+      
       if (dataRef.current.timer) {
         window.clearInterval(dataRef.current.timer);
         dataRef.current.timer = null;
       }
+      
+      // Clean up canvas
       if (canvasRef.current) {
-        canvasRef.current.remove();
+        try {
+          if (canvasRef.current.parentNode) {
+            canvasRef.current.remove();
+          }
+        } catch (error) {
+          console.warn("Canvas cleanup error:", error);
+        }
         canvasRef.current = null;
       }
+      
+      // Safely clean up chart objects
       try {
         const { mainChart, rsiChart, macdChart } = chartsRef.current;
+        
+        // Nullify series references first
         seriesRef.current = {
           priceSeries: null,
           volumeSeries: null,
@@ -955,81 +1126,147 @@ const startReplay = () => {
           rsiSeries: null,
           macdLineSeries: null,
         };
-        if (mainChart) mainChart.remove();
-        if (rsiChart) rsiChart.remove();
-        if (macdChart) macdChart.remove();
+        
+        // Safely remove charts
+        if (mainChart && typeof mainChart.remove === 'function') {
+          try {
+            mainChart.remove();
+          } catch (error) {
+            console.warn("Main chart removal error:", error);
+          }
+        }
+        
+        if (rsiChart && typeof rsiChart.remove === 'function') {
+          try {
+            rsiChart.remove();
+          } catch (error) {
+            console.warn("RSI chart removal error:", error);
+          }
+        }
+        
+        if (macdChart && typeof macdChart.remove === 'function') {
+          try {
+            macdChart.remove();
+          } catch (error) {
+            console.warn("MACD chart removal error:", error);
+          }
+        }
+        
+        // Nullify chart references
         chartsRef.current = { mainChart: null, rsiChart: null, macdChart: null };
       } catch (error) {
         console.warn("Chart cleanup warning:", error);
       }
     };
+
     cleanupRef.current = cleanup;
     return cleanup;
-  }, [symbol, timeframe, isDarkMode, showRSI, showMACD, chartType, isPrivateMode]); // intentionally exclude enableTrendlineDrawing and enableBrushDrawing
+  }, [symbol, timeframe, isDarkMode, showRSI, showMACD, chartType, isPrivateMode]);
 
   // ---------- SEPARATE EFFECT: DRAWING CANVAS & EVENTS ----------
   useEffect(() => {
+    // Check if component is disposed
+    if (isDisposedRef.current) return;
+    
     const container = containerRef.current;
     const { mainChart } = chartsRef.current;
     
     // Always create canvas overlay if missing and charts are ready
-    if ((!canvasRef.current || !canvasRef.current.parentElement) && container && mainChart && chartsReady) {
-      const canvas = document.createElement("canvas");
-      canvas.style.position = "absolute";
-      canvas.style.top = "0";
-      canvas.style.left = "0";
-      canvas.style.pointerEvents = "none"; // let clicks pass through to container
-      canvas.style.zIndex = "10";
-      const rect = container.getBoundingClientRect();
-      canvas.width = rect.width;
-      canvas.height = rect.height;
-      container.style.position = "relative";
-      container.appendChild(canvas);
-      canvasRef.current = canvas;
+    if ((!canvasRef.current || (canvasRef.current && !canvasRef.current.parentElement)) && container && mainChart && chartsReady) {
+      try {
+        // Check if container is still in DOM
+        if (!document.contains(container)) return;
+        
+        const canvas = document.createElement("canvas");
+        canvas.style.position = "absolute";
+        canvas.style.top = "0";
+        canvas.style.left = "0";
+        canvas.style.pointerEvents = "none"; // let clicks pass through to container
+        canvas.style.zIndex = "10";
+        const rect = container.getBoundingClientRect();
+        canvas.width = rect.width;
+        canvas.height = rect.height;
+        container.style.position = "relative";
+        
+        // Check again before appending
+        if (container.parentNode) {
+          container.appendChild(canvas);
+          canvasRef.current = canvas;
+        }
+      } catch (error) {
+        console.warn("Canvas creation error:", error);
+        return;
+      }
     }
     
     // Subscribe drawing handlers
     if (container && mainChart && chartsReady && canvasRef.current) {
-      // Always subscribe to click events for drawing and double-click deletion
-      container.addEventListener("click", handleChartClick);
-      
-      // Subscribe to mousedown for line selection and dragging
-      if (!enableTrendlineDrawing) {
-        container.addEventListener("mousedown", handleChartMouseDown);
-      }
-      
-      // Subscribe to crosshair move when drawing, dragging, or when a line is selected
-      if (enableTrendlineDrawing || selectedLine || isMouseDownRef.current) {
-        mainChart.subscribeCrosshairMove(handleDrawingCrosshairMove);
-      } else {
-        mainChart?.unsubscribeCrosshairMove(handleDrawingCrosshairMove);
+      try {
+        // Always subscribe to click events for drawing and double-click deletion
+        container.addEventListener("click", handleChartClick);
+        
+        // Subscribe to mousedown for line selection and dragging
+        if (!enableTrendlineDrawing) {
+          container.addEventListener("mousedown", handleChartMouseDown);
+        }
+        
+        // Subscribe to crosshair move when drawing, dragging, or when a line is selected
+        if (enableTrendlineDrawing || selectedLine || isMouseDownRef.current) {
+          if (mainChart && typeof mainChart.subscribeCrosshairMove === 'function') {
+            mainChart.subscribeCrosshairMove(handleDrawingCrosshairMove);
+          }
+        } else {
+          if (mainChart && typeof mainChart.unsubscribeCrosshairMove === 'function') {
+            mainChart.unsubscribeCrosshairMove(handleDrawingCrosshairMove);
+          }
+        }
+      } catch (error) {
+        console.warn("Event subscription error:", error);
       }
     }
     
     // Always subscribe to visible range changes when canvas exists
-    if (mainChart && canvasRef.current) {
+    if (mainChart && canvasRef.current && !isDisposedRef.current) {
       const timeScale = mainChart.timeScale();
-      const visibleRangeHandler = () => redrawTrendlines();
+      const visibleRangeHandler = () => {
+        if (!isDisposedRef.current) {
+          redrawTrendlines();
+        }
+      };
       
       try {
-        timeScale.subscribeVisibleLogicalRangeChange(visibleRangeHandler);
-      } catch {
-        // ignore if not implemented
+        if (typeof timeScale.subscribeVisibleLogicalRangeChange === 'function') {
+          timeScale.subscribeVisibleLogicalRangeChange(visibleRangeHandler);
+        }
+      } catch (error) {
+        console.warn("Visible range subscription error:", error);
       }
       
       // Redraw once now
-      redrawTrendlines();
+      if (!isDisposedRef.current) {
+        redrawTrendlines();
+      }
       
       return () => {
         try {
-          timeScale.unsubscribeVisibleLogicalRangeChange(visibleRangeHandler);
-        } catch {}
+          if (typeof timeScale.unsubscribeVisibleLogicalRangeChange === 'function') {
+            timeScale.unsubscribeVisibleLogicalRangeChange(visibleRangeHandler);
+          }
+        } catch (error) {
+          console.warn("Visible range unsubscription error:", error);
+        }
         
         // Also unsubscribe drawing handlers if they were subscribed
-        if (mainChart && container) {
-          mainChart.unsubscribeCrosshairMove(handleDrawingCrosshairMove);
-          container.removeEventListener("click", handleChartClick);
-          container.removeEventListener("mousedown", handleChartMouseDown);
+        try {
+          if (mainChart && typeof mainChart.unsubscribeCrosshairMove === 'function') {
+            mainChart.unsubscribeCrosshairMove(handleDrawingCrosshairMove);
+          }
+          if (container) {
+            container.removeEventListener("click", handleChartClick);
+            container.removeEventListener("mousedown", handleChartMouseDown);
+          }
+        } catch (error) {
+          console.warn("Event unsubscription error:", error);
         }
       };
     }
