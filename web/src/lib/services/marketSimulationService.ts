@@ -191,6 +191,19 @@ interface BreakoutLevel {
   strength: number;
 }
 
+// Helper function to calculate volatility (simplified)
+function calculateVolatility(prices: number[]): number {
+  if (prices.length < 2) return 0.01;
+  
+  const changes = [];
+  for (let i = 1; i < prices.length; i++) {
+    changes.push(Math.abs((prices[i] - prices[i-1]) / prices[i-1]));
+  }
+  
+  const avgChange = changes.reduce((sum, change) => sum + change, 0) / changes.length;
+  return avgChange;
+}
+
 const PARAMS = {
   MARKET_MAKER_COUNT: 15,
   TREND_FOLLOWER_COUNT: 8,
@@ -262,14 +275,14 @@ const PARAMS = {
 } as const;
 
 const SYMBOLS = {
-  "VIC.VN": { price: 45200, lotSize: 100, tickSize: 100 },
-  "VHM.VN": { price: 55500, lotSize: 100, tickSize: 100 },
-  "VCB.VN": { price: 82700, lotSize: 100, tickSize: 100 },
-  "TCB.VN": { price: 22950, lotSize: 100, tickSize: 50 },
-  "FPT.VN": { price: 123500, lotSize: 100, tickSize: 500 },
-  "VNM.VN": { price: 48200, lotSize: 100, tickSize: 100 },
-  "HPG.VN": { price: 18850, lotSize: 100, tickSize: 50 },
-  "MSN.VN": { price: 67800, lotSize: 100, tickSize: 100 }
+  "VIC.VN": { price: 0, lotSize: 100, tickSize: 100 }, // No static initial price
+  "VHM.VN": { price: 0, lotSize: 100, tickSize: 100 },
+  "VCB.VN": { price: 0, lotSize: 100, tickSize: 100 },
+  "TCB.VN": { price: 0, lotSize: 100, tickSize: 50 },
+  "FPT.VN": { price: 0, lotSize: 100, tickSize: 500 },
+  "VNM.VN": { price: 0, lotSize: 100, tickSize: 100 },
+  "HPG.VN": { price: 0, lotSize: 100, tickSize: 50 },
+  "MSN.VN": { price: 0, lotSize: 100, tickSize: 100 }
 };
 
 export class MarketSimulationService {
@@ -552,6 +565,15 @@ export class MarketSimulationService {
       
       this.updateMarketMetrics(marketData);
       
+      // Debug logging
+      // console.log('Market data updated for', symbol, {
+      //   price: marketData.price,
+      //   bidDepth: marketData.bidDepth.length,
+      //   askDepth: marketData.askDepth.length,
+      //   bestBid: marketData.bidDepth.length > 0 ? Math.max(...marketData.bidDepth.map(l => l.price)) : 'N/A',
+      //   bestAsk: marketData.askDepth.length > 0 ? Math.min(...marketData.askDepth.map(l => l.price)) : 'N/A'
+      // });
+      
       this.tradeHistory = this.tradeHistory.filter(t => Date.now() - t.timestamp < 60000);
       
       if (this.onUpdateCallback) {
@@ -614,15 +636,36 @@ export class MarketSimulationService {
     const symbol = marketData.symbol;
     const currentPrice = marketData.price;
     
+    // Use PARAMS but make the order book more flexible by adjusting based on current price
+    const spread = PARAMS.MARKET_MAKER_BASE_SPREAD;
+    const minLevels = PARAMS.MIN_BID_ASK_LEVELS;
+    const quantityRange = [...PARAMS.MARKET_MAKER_QUANTITY_RANGE] as [number, number];
+    
     // Đảm bảo ít nhất MIN_BID_ASK_LEVELS levels mỗi side
-    if (marketData.bidDepth.length < PARAMS.MIN_BID_ASK_LEVELS) {
-      const levelsToAdd = PARAMS.MIN_BID_ASK_LEVELS - marketData.bidDepth.length;
+    if (marketData.bidDepth.length < minLevels) {
+      const levelsToAdd = minLevels - marketData.bidDepth.length;
       for (let i = 0; i < levelsToAdd; i++) {
-        const priceStep = PARAMS.MARKET_MAKER_BASE_SPREAD * (i + 1);
-        const bidPrice = Math.round((currentPrice - priceStep) / 100) * 100;
+        // Make the price step more dynamic based on current price
+        const dynamicSpread = symbol.includes('.VN') 
+          ? Math.max(100, Math.round(currentPrice * 0.001)) 
+          : Math.max(0.01, currentPrice * 0.001);
+        const priceStep = dynamicSpread * (i + 1);
+        
+        // Round price based on symbol type
+        const bidPrice = symbol.includes('.VN') 
+          ? Math.round((currentPrice - priceStep) / 100) * 100
+          : parseFloat((currentPrice - priceStep).toFixed(2));
+        
+        // Make quantity more dynamic based on current price
+        const dynamicMinQty = symbol.includes('.VN') 
+          ? Math.max(100, Math.round(currentPrice * 0.0001))
+          : Math.max(1, Math.round(currentPrice * 0.1));
+        const dynamicMaxQty = symbol.includes('.VN') 
+          ? Math.max(1000, Math.round(currentPrice * 0.001))
+          : Math.max(10, Math.round(currentPrice * 1));
         const quantity = Math.floor(
-          PARAMS.MARKET_MAKER_QUANTITY_RANGE[0] + 
-          Math.random() * (PARAMS.MARKET_MAKER_QUANTITY_RANGE[1] - PARAMS.MARKET_MAKER_QUANTITY_RANGE[0])
+          dynamicMinQty + 
+          Math.random() * (dynamicMaxQty - dynamicMinQty)
         );
         
         marketData.bidDepth.push({
@@ -635,14 +678,30 @@ export class MarketSimulationService {
       }
     }
     
-    if (marketData.askDepth.length < PARAMS.MIN_BID_ASK_LEVELS) {
-      const levelsToAdd = PARAMS.MIN_BID_ASK_LEVELS - marketData.askDepth.length;
+    if (marketData.askDepth.length < minLevels) {
+      const levelsToAdd = minLevels - marketData.askDepth.length;
       for (let i = 0; i < levelsToAdd; i++) {
-        const priceStep = PARAMS.MARKET_MAKER_BASE_SPREAD * (i + 1);
-        const askPrice = Math.round((currentPrice + priceStep) / 100) * 100;
+        // Make the price step more dynamic based on current price
+        const dynamicSpread = symbol.includes('.VN') 
+          ? Math.max(100, Math.round(currentPrice * 0.001)) 
+          : Math.max(0.01, currentPrice * 0.001);
+        const priceStep = dynamicSpread * (i + 1);
+        
+        // Round price based on symbol type
+        const askPrice = symbol.includes('.VN') 
+          ? Math.round((currentPrice + priceStep) / 100) * 100
+          : parseFloat((currentPrice + priceStep).toFixed(2));
+        
+        // Make quantity more dynamic based on current price
+        const dynamicMinQty = symbol.includes('.VN') 
+          ? Math.max(100, Math.round(currentPrice * 0.0001))
+          : Math.max(1, Math.round(currentPrice * 0.1));
+        const dynamicMaxQty = symbol.includes('.VN') 
+          ? Math.max(1000, Math.round(currentPrice * 0.001))
+          : Math.max(10, Math.round(currentPrice * 1));
         const quantity = Math.floor(
-          PARAMS.MARKET_MAKER_QUANTITY_RANGE[0] + 
-          Math.random() * (PARAMS.MARKET_MAKER_QUANTITY_RANGE[1] - PARAMS.MARKET_MAKER_QUANTITY_RANGE[0])
+          dynamicMinQty + 
+          Math.random() * (dynamicMaxQty - dynamicMinQty)
         );
         
         marketData.askDepth.push({
@@ -2245,7 +2304,13 @@ export class MarketSimulationService {
   }
   
   public getMarketData(symbol: string): SimulatedMarketData | undefined {
-    return this.marketData.get(symbol);
+    const data = this.marketData.get(symbol);
+    // console.log('Getting market data for', symbol, data ? {
+    //   bidDepth: data.bidDepth.length,
+    //   askDepth: data.askDepth.length,
+    //   price: data.price
+    // } : 'undefined');
+    return data;
   }
   
   public getBotPositions(): BotPosition[] {

@@ -5,6 +5,12 @@
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
 
+// Helper function to get authorization header
+function getAuthHeader(): HeadersInit {
+  const token = localStorage.getItem('access_token');
+  return token ? { 'Authorization': `Bearer ${token}` } : {};
+}
+
 // Define the CreateOrderDto interface based on the sample JSON
 // CreateOrderDto interface matching NestJS DTO
 export interface CreateOrderDto {
@@ -79,10 +85,12 @@ interface ApiEnvelope<T> {
 export async function createOrder(
   orderData: CreateOrderDto
 ): Promise<ApiOrder> {
-  // Safety check to prevent "pending" status from being sent to database
-  if (orderData.status && orderData.status.toLowerCase() === "pending") {
-    console.error("Attempted to send 'pending' status to database. This should not happen.", orderData);
-    throw new Error("Invalid status: 'pending' orders should not be sent to database");
+  // Safety check to prevent invalid statuses from being sent to database
+  // Only "filled" and "cancelled" statuses should be sent to the database
+  const validStatuses = ["filled", "cancelled"];
+  if (orderData.status && !validStatuses.includes(orderData.status.toLowerCase())) {
+    console.error("Attempted to send invalid status to database. Only 'filled' and 'cancelled' are allowed.", orderData);
+    throw new Error(`Invalid status: '${orderData.status}' orders should not be sent to database. Only 'filled' and 'cancelled' are allowed.`);
   }
   
   try {
@@ -90,6 +98,7 @@ export async function createOrder(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        ...getAuthHeader()
       },
       body: JSON.stringify(orderData),
     });
@@ -102,8 +111,10 @@ export async function createOrder(
         );
         // Trả về mock cho FE nếu bạn vẫn muốn xử lý local
         const now = new Date().toISOString();
-        // Safety check to prevent "pending" status from being sent to database
-        const statusToSend = (orderData.status && orderData.status.toLowerCase() !== "pending") 
+        // Safety check to prevent invalid statuses from being sent to database
+        // Only "filled" and "cancelled" statuses should be sent to the database
+        const validStatuses = ["filled", "cancelled"];
+        const statusToSend = (orderData.status && validStatuses.includes(orderData.status.toLowerCase())) 
           ? orderData.status 
           : "LOCAL";
         
@@ -149,8 +160,10 @@ export async function createOrder(
       );
       const now = new Date().toISOString();
       // mock order local
-      // Safety check to prevent "pending" status from being sent to database
-      const statusToSend = (orderData.status && orderData.status.toLowerCase() !== "pending") 
+      // Safety check to prevent invalid statuses from being sent to database
+      // Only "filled" and "cancelled" statuses should be sent to the database
+      const validStatuses = ["filled", "cancelled"];
+      const statusToSend = (orderData.status && validStatuses.includes(orderData.status.toLowerCase())) 
         ? orderData.status 
         : "LOCAL";
       
@@ -199,6 +212,7 @@ export async function getOrders(
       headers: {
         "Content-Type": "application/json",
         Accept: "application/json",
+        ...getAuthHeader()
       },
     });
 

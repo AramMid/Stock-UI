@@ -62,53 +62,21 @@ export default function LeftSidebar({
   };
 
   const handleToolSelect = (toolId: string) => {
-    if (toolId === "menu") {
-      if (onMenuOpen) onMenuOpen();
-      return;
-    }
-    
+    // Handle settings button click
     if (toolId === "settings") {
       router.push('/setting');
       return;
     }
     
-    if (toolId === "selection") {
-      const sidebarWidth = 280;
-      const popupX = sidebarWidth + 20;
-      const popupY = 100;
-      
-      setCursorMenuPosition({ x: popupX, y: popupY });
-      setCursorMenuOpen(true);
-      setActiveTool("selection");
-      if (onToolSelect) onToolSelect("selection");
+    // Handle other tool selections
+    if (toolId === "menu") {
+      if (onMenuOpen) onMenuOpen();
       return;
     }
     
-    // Handle brush tool specifically
-    if (toolId === "brush") {
-      setActiveTool("brush" as never);
-      if (onToolSelect) onToolSelect("brush");
-      return;
-    }
-    
-    switch (toolId) {
-      case "delete":
-        drawingService.clearAllDrawings();
-        if (onToolSelect) onToolSelect(toolId);
-        return;
-      case "lock":
-        drawingService.lockAllDrawings();
-        if (onToolSelect) onToolSelect(toolId);
-        return;
-      case "visibility":
-        drawingService.toggleVisibility();
-        if (onToolSelect) onToolSelect(toolId);
-        return;
-      default:
-        // For all other tools, set the active tool but don't enable any drawing modes
-        setActiveTool(toolId as never);
-        if (onToolSelect) onToolSelect(toolId);
-    }
+    // Handle drawing tools
+    setActiveTool(toolId as never);
+    if (onToolSelect) onToolSelect(toolId);
   };
 
   // Hàm helper để xác định màu sắc cho icon

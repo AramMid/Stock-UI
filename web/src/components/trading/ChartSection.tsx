@@ -39,6 +39,8 @@ interface ChartSectionProps {
   dayRange?: { low: number; high: number };
   fiftyTwoWeekRange?: { low: number; high: number };
   isPrivateMode?: boolean; // Thêm isPrivateMode vào props
+  bestBidPrice?: number; // Best bid price
+  bestAskPrice?: number; // Best ask price
 }
 
 export default function ChartSection({
@@ -62,6 +64,8 @@ export default function ChartSection({
   dayRange,
   fiftyTwoWeekRange,
   isPrivateMode = false, // Mặc định là false
+  bestBidPrice, // Best bid price
+  bestAskPrice, // Best ask price
 }: ChartSectionProps) {
   const { activeTool } = useDrawing();
 
@@ -99,6 +103,8 @@ export default function ChartSection({
           dayRange={dayRange}
           fiftyTwoWeekRange={fiftyTwoWeekRange}
           isPrivateMode={isPrivateMode} // Truyền isPrivateMode vào QuickTradingButtons
+          bestBidPrice={bestBidPrice} // Truyền best bid price vào QuickTradingButtons
+          bestAskPrice={bestAskPrice} // Truyền best ask price vào QuickTradingButtons
         />
 
         {/* Main Chart Container - Optimized for smooth resizing */}

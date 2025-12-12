@@ -28,27 +28,74 @@ interface Order {
 interface BottomPanelProps {
   tradingPosition: TradingPosition;
   isDarkMode?: boolean;
+  userBalance?: number; // Add userBalance prop
 }
 
 export default function BottomPanel({
   tradingPosition,
   isDarkMode = true,
+  userBalance, // Destructure userBalance prop
 }: BottomPanelProps) {
   const [activeTab, setActiveTab] = useState<"account" | "trade">("account");
   const [activeSubTab, setActiveSubTab] = useState<
     "orders" | "orderHistory" | "summary" | "notifications"
   >("orders");
 
-  // Sample data cho Positions (có thể thay bằng dữ liệu thật sau)
+  // Sample data cho tab Positions
   const positions: Position[] = [
     {
-      symbol: "FUESSV30.HM",
+      symbol: "MSFT",
       side: "Long",
       size: 100,
-      entryPrice: 245.3,
-      currentPrice: 245.5,
-      pnl: 20.0,
-      pnlPercent: 0.08,
+      entryPrice: 428.75,
+      currentPrice: 435.5,
+      pnl: 675.0,
+      pnlPercent: 1.57,
+    },
+    {
+      symbol: "GOOGL",
+      side: "Short",
+      size: 50,
+      entryPrice: 185.25,
+      currentPrice: 182.0,
+      pnl: 162.5,
+      pnlPercent: 0.88,
+    },
+    {
+      symbol: "AMZN",
+      side: "Long",
+      size: 75,
+      entryPrice: 192.5,
+      currentPrice: 188.75,
+      pnl: -281.25,
+      pnlPercent: -1.46,
+    },
+    {
+      symbol: "TSLA",
+      side: "Long",
+      size: 200,
+      entryPrice: 245.0,
+      currentPrice: 252.25,
+      pnl: 1450.0,
+      pnlPercent: 2.96,
+    },
+    {
+      symbol: "NVDA",
+      side: "Short",
+      size: 150,
+      entryPrice: 125.75,
+      currentPrice: 128.5,
+      pnl: -412.5,
+      pnlPercent: -2.19,
+    },
+    {
+      symbol: "META",
+      side: "Long",
+      size: 80,
+      entryPrice: 515.0,
+      currentPrice: 522.25,
+      pnl: 580.0,
+      pnlPercent: 1.13,
     },
     {
       symbol: "AAPL",
@@ -82,7 +129,9 @@ export default function BottomPanel({
     },
   ];
 
-  const balance = 25000.0;
+  // Use userBalance if provided, otherwise fallback to tradingPosition.cash
+  const balance = userBalance !== undefined ? userBalance : tradingPosition.cash;
+  
   const equity =
     balance + positions.reduce((total, pos) => total + pos.pnl, 0);
   const totalPnL = positions.reduce(
@@ -98,16 +147,19 @@ export default function BottomPanel({
   // Fetch order history from API
   useEffect(() => {
     if (activeSubTab === "orderHistory") {
-      setLoadingOrderHistory(true);
-      getOrders({ limit: 20, offset: 0 })
-        .then((orders) => {
-          setOrderHistory(orders);
+      const fetchOrderHistory = async () => {
+        setLoadingOrderHistory(true);
+        try {
+          const data = await getOrders({ limit: 20, offset: 0 });
+          setOrderHistory(data);
+        } catch (error) {
+          console.error("Failed to fetch order history:", error);
+        } finally {
           setLoadingOrderHistory(false);
-        })
-        .catch((error) => {
-          console.error("Error fetching order history:", error);
-          setLoadingOrderHistory(false);
-        });
+        }
+      };
+
+      fetchOrderHistory();
     }
   }, [activeSubTab]);
 

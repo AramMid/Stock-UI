@@ -12,9 +12,7 @@ interface WatchlistItem {
   change: number;
   changePercent: number;
   category: "STOCKS" | "FOREX" | "CRYPTO";
-  referencePrice?: number;
-  ceilingPrice?: number;
-  floorPrice?: number;
+  position?: number; // User's position (number of shares owned)
 }
 
 interface RightSidebarProps {
@@ -57,63 +55,39 @@ export default function RightSidebar({
   const { marketData: forexMarketData, loading: forexLoading } = useMarketData(forexSymbols, getMarketSimulation);
 
   // Static data for names and categories (in a real app, this would come from an API too)
-  const stockStaticData: Record<string, { name: string; category: "STOCKS"; referencePrice?: number; ceilingPrice?: number; floorPrice?: number }> = {
+  const stockStaticData: Record<string, { name: string; category: "STOCKS" }> = {
     "VIC.VN": { 
       name: "Vingroup JSC", 
       category: "STOCKS",
-      referencePrice: 45000,
-      ceilingPrice: 48150,
-      floorPrice: 42150
     },
     "VHM.VN": { 
       name: "Vinhomes JSC", 
       category: "STOCKS",
-      referencePrice: 55000,
-      ceilingPrice: 58850,
-      floorPrice: 51450
     },
     "VCB.VN": { 
       name: "Vietcombank", 
       category: "STOCKS",
-      referencePrice: 82000,
-      ceilingPrice: 87740,
-      floorPrice: 76540
     },
     "TCB.VN": { 
       name: "Techcombank", 
       category: "STOCKS",
-      referencePrice: 23000,
-      ceilingPrice: 24610,
-      floorPrice: 21490
     },
     "FPT.VN": { 
       name: "FPT Corporation", 
       category: "STOCKS",
-      referencePrice: 123000,
-      ceilingPrice: 131610,
-      floorPrice: 114690
     },
     "VNM.VN": { 
       name: "Vinamilk", 
       category: "STOCKS",
-      referencePrice: 48000,
-      ceilingPrice: 51360,
-      floorPrice: 44880
     },
     "HPG.VN": { 
-      name: "Hoa Phat Group", 
+      name: "Hoa Phat Steel", 
       category: "STOCKS",
-      referencePrice: 19000,
-      ceilingPrice: 20330,
-      floorPrice: 17670
     },
     "MSN.VN": { 
       name: "Masan Group", 
       category: "STOCKS",
-      referencePrice: 67000,
-      ceilingPrice: 71690,
-      floorPrice: 62910
-    }
+    },
   };
 
   const forexStaticData: Record<string, { name: string; category: "FOREX" }> = {
@@ -128,7 +102,7 @@ export default function RightSidebar({
       <div
         key={item.symbol}
         onClick={() => onSymbolSelect(item.symbol)}
-        className={`grid grid-cols-5 gap-2 px-3 py-2 cursor-pointer transition-colors text-xs ${
+        className={`grid grid-cols-6 gap-2 px-3 py-2 cursor-pointer transition-colors text-xs ${
           isDarkMode ? "hover:bg-[#1e222d]" : "hover:bg-gray-50"
         } ${
           selectedSymbol === item.symbol
@@ -157,6 +131,15 @@ export default function RightSidebar({
           >
             {item.symbol}
           </span>
+        </div>
+
+        {/* Position (shares owned) */}
+        <div
+          className={`text-right font-mono transition-colors duration-200 ${
+            isDarkMode ? "text-white" : "text-gray-900"
+          }`}
+        >
+          {item.position !== undefined && item.position > 0 ? item.position : "-"}
         </div>
 
         {/* Price */}
@@ -212,7 +195,7 @@ export default function RightSidebar({
         }`}
       >
         <div className="grid grid-cols-12 gap-2">
-          {/* Symbol with flag/icon */}
+          {/* Symbol with flag/icon and position */}
           <div className="col-span-3 flex items-center space-x-1">
             {item.category === "STOCKS" && (
               <div className="w-3 h-3 rounded bg-blue-500 flex items-center justify-center text-[8px] font-bold text-white">
@@ -224,13 +207,20 @@ export default function RightSidebar({
                 {item.symbol.substring(0, 2)}
               </div>
             )}
-            <span
-              className={`font-medium truncate transition-colors duration-200 ${
-                isDarkMode ? "text-white" : "text-gray-900"
-              }`}
-            >
-              {item.symbol}
-            </span>
+            <div className="flex flex-col">
+              <span
+                className={`font-medium truncate transition-colors duration-200 ${
+                  isDarkMode ? "text-white" : "text-gray-900"
+                }`}
+              >
+                {item.symbol}
+              </span>
+              {item.position !== undefined && item.position > 0 && (
+                <span className="text-xs text-gray-500">
+                  Pos: {item.position}
+                </span>
+              )}
+            </div>
           </div>
 
           {/* Price and Change */}
@@ -261,14 +251,7 @@ export default function RightSidebar({
             </div>
           </div>
 
-          {/* Price Bands for Stocks */}
-          {item.category === "STOCKS" && item.referencePrice && item.ceilingPrice && item.floorPrice && (
-            <div className="col-span-4 flex justify-end space-x-2">
-              <span className="text-gray-500 text-xs font-medium">R:{formatVND(item.referencePrice)}</span>
-              <span className="text-purple-500 text-xs font-medium">C:{formatVND(item.ceilingPrice)}</span>
-              <span className="text-cyan-500 text-xs font-medium">F:{formatVND(item.floorPrice)}</span>
-            </div>
-          )}
+          {/* Price Bands for Stocks - REMOVED as per user request to avoid static data */}
         </div>
       </div>
     ));
@@ -278,6 +261,7 @@ export default function RightSidebar({
   const stockWatchlist: WatchlistItem[] = stockSymbols.map(symbol => {
     const staticData = stockStaticData[symbol];
     const marketData = stockMarketData[symbol];
+    const position = positions.get(symbol) || 0;
     
     return {
       symbol,
@@ -286,9 +270,7 @@ export default function RightSidebar({
       change: marketData?.change || 0,
       changePercent: marketData?.changePercent || 0,
       category: "STOCKS",
-      referencePrice: staticData?.referencePrice,
-      ceilingPrice: staticData?.ceilingPrice,
-      floorPrice: staticData?.floorPrice
+      position
     };
   });
 
@@ -296,6 +278,7 @@ export default function RightSidebar({
   const forexWatchlist: WatchlistItem[] = forexSymbols.map(symbol => {
     const staticData = forexStaticData[symbol];
     const marketData = forexMarketData[symbol];
+    const position = positions.get(symbol) || 0;
     
     return {
       symbol,
@@ -303,7 +286,8 @@ export default function RightSidebar({
       price: marketData?.price || 0,
       change: marketData?.change || 0,
       changePercent: marketData?.changePercent || 0,
-      category: "FOREX"
+      category: "FOREX",
+      position
     };
   });
 

@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { getUserBalance, getUserDetail } from "@/lib/services/userService";
 
 // --- SVG ICONS ---
 const Icons = {
@@ -40,36 +41,98 @@ const Icons = {
 export default function SettingsPage() {
   const router = useRouter();
 
-  // Mock Data
+  // State for user data
   const [userData, setUserData] = useState({
-    id: 12345,
-    email: "trader@finance.vn",
-    first_name: "Alex",
-    last_name: "Nguyen",
-    phone: "+84 912 345 678",
-    balance: 200000000,
-    is_active: true,
-    address: "Saigon Centre, Dist 1, HCMC",
-    dob: "1995-08-15",
-    occupation: "Senior Quant Trader",
-    email_verified_at: new Date("2024-01-15"),
-    last_login_at: new Date(),
-    created_at: new Date("2023-05-20"),
+    id: 0,
+    email: "",
+    first_name: "",
+    last_name: "",
+    phone: "",
+    balance: 0,
+    is_active: false,
+    address: "",
+    dob: "",
+    occupation: "",
+    email_verified_at: null as Date | null,
+    last_login_at: null as Date | null,
+    created_at: null as Date | null,
   });
+
+  // Loading and error states
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const [activeTab, setActiveTab] = useState<"profile" | "funds" | "logout">("profile");
 
-  const [firstName, setFirstName] = useState(userData.first_name);
-  const [lastName, setLastName] = useState(userData.last_name);
-  const [email, setEmail] = useState(userData.email);
-  const [phone, setPhone] = useState(userData.phone ?? "");
-  const [address, setAddress] = useState(userData.address ?? "");
-  const [dob, setDob] = useState(userData.dob ?? "");
-  const [occupation, setOccupation] = useState(userData.occupation ?? "");
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+  const [address, setAddress] = useState("");
+  const [dob, setDob] = useState("");
+  const [occupation, setOccupation] = useState("");
 
   const [topUpAmount, setTopUpAmount] = useState<number | string>(10000000);
   const [selectedPreset, setSelectedPreset] = useState(10000000);
   const [successMessage, setSuccessMessage] = useState("");
+
+  // Fetch user data on component mount
+  useEffect(() => {
+    const fetchUserData = async () => {
+      try {
+        setLoading(true);
+        setError(null);
+        
+        // Fetch both user detail and balance in parallel
+        const [userDetail, userBalance] = await Promise.all([
+          getUserDetail(),
+          getUserBalance()
+        ]);
+
+        // Update state with real data
+        const userDataObj = {
+          id: userDetail.id,
+          email: userDetail.email,
+          first_name: userDetail.first_name,
+          last_name: userDetail.last_name,
+          phone: userDetail.phone,
+          balance: userBalance.balance.availableBalance,
+          is_active: userDetail.is_active,
+          address: "", // Not provided in API
+          dob: "", // Not provided in API
+          occupation: "", // Not provided in API
+          email_verified_at: userDetail.email_verified_at ? new Date(userDetail.email_verified_at) : null,
+          last_login_at: userDetail.last_login_at ? new Date(userDetail.last_login_at) : null,
+          created_at: userDetail.created_at ? new Date(userDetail.created_at) : null,
+        };
+
+        setUserData(userDataObj);
+        
+        // Initialize form fields
+        setFirstName(userDetail.first_name);
+        setLastName(userDetail.last_name);
+        setEmail(userDetail.email);
+        setPhone(userDetail.phone ?? "");
+        setAddress("");
+        setDob("");
+        setOccupation("");
+      } catch (err) {
+        console.error("Error fetching user data:", err);
+        setError("Failed to load user data. Please try again.");
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    // Only fetch if we have an access token
+    const token = localStorage.getItem('access_token');
+    if (token) {
+      fetchUserData();
+    } else {
+      setLoading(false);
+      setError("Not authenticated. Please log in.");
+    }
+  }, []);
 
   useEffect(() => {
     setFirstName(userData.first_name);
@@ -118,8 +181,42 @@ export default function SettingsPage() {
   };
 
   const handleLogout = () => {
-    router.push("/auth/login");
+    // Clear access token and redirect to login
+    localStorage.removeItem('access_token');
+    localStorage.removeItem('sessionId');
+    router.push("/login");
   };
+
+  // Show loading state
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#181c24] text-gray-200 font-sans selection:bg-blue-500/30 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto mb-4"></div>
+          <p>Loading user data...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Show error state
+  if (error) {
+    return (
+      <div className="min-h-screen bg-[#181c24] text-gray-200 font-sans selection:bg-blue-500/30 flex items-center justify-center">
+        <div className="text-center max-w-md p-6 bg-[#222736] rounded-2xl border border-[#343b4d]">
+          <div className="text-red-500 text-2xl mb-4">⚠️</div>
+          <h2 className="text-xl font-bold text-white mb-2">Error</h2>
+          <p className="text-gray-400 mb-6">{error}</p>
+          <button
+            onClick={() => router.push("/login")}
+            className="px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-xl transition-colors"
+          >
+            Go to Login
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-[#181c24] text-gray-200 font-sans selection:bg-blue-500/30 flex flex-col items-center">
@@ -194,7 +291,7 @@ export default function SettingsPage() {
                 ].map((item) => (
                   <button
                     key={item.id}
-                    onClick={() => setActiveTab(item.id as any)}
+                    onClick={() => setActiveTab(item.id as "profile" | "funds" | "logout")}
                     className={`group w-full flex items-center gap-4 px-5 py-4 rounded-2xl text-base font-medium transition-all duration-200 ${
                       activeTab === item.id
                         ? `bg-[#181c24] text-white shadow-inner`
@@ -283,17 +380,7 @@ export default function SettingsPage() {
                               value={lastName}
                               onChange={setLastName}
                             />
-                            <InputGroup
-                              label="Date of Birth"
-                              value={dob}
-                              onChange={setDob}
-                              type="date"
-                            />
-                            <InputGroup
-                              label="Occupation"
-                              value={occupation}
-                              onChange={setOccupation}
-                            />
+                            {/* Remove fields not provided by API */}
                           </div>
                         </div>
 
@@ -315,13 +402,7 @@ export default function SettingsPage() {
                               onChange={setPhone}
                               type="tel"
                             />
-                            <div className="md:col-span-2">
-                              <InputGroup
-                                label="Residential Address"
-                                value={address}
-                                onChange={setAddress}
-                              />
-                            </div>
+                            {/* Remove address field as it's not provided by API */}
                           </div>
                         </div>
                       </div>
@@ -477,7 +558,12 @@ export default function SettingsPage() {
 }
 
 // --- Input Component (FIXED: pl-12) ---
-const InputGroup = ({ label, value, onChange, type = "text" }: any) => (
+const InputGroup = ({ label, value, onChange, type = "text" }: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  type?: string;
+}) => (
   <div className="group w-full">
     <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-3 group-focus-within:text-blue-400 transition-colors ml-1">
       {label}

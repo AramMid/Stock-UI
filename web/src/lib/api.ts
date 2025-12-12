@@ -3,6 +3,52 @@ import { YahooQuoteData, Timeframe } from "./types";
 import { apiCache } from "./cache";
 
 
+/**
+ * Fetch current market price from Yahoo Finance API
+ * @param symbol Stock symbol (e.g., "VIC.VN")
+ * @returns Current price
+ */
+export async function fetchCurrentPrice(symbol: string = "VIC.VN"): Promise<number> {
+  try {
+    // Use 1d interval and 1d range to get the most recent price
+    const res = await fetch(
+      `/api/yahoo?symbol=${encodeURIComponent(symbol)}&interval=1d&range=1d`,
+      {
+        method: "GET",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    if (!res.ok) {
+      throw new Error(`Failed to fetch price: ${res.statusText}`);
+    }
+
+    const json = await res.json();
+
+    if (!json.chart?.result?.[0]?.indicators?.quote?.[0]?.close) {
+      throw new Error("Invalid Yahoo response for price data");
+    }
+
+    const quotes = json.chart.result[0].indicators.quote[0];
+    const closePrices = quotes.close;
+    
+    // Get the most recent closing price
+    const currentPrice = closePrices[closePrices.length - 1];
+    
+    if (currentPrice == null) {
+      throw new Error("No valid price data available");
+    }
+    
+    return currentPrice;
+  } catch (error) {
+    console.error(`Error fetching current price for ${symbol}:`, error);
+    throw error;
+  }
+}
+
 export async function fetchYahooSeries(
   symbol = "FUESSV30.HM",
   timeframe: Timeframe = "1D",

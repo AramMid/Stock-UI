@@ -1,19 +1,25 @@
 "use client";
 import { useRef, useState, useCallback, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { Timeframe } from "@/lib/types";
 import { useChart } from "@/lib/hooks/useChart";
 import { useTradingPosition } from "@/lib/hooks/useTradingPosition";
+import { useUserData } from "@/lib/hooks/useUserData";
 import { useTheme } from "@/contexts/ThemeContext";
 import { DrawingProvider, useDrawing } from "@/contexts/DrawingContext";
 import { useLayoutManager } from "@/lib/hooks/useLayoutManager";
 import { useChartResize } from "@/lib/hooks/useChartResize";
-import { Order } from "../../lib/order-management";
-import { OrderStatus } from "../../lib/services/orderService";
-import { MarketSimulationService, SimulatedMarketData } from "@/lib/services/marketSimulationService";
+import { Order } from "@/lib/order-management";
+import { OrderStatus } from "@/lib/services/orderService";
+import {
+  MarketSimulationService,
+  SimulatedMarketData,
+} from "@/lib/services/marketSimulationService";
 import { orderBookService } from "@/lib/services/orderBookService";
 import { WebSocketService } from "@/lib/services/webSocketService";
 import { NotificationService } from "@/lib/services/notificationService";
 import { splitOrderForExchangeLimit } from "@/lib/position-sizing";
+
 import TopNavigation from "@/components/trading/TopNavigation";
 import StockInfoBar from "@/components/trading/StockInfoBar";
 import LeftSidebar from "@/components/trading/LeftSidebar";
@@ -26,9 +32,11 @@ import NewsSection from "@/components/trading/NewsSection";
 import ResizableDivider from "@/components/trading/ResizableDivider";
 import OrderPanel from "@/components/trading/OrderPanel";
 
-
-// Import the new order API service
-import { createOrder, CreateOrderDto, getOrders } from "@/lib/services/orderApiService";
+import {
+  createOrder,
+  CreateOrderDto,
+  getOrders,
+} from "@/lib/services/orderApiService";
 
 interface TradingPageProps {
   symbol?: string;
@@ -37,13 +45,16 @@ interface TradingPageProps {
 export default function TradingPlatformWrapper(props: TradingPageProps) {
   return (
     <DrawingProvider>
-      <TradingPlatform {...props} />
+      <Home {...props} />
     </DrawingProvider>
   );
 }
 
-function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
-  const containerRef = useRef<HTMLDivElement | null>(null);
+function Home({ symbol = "VIC.VN" }: TradingPageProps) {
+  const router = useRouter();
+  const containerRef = useRef<HTMLDivElement>(null);
+  const marketSimulationRef = useRef<MarketSimulationService | null>(null);
+  const hasManuallyResizedOrderPanel = useRef(false);
 
   // Core state
   const [timeframe, setTimeframe] = useState<Timeframe>("1D");
@@ -56,101 +67,134 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
     change: number;
     changePercent: number;
   } | null>(null);
-  const [currentVolume, setCurrentVolume] = useState<number>(0);
-  const [chartType, setChartType] = useState<"candlestick" | "line" | "area">("candlestick");
+
+  // Chart state
+  const [currentVolume, setCurrentVolume] = useState(0);
+  const [chartType, setChartType] = useState<
+    "candlestick" | "line" | "area"
+  >("candlestick");
   const [showRSI, setShowRSI] = useState(false);
   const [showMACD, setShowMACD] = useState(false);
+  const lastPriceRef = useRef(0);
+  const [chartData, setChartData] = useState<{ time: number; value: number }[]>(
+    []
+  );
+
+  // UI state
   const [isPrivateMode, setIsPrivateMode] = useState(false);
-  const [enableTrendlineDrawing, setEnableTrendlineDrawing] = useState(false); // Separate state for trendline
-  const [enableBrushDrawing, setEnableBrushDrawing] = useState(false); // Separate state for brush
-  const [showOrderPanel, setShowOrderPanel] = useState(false); // State for order panel
-  const [isOrderPanelDragging, setIsOrderPanelDragging] = useState(false); // State for order panel resize dragging
-  const hasManuallyResizedOrderPanel = useRef(false); // Track if user has manually resized order panel
-  const [orderPanelSide, setOrderPanelSide] = useState<"buy" | "sell">("buy"); // Track which side to show in order panel
-  
-  // User data state
-  const [userData, setUserData] = useState({
-    name: "John Doe",
-    email: "john.doe@example.com",
-    phone: "+84 123 456 789",
-    balance: 200000000 // Default balance
-  });
-  
+  const [enableTrendlineDrawing, setEnableTrendlineDrawing] = useState(false);
+  const [enableBrushDrawing, setEnableBrushDrawing] = useState(false);
+  const [showOrderPanel, setShowOrderPanel] = useState(false);
+  const [isOrderPanelDragging, setIsOrderPanelDragging] = useState(false);
+  const [orderPanelSide, setOrderPanelSide] = useState<"buy" | "sell">("buy");
+  const [bestBidPrice, setBestBidPrice] = useState<number | undefined>(
+    undefined
+  );
+  const [bestAskPrice, setBestAskPrice] = useState<number | undefined>(
+    undefined
+  );
+
+  // User data
+  const {
+    userDetail,
+    userBalance,
+    loading: userDataLoading,
+    error: userDataError,
+    refreshUserData,
+  } = useUserData();
+
   // Orders state
   const [orders, setOrders] = useState<Order[]>([]);
 
   // Market simulation
-  const marketSimulationRef = useRef<MarketSimulationService | null>(null);
-  const lastPriceRef = useRef<number>(45200); // Initial price
+  const {
+    tradingPosition,
+    handleBuy,
+    handleSell,
+    updateLastPrice,
+    getAllPositions,
+  } = useTradingPosition();
 
   // Custom hooks
   const { theme } = useTheme();
-  const { tradingPosition, handleBuy, handleSell, updateLastPrice, getAllPositions } = useTradingPosition();
   const { activeTool, setActiveTool } = useDrawing();
   const { triggerChartResize } = useChartResize(containerRef);
   const layoutManager = useLayoutManager();
-
-  // Create positions map for watchlist
-  const positionsMap = new Map<string, number>();
-  getAllPositions().forEach(position => {
-    positionsMap.set(position.symbol, position.position);
-  });
-
   const isDarkMode = true;
 
-  // Initialize market simulation service
+  // Reactive positions map for watchlist
+  const [positionsMap, setPositionsMap] = useState<Map<string, number>>(
+    new Map()
+  );
+  const previousPositionsRef = useRef<{ symbol: string; position: number }[]>(
+    []
+  );
+
+  // Update positions map when trading positions change
   useEffect(() => {
-    marketSimulationRef.current = new MarketSimulationService();
-    
-    // Start simulation
-    marketSimulationRef.current.startSimulation((data: SimulatedMarketData) => {
-      // Update price data
-      const newOhlc = {
-        open: lastPriceRef.current,
-        high: Math.max(lastPriceRef.current, data.price),
-        low: Math.min(lastPriceRef.current, data.price),
-        close: data.price,
-        change: data.price - lastPriceRef.current,
-        changePercent: ((data.price - lastPriceRef.current) / lastPriceRef.current) * 100,
-      };
-      
-      setOhlcData(newOhlc);
-      setCurrentVolume(data.volume);
-      updateLastPrice(selectedSymbol, data.price);
-      lastPriceRef.current = data.price;
+    const currentPositions = getAllPositions();
+    const newPositionsMap = new Map<string, number>();
+
+    currentPositions.forEach((position) => {
+      newPositionsMap.set(position.symbol, position.position);
     });
 
-    // Cleanup on unmount
-    return () => {
-      if (marketSimulationRef.current) {
-        marketSimulationRef.current.stopSimulation();
+    const previousPositions = previousPositionsRef.current;
+
+    if (previousPositions.length !== currentPositions.length) {
+      setPositionsMap(newPositionsMap);
+      previousPositionsRef.current = currentPositions;
+      return;
+    }
+
+    let hasChanged = false;
+    for (let i = 0; i < currentPositions.length; i++) {
+      const currentPos = currentPositions[i];
+      const previousPos = previousPositions[i];
+
+      if (
+        currentPos.symbol !== previousPos.symbol ||
+        currentPos.position !== previousPos.position
+      ) {
+        hasChanged = true;
+        break;
       }
-    };
-  }, [updateLastPrice]);
+    }
 
-  // Update user data when trading position changes
+    if (hasChanged) {
+      setPositionsMap(newPositionsMap);
+      previousPositionsRef.current = currentPositions;
+    }
+  }); // intentionally no deps → check on each render but only set when changed
+
+  // ✅ MarketSimulation chỉ dùng cho bot, KHÔNG đụng tới ohlcData / bid/ask
   useEffect(() => {
-    setUserData(prev => ({
-      ...prev,
-      balance: tradingPosition.cash
-    }));
-  }, [tradingPosition.cash]);
+    marketSimulationRef.current = new MarketSimulationService();
 
-  // Handle Strategy Tester full-screen toggle
+    marketSimulationRef.current.startSimulation(
+      (data: SimulatedMarketData) => {
+        if (data.symbol === selectedSymbol) {
+          // chỉ update giá cho tradingPosition / bot
+          updateLastPrice(data.symbol, data.price);
+        }
+      }
+    );
+
+    return () => {
+      marketSimulationRef.current?.stopSimulation();
+    };
+  }, [updateLastPrice, selectedSymbol]);
+
+  // Strategy Tester fullscreen toggle
   useEffect(() => {
     const handleToggleFullscreen = () => {
-      // Toggle between maximized and restored state
       if (isPrivateMode) {
-        // For private mode, we'll implement a simple toggle of the chart/strategy tester split
         if (layoutManager.chartAccountLayout.split > 50) {
-          // Currently showing more chart, maximize strategy tester
-          layoutManager.chartAccountLayout.setSplit(20); // Show more strategy tester
+          layoutManager.chartAccountLayout.setSplit(20);
         } else {
-          // Currently showing more strategy tester, balance the view
-          layoutManager.chartAccountLayout.setSplit(50); // Balanced view
+          layoutManager.chartAccountLayout.setSplit(50);
         }
       } else {
-        // For public mode, use the account manager toggle
         if (layoutManager.isAccountMaximized) {
           layoutManager.handleRestorePanel();
         } else {
@@ -159,23 +203,27 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
       }
     };
 
-    window.addEventListener('toggleStrategyTesterFullscreen', handleToggleFullscreen);
+    window.addEventListener(
+      "toggleStrategyTesterFullscreen",
+      handleToggleFullscreen
+    );
     return () => {
-      window.removeEventListener('toggleStrategyTesterFullscreen', handleToggleFullscreen);
+      window.removeEventListener(
+        "toggleStrategyTesterFullscreen",
+        handleToggleFullscreen
+      );
     };
   }, [layoutManager, isPrivateMode]);
 
-  // DEBUG: Log to see if useChart is being called
-  console.log("🔍 TradingPlatform render - enableTrendlineDrawing:", enableTrendlineDrawing);
-  console.log("🔍 TradingPlatform render - enableBrushDrawing:", enableBrushDrawing);
-  console.log("🔍 containerRef.current:", containerRef.current);
+  // Wrap price update for chart
+  const handlePriceUpdate = useCallback(
+    (price: number) => {
+      updateLastPrice(selectedSymbol, price);
+    },
+    [selectedSymbol, updateLastPrice]
+  );
 
-  // Wrapper function for onPriceUpdate to pass symbol
-  const handlePriceUpdate = useCallback((price: number) => {
-    updateLastPrice(selectedSymbol, price);
-  }, [selectedSymbol, updateLastPrice]);
-
-  // Chart management with drawing
+  // Chart management with drawing – data thật (Yahoo) vào đây
   const chartResult = useChart({
     containerRef,
     symbol: selectedSymbol,
@@ -188,32 +236,40 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
     showMACD,
     chartType,
     isPrivateMode,
-    enableTrendlineDrawing: enableTrendlineDrawing,
-    enableBrushDrawing: enableBrushDrawing,
-    activeTool: activeTool,
+    enableTrendlineDrawing,
+    enableBrushDrawing,
+    activeTool,
     onDrawingComplete: () => {
-      // Khi hoàn thành vẽ, đặt lại công cụ đang hoạt động về chế độ chọn và tắt enableDrawing
       setActiveTool("selection");
       setEnableTrendlineDrawing(false);
     },
   });
 
-  // DEBUG: Check what useChart returns
-  console.log("🔍 chartResult:", chartResult);
-  console.log("🔍 chartResult.drawing:", chartResult?.drawing);
+  // ✅ Bid / Ask chỉ tính từ close của chart (ohlcData.close)
+  useEffect(() => {
+    if (!ohlcData?.close) return;
 
-  // Safe access to drawing object
+    const closePrice = ohlcData.close;
+    lastPriceRef.current = closePrice;
+
+    const bidPrice = closePrice - 100; // SELL
+    const askPrice = closePrice + 100; // BUY
+
+    setBestBidPrice(bidPrice);
+    setBestAskPrice(askPrice);
+  }, [ohlcData?.close]);
+
   const drawing = chartResult?.drawing || {
     isEnabled: false,
     isDrawing: false,
     trendlines: [],
-    startDrawing: () => { },
-    cancelDrawing: () => { },
-    clearAll: () => { },
-    undo: () => { },
+    startDrawing: () => {},
+    cancelDrawing: () => {},
+    clearAll: () => {},
+    undo: () => {},
   };
 
-  // Effect to handle split changes
+  // Resize handling
   useEffect(() => {
     const isAnyDragging =
       layoutManager.chartAccountLayout.isDragging ||
@@ -241,48 +297,40 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
     triggerChartResize,
   ]);
 
-  // Effect to update order panel height when panel first appears or container resizes (only if not manually resized)
+  // Auto height for order panel
   useEffect(() => {
     if (showOrderPanel && layoutManager.rightSectionRef.current) {
       const updateOrderPanelHeight = () => {
-        // Don't auto-update if user has manually resized
         if (hasManuallyResizedOrderPanel.current) return;
-        
+
         const container = layoutManager.rightSectionRef.current;
         if (container) {
-          // Calculate 3/4 of available height for order panel
           const containerHeight = container.clientHeight;
-          // Estimate the available height for the order panel
-          // (container height - dividers - other sections)
-          const availableHeight = containerHeight - 12 - 12 - 12 - 12; // 4 dividers of 12px each
-          const estimatedOrderHeight = availableHeight * 0.75; // 3/4 of available height
+          const availableHeight =
+            containerHeight - 12 - 12 - 12 - 12; // 4 dividers
+          const estimatedOrderHeight = availableHeight * 0.75;
           layoutManager.handleOrderPanelResize(estimatedOrderHeight);
         }
       };
-      
-      // Set initial height when panel first appears
+
       updateOrderPanelHeight();
-      
-      // Add resize observer for container resize
+
       const resizeObserver = new ResizeObserver(updateOrderPanelHeight);
-      if (layoutManager.rightSectionRef.current) {
-        resizeObserver.observe(layoutManager.rightSectionRef.current);
-      }
-      
+      resizeObserver.observe(layoutManager.rightSectionRef.current);
+
       return () => {
         resizeObserver.disconnect();
       };
     }
   }, [showOrderPanel, layoutManager]);
-  
-  // Reset manual resize flag when panel is closed
+
   useEffect(() => {
     if (!showOrderPanel) {
       hasManuallyResizedOrderPanel.current = false;
     }
   }, [showOrderPanel]);
 
-  // Event handlers
+  // Handlers
   const handleTimeframeChange = useCallback((newTimeframe: Timeframe) => {
     setTimeframe(newTimeframe);
   }, []);
@@ -292,46 +340,36 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
   }, []);
 
   const handleScreenshot = useCallback(async () => {
-    try {
-      console.log("Screenshot functionality not implemented yet");
-    } catch (error) {
-      console.error("Screenshot error:", error);
-    }
+    console.log("Screenshot functionality not implemented yet");
   }, [selectedSymbol, timeframe]);
 
-  const handleToolSelect = useCallback((toolId: string) => {
-    console.log("Selected tool:", toolId);
+  const handleToolSelect = useCallback(
+    (toolId: string) => {
+      console.log("Selected tool:", toolId);
 
-    if (toolId === 'trendline') {
-      const newDrawingState = !enableTrendlineDrawing;
-      console.log("🎨 Toggling trendline drawing mode:", newDrawingState);
-      setEnableTrendlineDrawing(newDrawingState);
-      setEnableBrushDrawing(false); // Disable brush when enabling trendline
+      if (toolId === "trendline") {
+        const newDrawingState = !enableTrendlineDrawing;
+        setEnableTrendlineDrawing(newDrawingState);
+        setEnableBrushDrawing(false);
 
-      if (newDrawingState && drawing.startDrawing) {
-        drawing.startDrawing();
-      } else if (!newDrawingState && drawing.cancelDrawing) {
-        drawing.cancelDrawing();
+        if (newDrawingState && drawing.startDrawing) {
+          drawing.startDrawing();
+        } else if (!newDrawingState && drawing.cancelDrawing) {
+          drawing.cancelDrawing();
+        }
+      } else if (toolId === "brush") {
+        const newBrushState = !enableBrushDrawing;
+        setEnableBrushDrawing(newBrushState);
+        setEnableTrendlineDrawing(false);
+      } else {
+        setEnableTrendlineDrawing(false);
+        setEnableBrushDrawing(false);
       }
-    }
-    
-    // Handle brush tool
-    else if (toolId === 'brush') {
-      const newBrushState = !enableBrushDrawing;
-      console.log("🎨 Toggling brush drawing mode:", newBrushState);
-      setEnableBrushDrawing(newBrushState);
-      setEnableTrendlineDrawing(false); // Disable trendline when enabling brush
-    }
-    
-    // For all other tools, disable both drawing modes
-    else {
-      setEnableTrendlineDrawing(false);
-      setEnableBrushDrawing(false);
-    }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    setActiveTool(toolId as any);
-  }, [enableTrendlineDrawing, enableBrushDrawing, drawing, setActiveTool]);
+      setActiveTool(toolId as Parameters<typeof setActiveTool>[0]);
+    },
+    [enableTrendlineDrawing, enableBrushDrawing, drawing, setActiveTool]
+  );
 
   const handleGroupToggle = useCallback((groupId: string) => {
     console.log("Group toggled:", groupId);
@@ -341,185 +379,201 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
     console.log("Menu opened");
   }, []);
 
-
   const handleCloseOrderPanel = useCallback(() => {
     setShowOrderPanel(false);
   }, []);
 
-  const handleOrderSubmit = useCallback((side: 'buy' | 'sell', quantity: number, price: number) => {
-    console.log(`Order submitted: ${side} ${quantity} shares at ${price}`);
-    
-    // Split large orders according to exchange limits
-    const orderQuantities = splitOrderForExchangeLimit(quantity);
-    
-    // Process each order
-    orderQuantities.forEach((orderQty, index) => {
-      // Create order object
-      const order: Order = {
-        id: `ORD${Date.now()}-${index}`,
-        symbol: selectedSymbol,
-        type: side,
-        orderType: "Market", // Default to market order for immediate execution
-        quantity: orderQty,
-        price: price,
-        status: "NEW", // Only NEW or FILLED states
-        timestamp: new Date()
-      };
-      
-      // Add order to order book service for tracking
-      orderBookService.addOrder(order);
-      
-      // Subscribe to WebSocket updates for this order
-      const webSocketService = WebSocketService.getInstance();
-      const notificationService = NotificationService.getInstance();
-      
-      webSocketService.subscribe(order.id, (update) => {
-        // Update order in order book service
-        orderBookService.updateOrder(update.orderId, {
-          status: update.status,
-          filledPrice: update.filledPrice,
-          filledQuantity: update.filledQuantity
-        });
-        
-        // Update local order state
-        setOrders(prevOrders => 
-          prevOrders.map(o => 
-            o.id === update.orderId 
-              ? { ...o, status: update.status, filledPrice: update.filledPrice, filledQuantity: update.filledQuantity } 
-              : o
-          )
-        );
-        
-        // Local logic to determine order status based on filled quantity
-        let localStatus = "pending";
-        if (update.filledQuantity !== undefined && update.filledQuantity === orderQty) {
-          localStatus = "filled";
-        } else if (update.filledQuantity !== undefined && update.filledQuantity > 0 && update.filledQuantity < orderQty) {
-          localStatus = "partial";
-        } else if (update.status === "CANCELED") {
-          localStatus = "cancelled";
-        }
-        
-        // Execute the trade and show notification if order is filled
-        if (localStatus === "filled" && update.filledPrice) {
-          let success = false;
-          if (side === 'buy') {
-            success = handleBuy(selectedSymbol, update.filledQuantity || quantity, update.filledPrice);
-          } else {
-            success = handleSell(selectedSymbol, update.filledQuantity || quantity, update.filledPrice);
-          }
-          
-          if (success) {
-            notificationService.showSuccess(`Order ${update.orderId} filled successfully!`);
-          }
-        }
-        
-        // Call API to save order to database AFTER receiving final status update
-        // Only call once per order when we get a definitive final status update from WebSocket
-        if (update.status === "FILLED" || update.status === "REJECTED" || update.status === "CANCELED") {
-          // Check if we've already called the API for this order
-          const hasCalledApi = sessionStorage.getItem(`order_api_called_${order.id}`);
-          if (!hasCalledApi) {
-            sessionStorage.setItem(`order_api_called_${order.id}`, "true");
-            
-            // Map WebSocket status directly to database status
-            // Only FILLED and CANCELLED/REJECTED statuses should be saved to database
-            let dbStatus: string | null = null;
-            
-            // Direct mapping from WebSocket status to database status
-            if (update.status === "FILLED") {
-              dbStatus = "filled";
-            } else if (update.status === "CANCELED") {
-              dbStatus = "cancelled";
-            } else if (update.status === "REJECTED") {
-              dbStatus = "cancelled"; // Map REJECTED to cancelled in database
-            }
-            
-            // Safety check - should never happen due to the condition above
-            if (dbStatus === null) {
-              console.warn("Unexpected status received, not saving to database:", update.status);
-              return;
-            }
-            
-            // Create payload matching the NestJS DTO
-            const payload: CreateOrderDto = {
-              stockSymbol: selectedSymbol,
-              side: side,
-              quantity: orderQty,
-              orderType: order.orderType?.toLowerCase() ?? "limit", // Use the actual order type
-              price: price !== undefined ? price : undefined,
-              status: dbStatus, // Only "filled" or "cancelled" statuses
-              // Optional fields from DTO
-              filledQuantity: order.filledQuantity ?? undefined,
-              filledPrice: order.filledPrice ?? price ?? undefined,
-              commission: 0,
-              filledAt:
-                (order as unknown as { filledAt?: Date }).filledAt?.toISOString?.() ??
-                order.timestamp?.toISOString?.() ??
-                new Date().toISOString(),
-            };
+  const handleOrderSubmit = useCallback(
+    (side: "buy" | "sell", quantity: number, price: number) => {
+      console.log(`Order submitted: ${side} ${quantity} shares at ${price}`);
 
-            // Log the payload for debugging
-            console.log("[OrderSync] Sending payload to backend:", JSON.stringify(payload, null, 2));
-            
-            createOrder(payload)
-              .then(response => {
-                console.log("Order saved to database with status:", dbStatus, response);
-              })
-              .catch(error => {
-                console.error("Error saving order to database:", error);
-                // Log the payload that caused the error
-                console.error("[OrderSync] Payload that caused error:", JSON.stringify(payload, null, 2));
-              });
+      const orderQuantities = splitOrderForExchangeLimit(quantity);
+
+      orderQuantities.forEach((orderQty, index) => {
+        const order: Order = {
+          id: `ORD${Date.now()}-${index}`,
+          symbol: selectedSymbol,
+          type: side,
+          orderType: "Market",
+          quantity: orderQty,
+          price: price,
+          status: "NEW",
+          timestamp: new Date(),
+        };
+
+        orderBookService.addOrder(order);
+
+        const webSocketService = WebSocketService.getInstance();
+        const notificationService = NotificationService.getInstance();
+
+        webSocketService.subscribe(order.id, (update) => {
+          orderBookService.updateOrder(update.orderId, {
+            status: update.status,
+            filledPrice: update.filledPrice,
+            filledQuantity: update.filledQuantity,
+          });
+
+          setOrders((prevOrders) =>
+            prevOrders.map((o) =>
+              o.id === update.orderId
+                ? {
+                    ...o,
+                    status: update.status,
+                    filledPrice: update.filledPrice,
+                    filledQuantity: update.filledQuantity,
+                  }
+                : o
+            )
+          );
+
+          let localStatus: OrderStatus | "pending" | "partial" = "pending";
+          if (
+            update.filledQuantity !== undefined &&
+            update.filledQuantity === orderQty
+          ) {
+            localStatus = "FILLED";
+          } else if (
+            update.filledQuantity !== undefined &&
+            update.filledQuantity > 0 &&
+            update.filledQuantity < orderQty
+          ) {
+            localStatus = "partial";
+          } else if (update.status === "CANCELED") {
+            localStatus = "CANCELED";
           }
+
+          if (localStatus === "FILLED" && update.filledPrice) {
+            let success = false;
+            if (side === "buy") {
+              success = handleBuy(
+                selectedSymbol,
+                update.filledQuantity || quantity,
+                update.filledPrice
+              );
+            } else {
+              success = handleSell(
+                selectedSymbol,
+                update.filledQuantity || quantity,
+                update.filledPrice
+              );
+            }
+
+            if (success) {
+              notificationService.showSuccess(
+                `Order ${update.orderId} filled successfully!`
+              );
+              refreshUserData();
+            }
+          }
+
+          if (
+            update.status === "FILLED" ||
+            update.status === "REJECTED" ||
+            update.status === "CANCELED"
+          ) {
+            const hasCalledApi = sessionStorage.getItem(
+              `order_api_called_${order.id}`
+            );
+            if (!hasCalledApi) {
+              sessionStorage.setItem(`order_api_called_${order.id}`, "true");
+
+              let dbStatus: string | null = null;
+              if (update.status === "FILLED") dbStatus = "filled";
+              else if (update.status === "CANCELED") dbStatus = "cancelled";
+              else if (update.status === "REJECTED") dbStatus = "cancelled";
+
+              if (dbStatus === null) {
+                console.warn(
+                  "Unexpected status received, not saving to database:",
+                  update.status
+                );
+                return;
+              }
+
+              const payload: CreateOrderDto = {
+                stockSymbol: selectedSymbol,
+                side: side,
+                quantity: orderQty,
+                orderType: order.orderType?.toLowerCase() ?? "limit",
+                price: price !== undefined ? price : undefined,
+                status: dbStatus,
+                filledQuantity: order.filledQuantity ?? undefined,
+                filledPrice: order.filledPrice ?? price ?? undefined,
+                commission: 0,
+                filledAt:
+                  (order as unknown as { filledAt?: Date }).filledAt
+                    ?.toISOString?.() ??
+                  order.timestamp?.toISOString?.() ??
+                  new Date().toISOString(),
+              };
+
+              console.log(
+                "[OrderSync] Sending payload to backend:",
+                JSON.stringify(payload, null, 2)
+              );
+
+              createOrder(payload)
+                .then((response) => {
+                  console.log(
+                    "Order saved to database with status:",
+                    dbStatus,
+                    response
+                  );
+                  refreshUserData();
+                })
+                .catch((error) => {
+                  console.error("Error saving order to database:", error);
+                  console.error(
+                    "[OrderSync] Payload that caused error:",
+                    JSON.stringify(payload, null, 2)
+                  );
+                });
+            }
+          }
+        });
+
+        if (marketSimulationRef.current) {
+          marketSimulationRef.current.processUserOrder(order);
         }
-      });
-      
-      // Process order against simulated market - this adds order to pending list for bot processing
-      if (marketSimulationRef.current) {
-        marketSimulationRef.current.processUserOrder(order);
-      }
-      
-      // Order is pending bot processing
-      // Update order in order book service with NEW status
-      orderBookService.updateOrder(order.id, {
-        status: "NEW"
-      });
-      
-      // Update order status - only Pending or Filled states
-      const updatedOrder: Order = {
-        ...order,
-        orderType: "Market",
-        status: "NEW",
-        filledPrice: undefined,
-        filledQuantity: undefined
-      };
-      
-      // After 1 second, update status to PARTIALLY_FILLED as a temporary status
-      setTimeout(() => {
+
         orderBookService.updateOrder(order.id, {
-          status: "PARTIALLY_FILLED"
+          status: "NEW",
         });
-        
-        // Update local order state
-        setOrders(prevOrders => 
-          prevOrders.map(o => 
-            o.id === order.id 
-              ? { ...o, status: "PARTIALLY_FILLED" } 
-              : o
-          )
-        );
-      }, 1000);
-      
-      // Add order to state
-      setOrders(prevOrders => [updatedOrder, ...prevOrders]);
 
-      // Show notification about order submission
-      notificationService.showSuccess(`Order submitted. Waiting for status update from server.`, 5000);
-    });
-    
-    setShowOrderPanel(false);
-  }, [handleBuy, handleSell, selectedSymbol, tradingPosition]);
+        const updatedOrder: Order = {
+          ...order,
+          orderType: "Market",
+          status: "NEW",
+          filledPrice: undefined,
+          filledQuantity: undefined,
+        };
+
+        setTimeout(() => {
+          orderBookService.updateOrder(order.id, {
+            status: "PARTIALLY_FILLED",
+          });
+
+          setOrders((prevOrders) =>
+            prevOrders.map((o) =>
+              o.id === order.id ? { ...o, status: "PARTIALLY_FILLED" } : o
+            )
+          );
+        }, 1000);
+
+        setOrders((prevOrders) => [updatedOrder, ...prevOrders]);
+
+        // FIX: Removed redeclaration 'const notificationService'.
+        // It uses the instance declared at the top of the forEach loop.
+        notificationService.showSuccess(
+          `Order submitted. Waiting for status update from server.`,
+          5000
+        );
+      });
+
+      setShowOrderPanel(false);
+    },
+    [handleBuy, handleSell, selectedSymbol, tradingPosition]
+  );
 
   const handleBuyClick = useCallback(() => {
     setOrderPanelSide("buy");
@@ -532,10 +586,8 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
   }, []);
 
   return (
-    <div
-      className={`h-screen flex flex-col transition-colors duration-200 bg-[#131722]`}
-    >
-      {/* Top Navigation Bar */}
+    <div className="h-screen flex flex-col transition-colors duration-200 bg-[#131722]">
+      {/* Top Navigation */}
       <TopNavigation
         symbol={selectedSymbol}
         timeframe={timeframe}
@@ -559,7 +611,7 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
         isDarkMode={isDarkMode}
       />
 
-      {/* Main Content Area */}
+      {/* Main Content */}
       <div className="flex-1 flex relative overflow-hidden">
         {/* Left Sidebar */}
         <LeftSidebar
@@ -568,15 +620,20 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
           onMenuOpen={handleMenuOpen}
         />
 
-        {/* Main Grid Area */}
-        <div ref={layoutManager.mainContainerRef} className="flex-1 flex gap-2 p-2">
-          {/* Left Section - Chart and Account Manager / Strategy Tester */}
+        {/* Main Grid */}
+        <div
+          ref={layoutManager.mainContainerRef}
+          className="flex-1 flex gap-2 p-2"
+        >
+          {/* Left Column: Chart + Account/Strategy */}
           <div
             ref={layoutManager.leftColumnRef}
             className="grid gap-2 transition-none relative"
             style={{
               width: `${layoutManager.horizontalLayout.split}%`,
-              gridTemplateRows: `${layoutManager.chartAccountLayout.split}fr 12px ${100 - layoutManager.chartAccountLayout.split}fr`,
+              gridTemplateRows: `${layoutManager.chartAccountLayout.split}fr 12px ${
+                100 - layoutManager.chartAccountLayout.split
+              }fr`,
             }}
           >
             {/* Chart Panel */}
@@ -592,7 +649,7 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
                 setOrderPanelSide("sell");
                 setShowOrderPanel(true);
               }}
-              currentPrice={lastPriceRef.current}
+              currentPrice={ohlcData?.close || lastPriceRef.current}
               change={ohlcData?.change || 0}
               changePercent={ohlcData?.changePercent || 0}
               showRSI={showRSI}
@@ -606,17 +663,25 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
                 high: ohlcData?.high || lastPriceRef.current * 1.01,
               }}
               fiftyTwoWeekRange={{
-                low: selectedSymbol.includes(".VN") ? lastPriceRef.current * 0.8 : lastPriceRef.current * 0.7,
-                high: selectedSymbol.includes(".VN") ? lastPriceRef.current * 1.2 : lastPriceRef.current * 1.3,
+                low: selectedSymbol.includes(".VN")
+                  ? lastPriceRef.current * 0.8
+                  : lastPriceRef.current * 0.7,
+                high: selectedSymbol.includes(".VN")
+                  ? lastPriceRef.current * 1.2
+                  : lastPriceRef.current * 1.3,
               }}
-              isPrivateMode={isPrivateMode} // Truyền isPrivateMode vào ChartSection
+              isPrivateMode={isPrivateMode}
+              bestBidPrice={bestBidPrice}
+              bestAskPrice={bestAskPrice}
             />
 
-            {/* Vertical Divider */}
+            {/* Divider between chart and account/strategy */}
             <ResizableDivider
               isVertical={true}
               isDragging={layoutManager.chartAccountLayout.isDragging}
-              onMouseDown={(e) => layoutManager.chartAccountLayout.handleMouseDown(e, true)}
+              onMouseDown={(e) =>
+                layoutManager.chartAccountLayout.handleMouseDown(e, true)
+              }
               title={
                 layoutManager.isAccountCollapsed
                   ? "Account Manager is collapsed"
@@ -627,13 +692,14 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
               isDarkMode={isDarkMode}
             />
 
-            {/* Conditional rendering based on private mode */}
+            {/* Account / Strategy section */}
             {isPrivateMode ? (
-              // Strategy Tester in private mode (using same layout as Account Manager)
-              <div 
+              <div
                 className="border rounded overflow-hidden relative flex flex-col transition-colors duration-200"
                 style={{
-                  willChange: layoutManager.chartAccountLayout.isDragging ? "height" : "auto",
+                  willChange: layoutManager.chartAccountLayout.isDragging
+                    ? "height"
+                    : "auto",
                   transform: "translateZ(0)",
                   height: "100%",
                 }}
@@ -649,7 +715,9 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
                   <div className="flex items-center gap-1">
                     <button
                       onClick={() => {
-                        const event = new CustomEvent("toggleStrategyTesterFullscreen");
+                        const event = new CustomEvent(
+                          "toggleStrategyTesterFullscreen"
+                        );
                         window.dispatchEvent(event);
                       }}
                       className="p-1.5 rounded hover:bg-gray-700/50"
@@ -677,7 +745,6 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
                 </div>
               </div>
             ) : (
-              // Account Manager Section in public mode
               <AccountManagerSection
                 tradingPosition={tradingPosition}
                 isDarkMode={isDarkMode}
@@ -689,68 +756,94 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
                 onOpenPanel={layoutManager.handleOpenPanel}
                 onMaximizePanel={layoutManager.handleMaximizePanel}
                 onRestorePanel={layoutManager.handleRestorePanel}
-
                 orders={orders}
                 marketSimulation={marketSimulationRef.current}
                 selectedSymbol={selectedSymbol}
                 onOpenOrderPanel={(side, price) => {
                   setShowOrderPanel(true);
                   setOrderPanelSide(side);
-                  // In a real implementation, you might want to set a specific price
                 }}
+                userBalance={userBalance?.balance?.availableBalance}
+                userName={
+                  userDetail?.first_name
+                    ? `${userDetail.first_name} ${userDetail.last_name}`
+                    : userDetail?.email?.split("@")[0] || "User"
+                }
               />
             )}
           </div>
 
-          {/* Horizontal Divider */}
+          {/* Vertical divider between left & right sections */}
           <ResizableDivider
             isVertical={false}
             isDragging={layoutManager.horizontalLayout.isDragging}
-            onMouseDown={(e) => layoutManager.horizontalLayout.handleMouseDown(e, false)}
+            onMouseDown={(e) =>
+              layoutManager.horizontalLayout.handleMouseDown(e, false)
+            }
             onDoubleClick={layoutManager.horizontalLayout.resetSplit}
             title="Drag left/right to resize sections | Double-click to reset"
             splitPercentage={layoutManager.horizontalLayout.split}
             isDarkMode={isDarkMode}
           />
 
-          {/* Right Section - Completely redesigned layout */}
+          {/* Right Column */}
           <div
             ref={layoutManager.rightSectionRef}
             className="grid gap-2 transition-none"
             style={{
               width: `${100 - layoutManager.horizontalLayout.split}%`,
-              // Completely redesigned grid layout for right section
-              // Structure: Watchlist, Divider, [OrderPanel, Divider,] StockInfo, Divider, News
-              // When order panel is shown: 5 sections + 3 dividers = 8 grid rows
-              // When order panel is hidden: 3 sections + 2 dividers = 5 grid rows
-              gridTemplateRows: showOrderPanel 
-                ? `${Math.max(15, layoutManager.watchlistLayout.split)}fr 12px ${layoutManager.orderPanelHeight}px 12px ${Math.max(20, layoutManager.stockInfoLayout.split)}fr 12px ${Math.max(20, 100 - layoutManager.watchlistLayout.split - layoutManager.stockInfoLayout.split)}fr`
-                : `${Math.max(20, layoutManager.watchlistLayout.split)}fr 12px ${Math.max(25, layoutManager.stockInfoLayout.split)}fr 12px ${Math.max(25, 100 - layoutManager.watchlistLayout.split - layoutManager.stockInfoLayout.split)}fr`,
+              gridTemplateRows: showOrderPanel
+                ? `${Math.max(
+                    15,
+                    layoutManager.watchlistLayout.split
+                  )}fr 12px ${layoutManager.orderPanelHeight}px 12px ${Math.max(
+                    20,
+                    layoutManager.stockInfoLayout.split
+                  )}fr 12px ${Math.max(
+                    20,
+                    100 -
+                      layoutManager.watchlistLayout.split -
+                      layoutManager.stockInfoLayout.split
+                  )}fr`
+                : `${Math.max(
+                    20,
+                    layoutManager.watchlistLayout.split
+                  )}fr 12px ${Math.max(
+                    25,
+                    layoutManager.stockInfoLayout.split
+                  )}fr 12px ${Math.max(
+                    25,
+                    100 -
+                      layoutManager.watchlistLayout.split -
+                      layoutManager.stockInfoLayout.split
+                  )}fr`,
             }}
           >
-            {/* Watchlist Section */}
+            {/* Watchlist */}
             <div className="rounded-lg overflow-hidden bg-[#131722] h-full">
               <WatchlistSection
                 selectedSymbol={selectedSymbol}
                 onSymbolSelect={handleSymbolChange}
                 isDarkMode={isDarkMode}
                 positions={positionsMap}
-                isPrivateMode={isPrivateMode} // Truyền isPrivateMode vào WatchlistSection
-                marketSimulation={marketSimulationRef.current || undefined} // Truyền marketSimulation instance
+                isPrivateMode={isPrivateMode}
+                marketSimulation={marketSimulationRef.current || undefined}
               />
             </div>
 
-            {/* Divider between Watchlist and Stock Info/New Sections */}
+            {/* Divider Watchlist / below */}
             <ResizableDivider
               isVertical={true}
               isDragging={layoutManager.watchlistLayout.isDragging}
-              onMouseDown={(e: React.MouseEvent) => layoutManager.watchlistLayout.handleMouseDown(e, true)}
+              onMouseDown={(e: React.MouseEvent) =>
+                layoutManager.watchlistLayout.handleMouseDown(e, true)
+              }
               title="Drag up/down to resize watchlist and other sections"
               splitPercentage={layoutManager.watchlistLayout.split}
               isDarkMode={isDarkMode}
             />
 
-            {/* Conditional Order Panel Section */}
+            {/* Order Panel (optional) */}
             {showOrderPanel && (
               <>
                 <div className="rounded-lg overflow-hidden bg-[#131722] h-full">
@@ -758,73 +851,72 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
                     symbol={selectedSymbol}
                     currentPrice={ohlcData?.close || lastPriceRef.current}
                     onClose={handleCloseOrderPanel}
-                    onBuy={(quantity: number, price: number) => handleOrderSubmit('buy', quantity, price)}
-                    onSell={(quantity: number, price: number) => handleOrderSubmit('sell', quantity, price)}
+                    onBuy={(quantity: number, price: number) =>
+                      handleOrderSubmit("buy", quantity, price)
+                    }
+                    onSell={(quantity: number, price: number) =>
+                      handleOrderSubmit("sell", quantity, price)
+                    }
                     isDarkMode={isDarkMode}
                     side={orderPanelSide}
                     onSideChange={setOrderPanelSide}
                   />
                 </div>
-                
-                {/* Divider between Order Panel and Stock Info */}
+
                 <ResizableDivider
                   isVertical={true}
                   isDragging={isOrderPanelDragging}
                   onMouseDown={(e: React.MouseEvent) => {
                     e.preventDefault();
                     e.stopPropagation();
-                    
+
                     setIsOrderPanelDragging(true);
-                    
-                    // Get initial position and height
+
                     const startY = e.clientY;
                     const startHeight = layoutManager.orderPanelHeight;
                     const container = layoutManager.rightSectionRef.current;
-                    
+
                     if (!container) {
                       setIsOrderPanelDragging(false);
                       return;
                     }
-                    
+
                     const handleMouseMove = (moveEvent: MouseEvent) => {
-                      // Prevent text selection during drag
                       moveEvent.preventDefault();
-                      
-                      // Update order panel height based on drag direction
+
                       hasManuallyResizedOrderPanel.current = true;
-                      
-                      // Calculate available space for order panel
+
                       const containerRect = container.getBoundingClientRect();
                       const containerHeight = containerRect.height;
-                      // Reserve space for other sections (watchlist, dividers, stock info, news)
-                      // Each divider is 12px, and we need space for other sections
                       const reservedSpace = containerHeight * 0.3;
                       const maxHeight = containerHeight - reservedSpace;
-                      
+
                       const deltaY = moveEvent.clientY - startY;
-                      // Kéo xuống (deltaY dương) → thu nhỏ (giảm height)
-                      // Kéo lên (deltaY âm) → phóng to (tăng height)
-                      const newHeight = Math.max(150, Math.min(maxHeight, startHeight - deltaY));
+                      const newHeight = Math.max(
+                        150,
+                        Math.min(maxHeight, startHeight - deltaY)
+                      );
                       layoutManager.handleOrderPanelResize(newHeight);
                     };
-                      
+
                     const handleMouseUp = () => {
                       setIsOrderPanelDragging(false);
-                      document.removeEventListener('mousemove', handleMouseMove);
-                      document.removeEventListener('mouseup', handleMouseUp);
-                      document.body.style.cursor = '';
-                      document.body.style.userSelect = '';
+                      document.removeEventListener(
+                        "mousemove",
+                        handleMouseMove
+                      );
+                      document.removeEventListener("mouseup", handleMouseUp);
+                      document.body.style.cursor = "";
+                      document.body.style.userSelect = "";
                     };
-                      
-                    // Set cursor and prevent text selection
-                    document.body.style.cursor = 'row-resize';
-                    document.body.style.userSelect = 'none';
-                    
-                    document.addEventListener('mousemove', handleMouseMove, { passive: false });
-                    document.addEventListener('mouseup', handleMouseUp);
+
+                    document.body.style.cursor = "row-resize";
+                    document.body.style.userSelect = "none";
+                    document.addEventListener("mousemove", handleMouseMove);
+                    document.addEventListener("mouseup", handleMouseUp);
                   }}
                   title="Drag to resize order panel"
-                  splitPercentage={75}
+                  splitPercentage={0} // Not used for fixed height panels usually, or irrelevant here
                   isDarkMode={isDarkMode}
                 />
               </>
@@ -835,16 +927,17 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
               <StockInfoSection
                 selectedSymbol={selectedSymbol}
                 isDarkMode={isDarkMode}
-                currentVolume={currentVolume}
               />
             </div>
 
-            {/* Stock Info to News Divider */}
+            {/* Divider Stock Info / News */}
             <ResizableDivider
               isVertical={true}
               isDragging={layoutManager.stockInfoLayout.isDragging}
-              onMouseDown={(e: React.MouseEvent) => layoutManager.stockInfoLayout.handleMouseDown(e, true)}
-              title="Drag up/down to resize stock info and news sections"
+              onMouseDown={(e: React.MouseEvent) =>
+                layoutManager.stockInfoLayout.handleMouseDown(e, true)
+              }
+              title="Drag up/down to resize stock info and news"
               splitPercentage={layoutManager.stockInfoLayout.split}
               isDarkMode={isDarkMode}
             />
@@ -854,10 +947,6 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
               <NewsSection isDarkMode={isDarkMode} />
             </div>
           </div>
-
-          {/* Remove any modal overlay for order panel */}
-          
-
         </div>
       </div>
     </div>

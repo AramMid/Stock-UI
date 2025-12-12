@@ -18,7 +18,7 @@ export class OrderBookService {
     this.orderBook = {
       bids: [],
       asks: [],
-      lastTradedPrice: 45200, // Default price for VIC.VN
+      lastTradedPrice: 0, // No default price - will be set by market data
       timestamp: new Date(),
       symbol: "VIC.VN",
       spread: 0,

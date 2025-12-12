@@ -60,6 +60,8 @@ interface AccountManagerSectionProps {
   marketSimulation: MarketSimulationService | null;
   onOpenOrderPanel?: (orderType: "buy" | "sell", price?: number) => void;
   selectedSymbol?: string;
+  userBalance?: number; // Add userBalance prop
+  userName?: string; // Add userName prop
 }
 
 export default function AccountManagerSection({
@@ -78,6 +80,8 @@ export default function AccountManagerSection({
   marketSimulation,
   onOpenOrderPanel,
   selectedSymbol = "VIC.VN",
+  userBalance, // Destructure userBalance prop
+  userName, // Destructure userName prop
 }: AccountManagerSectionProps) {
   const [activeTab, setActiveTab] = useState("Order Book");
   const [orderBook, setOrderBook] = useState<OrderBook | null>(null);
@@ -933,17 +937,20 @@ export default function AccountManagerSection({
 
   const tabs = ["Orders", "Order Book", "Order History", "AI Insights"];
 
+  // Use userBalance if provided, otherwise fallback to tradingPosition.cash
+  const balance = userBalance !== undefined ? userBalance : tradingPosition.cash;
+  
   const metrics = [
-    { label: "Account Balance", value: formatVNDCurrency(tradingPosition.cash) },
+    { label: "Account Balance", value: formatVNDCurrency(balance) },
     {
       label: "Equity",
-      value: formatVNDCurrency(tradingPosition.cash + tradingPosition.pnl),
+      value: formatVNDCurrency(balance + tradingPosition.pnl),
     },
     { label: "Realized P&L", value: formatVNDCurrency(0) },
     { label: "Unrealized P&L", value: formatVNDCurrency(tradingPosition.pnl) },
     {
       label: "Available Funds",
-      value: formatVNDCurrency(tradingPosition.cash),
+      value: formatVNDCurrency(balance),
       info: true,
     },
   ];
@@ -975,10 +982,7 @@ export default function AccountManagerSection({
               AI TRADING ASSISTANT
             </span>
             <span className="text-gray-500">•</span>
-            <span>vuvuihoc123</span>
-            <span className="text-xs text-gray-500 ml-2">
-              ({selectedSymbol})
-            </span>
+            <span>{userName || 'User'}</span>
           </div>
         </div>
 

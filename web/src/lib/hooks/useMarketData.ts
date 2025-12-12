@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { MarketSimulationService } from "@/lib/services/marketSimulationService";
+import { fetchCurrentPrice } from "../api";
 
 interface MarketData {
   symbol: string;
@@ -10,17 +11,8 @@ interface MarketData {
   trend?: "up" | "down" | "neutral";
 }
 
-// Fallback nếu Yahoo/backend lỗi
-const fallbackPrices: Record<string, number> = {
-  "VIC.VN": 45200,
-  "VHM.VN": 55500,
-  "VCB.VN": 82700,
-  "TCB.VN": 22950,
-  "FPT.VN": 123500,
-  "VNM.VN": 48200,
-  "HPG.VN": 18850,
-  "MSN.VN": 67800,
-};
+// No fallback prices - only use real data
+const fallbackPrices: Record<string, number> = {};
 
 export function useMarketData(
   symbols: string[] = [],
@@ -44,12 +36,12 @@ export function useMarketData(
   useEffect(() => {
     let isMounted = true;
 
-    // Khởi tạo data mặc định
+    // Khởi tạo data mặc định - no fallback prices
     const initialData: Record<string, MarketData> = {};
     symbols.forEach((symbol) => {
       initialData[symbol] = {
         symbol,
-        price: fallbackPrices[symbol] || 0,
+        price: 0, // No fallback price
         change: 0,
         changePercent: 0,
         volume: 0,
@@ -61,51 +53,42 @@ export function useMarketData(
     marketDataRef.current = initialData;
     setLoading(false);
 
-    // Nếu không có getter thì không subscribe
-    if (!getterRef.current) {
-      return;
-    }
-
-    const interval = setInterval(() => {
+    // Fetch real prices from Yahoo Finance API
+    const fetchPrices = async () => {
       if (!isMounted) return;
 
       try {
-        const getter = getterRef.current;
-        if (!getter) return;
-
-        const marketSimulation = getter();
-        if (!marketSimulation) return;
-
         const updatedData: Record<string, MarketData> = {};
 
-        symbols.forEach((symbol) => {
-          const data = marketSimulation.getMarketData(symbol);
-          if (data) {
-            const previousData = marketDataRef.current[symbol];
-            const previousPrice = previousData?.price ?? data.price;
-            const change = data.price - previousPrice;
-            const changePercent =
-              previousPrice !== 0 ? (change / previousPrice) * 100 : 0;
-
-            updatedData[symbol] = {
-              symbol: data.symbol,
-              price: data.price,
-              change,
-              changePercent,
-              volume: data.volume,
-              trend: data.trend || "neutral",
-            };
-          } else {
-            updatedData[symbol] =
-              marketDataRef.current[symbol] || {
-                symbol,
-                price: fallbackPrices[symbol] || 0,
-                change: 0,
-                changePercent: 0,
-                volume: 0,
-                trend: "neutral",
-              };
+        // Fetch all prices concurrently
+        const pricePromises = symbols.map(async (symbol) => {
+          try {
+            const price = await fetchCurrentPrice(symbol);
+            return { symbol, price };
+          } catch (error) {
+            console.error(`Failed to fetch price for ${symbol}:`, error);
+            // No fallback price if API fails
+            return { symbol, price: 0 };
           }
+        });
+
+        const results = await Promise.all(pricePromises);
+
+        results.forEach(({ symbol, price }) => {
+          const previousData = marketDataRef.current[symbol];
+          const previousPrice = previousData?.price ?? price;
+          const change = price - previousPrice;
+          const changePercent =
+            previousPrice !== 0 ? (change / previousPrice) * 100 : 0;
+
+          updatedData[symbol] = {
+            symbol,
+            price,
+            change,
+            changePercent,
+            volume: previousData?.volume || 0,
+            trend: change > 0 ? "up" : change < 0 ? "down" : "neutral",
+          };
         });
 
         if (isMounted) {
@@ -118,7 +101,13 @@ export function useMarketData(
           console.error("Market data fetch error:", err);
         }
       }
-    }, 1000);
+    };
+
+    // Fetch prices immediately
+    fetchPrices();
+
+    // Refresh prices every 30 seconds
+    const interval = setInterval(fetchPrices, 30000);
 
     return () => {
       isMounted = false;
