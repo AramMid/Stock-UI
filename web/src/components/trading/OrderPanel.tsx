@@ -1,399 +1,237 @@
-  "use client";
-  import { useState, useEffect } from "react";
-  import { ChevronDown, X, Grid, MoreHorizontal, Plus } from "lucide-react";
-  import { formatVND, formatVNDCurrency } from "@/lib/order-management";
-  import { calculateMaxPositionSize, roundDownToLotSize, sharesToLots, getExchangeBySymbol, calculatePriceBands } from "@/lib/position-sizing";
+"use client";
 
-  interface OrderPanelProps {
-    symbol: string;
-    currentPrice: number;
-    onBuy: (quantity: number, price: number) => void;
-    onSell: (quantity: number, price: number) => void;
-    onClose?: () => void;
-    isDarkMode?: boolean;
-    side: "buy" | "sell"; // Required prop instead of defaultSide
-    onSideChange: (side: "buy" | "sell") => void; // Callback to notify parent of side changes
-  }
+import React, { useMemo, useState, useEffect } from "react";
 
-  type OrderType = "Market" | "Limit" | "Stop";
+export type OrderType = "Market" | "Limit" | "Stop" | "StopLimit";
 
-  export default function OrderPanel({
-    symbol,
-    currentPrice,
-    onBuy,
-    onSell,
-    onClose,
-    isDarkMode = true,
-    side,
-    onSideChange,
-  }: OrderPanelProps) {
-    const [activeTab, setActiveTab] = useState<"order" | "dom">("order");
-    const [orderType, setOrderType] = useState<OrderType>("Market");
-    const [quantity, setQuantity] = useState(100); // Default to 1 lot (100 shares)
-    const [price, setPrice] = useState(currentPrice);
-    
-    // Exit states
-    const [takeProfitEnabled, setTakeProfitEnabled] = useState(true);
-    const [stopLossEnabled, setStopLossEnabled] = useState(false);
-    const [exitsExpanded, setExitsExpanded] = useState(true);
+interface OrderPanelProps {
+  symbol: string;
+  currentPrice: number;
+  side: "buy" | "sell";
+  onSideChange: (side: "buy" | "sell") => void;
+  onBuy: (
+    quantity: number,
+    orderType: OrderType,
+    opts?: { limitPrice?: number; stopPrice?: number }
+  ) => void;
+  onSell: (
+    quantity: number,
+    orderType: OrderType,
+    opts?: { limitPrice?: number; stopPrice?: number }
+  ) => void;
+  isDarkMode?: boolean;
+  onClose?: () => void;
+}
 
-    // Mock calculations for VND
-    const priceStep = 100;
-    const bidPrice = Math.floor((currentPrice - priceStep) / priceStep) * priceStep;
-    const askPrice = Math.ceil((currentPrice + priceStep) / priceStep) * priceStep;
-    
-    // Calculate price bands
-    const exchange = getExchangeBySymbol(symbol);
-    const priceBands = calculatePriceBands(currentPrice, exchange);
+function roundDownToLotSize(qty: number, lot = 100) {
+  const n = Number.isFinite(qty) ? qty : 0;
+  return Math.max(lot, Math.floor(n / lot) * lot);
+}
 
-    // Defaults for VND
-    const defaultTP = 65100; 
-    const defaultSL = 55700;
+export default function OrderPanel({
+  symbol,
+  currentPrice,
+  side,
+  onSideChange,
+  onBuy,
+  onSell,
+  isDarkMode = true,
+  onClose,
+}: OrderPanelProps) {
+  // 1. AN TOÀN DỮ LIỆU: Đảm bảo currentPrice luôn là số hợp lệ ngay từ đầu
+  const safeCurrentPrice = Number.isFinite(currentPrice) ? currentPrice : 0;
 
-    const [takeProfitPrice, setTakeProfitPrice] = useState(defaultTP);
-    const [takeProfitTicks, setTakeProfitTicks] = useState(76);
-    const [stopLossPrice, setStopLossPrice] = useState(defaultSL);
-    const [stopLossTicks, setStopLossTicks] = useState(17);
+  const [orderType, setOrderType] = useState<OrderType>("Market");
+  const [quantity, setQuantity] = useState<number>(100);
 
-    // Ensure quantity is always a multiple of lot size (100 shares)
-    const validQuantity = roundDownToLotSize(quantity);
-    const tradeValue = validQuantity * currentPrice;
+  // Limit price
+  const [limitPrice, setLimitPrice] = useState<number>(safeCurrentPrice);
+  // Stop trigger
+  const [stopPrice, setStopPrice] = useState<number>(safeCurrentPrice);
 
-    const handleAction = () => {
-      // Ensure quantity is always a multiple of lot size (100 shares)
-      const validQuantity = roundDownToLotSize(quantity);
-      const orderPrice = orderType === "Market" ? currentPrice : price;
-      if (side === "buy") {
-        onBuy(validQuantity, orderPrice);
-      } else {
-        onSell(validQuantity, orderPrice);
-      }
-    };
+  useEffect(() => {
+    // Reset giá khi đổi Symbol
+    setLimitPrice(safeCurrentPrice);
+    setStopPrice(safeCurrentPrice);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [symbol]); 
 
-    const handleBuyClick = () => {
-      onSideChange("buy");
-    };
+  // Nếu safeCurrentPrice thay đổi (thị trường nhảy giá), cập nhật lại biến local nếu đang ở chế độ Market? 
+  // Không, giữ nguyên logic của bạn là input đứng yên.
 
-    const handleSellClick = () => {
-      onSideChange("sell");
-    };
+  const validQty = useMemo(() => roundDownToLotSize(quantity), [quantity]);
+  
+  // Tính tradeValue dựa trên currentPrice (để tham khảo)
+  const tradeValue = useMemo(() => validQty * safeCurrentPrice, [validQty, safeCurrentPrice]);
 
+  // ✅ KHẮC PHỤC LỖI NaN TẠI ĐÂY
+  const submit = () => {
+    const opts: { limitPrice?: number; stopPrice?: number } = {};
 
+    // 1. Xử lý giá Limit hoặc Market
+    if (orderType === "Limit" || orderType === "StopLimit") {
+      // Nếu user nhập rỗng hoặc text bậy bạ, limitPrice có thể là NaN -> fallback về 0 hoặc safeCurrentPrice
+      opts.limitPrice = Number.isFinite(limitPrice) ? limitPrice : safeCurrentPrice;
+    } else if (orderType === "Market") {
+      // QUAN TRỌNG: Với Market, gán giá hiện tại vào limitPrice để Backend/Parent có số để tính toán
+      // Thay vì để undefined dẫn đến NaN
+      opts.limitPrice = safeCurrentPrice;
+    }
 
-    // Dynamic Theme Classes
-    const bgClass = isDarkMode ? "bg-gray-900" : "bg-white";
-    const textClass = isDarkMode ? "text-white" : "text-gray-900";
-    const subTextClass = isDarkMode ? "text-gray-400" : "text-gray-500";
-    const borderClass = isDarkMode ? "border-gray-700" : "border-gray-200";
-    const inputBgClass = isDarkMode ? "bg-gray-800" : "bg-white";
-    const inputBorderClass = isDarkMode ? "border-gray-600" : "border-gray-300";
-    
-    // Color Classes for Buy/Sell
-    const buyColor = "bg-green-500";
-    const buyHoverColor = "hover:bg-green-600";
-    const sellColor = "bg-red-500";
-    const sellHoverColor = "hover:bg-red-600";
-    
-    // Text colors for focused state
-    const buyTextColor = "text-green-400";
-    const sellTextColor = "text-red-400";
-    
-    // Input base styles
-    const inputBaseClasses = `w-full ${inputBgClass} border ${inputBorderClass} ${textClass} text-sm rounded px-3 py-2 focus:outline-none transition-colors h-[38px]`;
-    const labelClasses = `${subTextClass} text-[11px] mb-1 block font-medium`;
+    // 2. Xử lý giá Stop
+    if (orderType === "Stop" || orderType === "StopLimit") {
+      opts.stopPrice = Number.isFinite(stopPrice) ? stopPrice : safeCurrentPrice;
+    }
 
-return (
-    <div
-      className={`w-full h-full flex flex-col font-sans ${bgClass} ${textClass} transition-colors duration-200`}
-    >
-      {/* --- HEADER --- */}
-      <div className={`flex items-center justify-between px-5 py-3 border-b ${borderClass}`}>
-        <div className="flex items-center gap-2">
-          <span className="font-bold text-base">{symbol.split('.')[0]}</span>
-          <div className="w-5 h-5 rounded-full bg-orange-500 flex items-center justify-center">
-            <span className="text-[10px] text-white font-bold">D</span>
-          </div>
-        </div>
+    // Log kiểm tra trước khi gửi
+    // console.log("Submitting Order:", { side, validQty, orderType, opts });
 
-        <div className={`flex items-center gap-3 ${subTextClass}`}>
-          <Grid size={18} className={`cursor-pointer hover:${textClass}`} />
-          <MoreHorizontal size={18} className={`cursor-pointer hover:${textClass}`} />
-          {onClose && <X size={18} className={`cursor-pointer hover:${textClass}`} onClick={onClose} />}
-        </div>
+    if (side === "buy") {
+      onBuy(validQty, orderType, opts);
+    } else {
+      onSell(validQty, orderType, opts);
+    }
+  };
+
+  const bg = isDarkMode ? "bg-[#0b0f17] text-white" : "bg-white text-gray-900";
+  const card = isDarkMode ? "bg-[#111827] border-gray-800" : "bg-gray-50 border-gray-200";
+  const input = isDarkMode
+    ? "bg-[#0f1219] border-gray-800 text-gray-100"
+    : "bg-white border-gray-200 text-gray-900";
+
+  return (
+    <div className={`w-full h-full flex flex-col ${bg}`}>
+      {/* Header */}
+      <div className={`px-4 py-3 border-b ${isDarkMode ? "border-gray-800" : "border-gray-200"} flex items-center justify-between`}>
+        <div className="font-semibold">{symbol}</div>
+        {onClose && (
+          <button onClick={onClose} className="text-sm opacity-70 hover:opacity-100">Close</button>
+        )}
       </div>
 
-      {/* --- TOP TABS (Order / DOM) --- */}
-      <div className="px-5 pt-3">
-        <div className="flex gap-4">
+      <div className="p-4 space-y-4">
+        {/* Side switch */}
+        <div className="grid grid-cols-2 gap-2">
           <button
-            onClick={() => setActiveTab("order")}
-            className={`pb-2 text-sm font-bold relative transition-colors ${
-              activeTab === "order" ? textClass : `${subTextClass} hover:${textClass}`
-            }`}
+            onClick={() => onSideChange("sell")}
+            className={`py-2 rounded-lg border ${side === "sell" ? "border-red-500 bg-red-500/10" : "border-transparent"} ${isDarkMode ? "bg-[#111827]" : "bg-gray-100"}`}
           >
-            Order
-            {activeTab === "order" && (
-              <div className={`absolute bottom-0 left-0 w-full h-[3px] ${side === "buy" ? "bg-green-500" : "bg-red-500"} rounded-t-sm`} />
-            )}
+            <div className={`font-bold ${side === "sell" ? "text-red-400" : "opacity-70"}`}>SELL</div>
+            <div className="text-sm opacity-70">{safeCurrentPrice.toLocaleString("vi-VN")} đ</div>
+          </button>
+
+          <button
+            onClick={() => onSideChange("buy")}
+            className={`py-2 rounded-lg border ${side === "buy" ? "border-green-500 bg-green-500/10" : "border-transparent"} ${isDarkMode ? "bg-[#111827]" : "bg-gray-100"}`}
+          >
+            <div className={`font-bold ${side === "buy" ? "text-green-400" : "opacity-70"}`}>BUY</div>
+            <div className="text-sm opacity-70">{safeCurrentPrice.toLocaleString("vi-VN")} đ</div>
           </button>
         </div>
-      </div>
 
-      {/* Content Area - Đã tăng padding lên px-5 và py-4 để thoáng hơn */}
-      <div className="flex-1 overflow-y-auto px-5 py-4 custom-scrollbar">
-        {activeTab === "order" ? (
-          <div className="space-y-5"> {/* Tăng khoảng cách giữa các khối lên 5 */}
-            
-            {/* --- BUY / SELL SWITCHER (STYLE: OUTLINE / TRANSPARENT) --- */}
-            <div className="flex gap-3 h-[60px]">
-              {/* NÚT SELL */}
+        {/* Order type */}
+        <div className={`p-3 rounded-xl border ${card}`}>
+          <div className="text-xs opacity-70 mb-2">Order type</div>
+          <div className="grid grid-cols-4 gap-2">
+            {(["Market", "Limit", "Stop", "StopLimit"] as OrderType[]).map((t) => (
               <button
-                onClick={handleSellClick}
-                className={`flex-1 flex flex-col items-center justify-center transition-all duration-200 border-2 rounded-lg ${
-                  side === "sell" 
-                    ? `bg-red-500/15 border-red-500` 
-                    : `border-transparent ${isDarkMode ? "bg-gray-800 hover:bg-gray-700" : "bg-gray-100 hover:bg-gray-200"}`
+                key={t}
+                onClick={() => setOrderType(t)}
+                className={`py-2 rounded-lg text-xs font-bold border ${
+                  orderType === t
+                    ? side === "buy"
+                      ? "border-green-500 bg-green-500/10 text-green-200"
+                      : "border-red-500 bg-red-500/10 text-red-200"
+                    : isDarkMode
+                    ? "border-gray-800 bg-[#0f1219] opacity-80"
+                    : "border-gray-200 bg-white opacity-90"
                 }`}
               >
-                <span className={`text-sm font-bold transition-colors ${
-                  side === "sell" ? sellTextColor : (side === "buy" ? subTextClass : sellTextColor)
-                }`}>Sell</span>
-                <span className={`text-lg font-bold transition-colors ${
-                  side === "sell" ? sellTextColor : (side === "buy" ? subTextClass : sellTextColor)
-                }`}>
-                  {formatVNDCurrency(bidPrice)}
-                </span>
+                {t === "Stop" ? "STOP" : t === "StopLimit" ? "STOP-LMT" : t.toUpperCase()}
               </button>
+            ))}
+          </div>
 
-              {/* NÚT BUY */}
-              <button
-                onClick={handleBuyClick}
-                className={`flex-1 flex flex-col items-center justify-center transition-all duration-200 border-2 rounded-lg ${
-                  side === "buy" 
-                    ? `bg-green-500/15 border-green-500` 
-                    : `border-transparent ${isDarkMode ? "bg-gray-800 hover:bg-gray-700" : "bg-gray-100 hover:bg-gray-200"}`
-                }`}
-              >
-                <span className={`text-sm font-bold transition-colors ${
-                  side === "buy" ? buyTextColor : (side === "sell" ? subTextClass : buyTextColor)
-                }`}>Buy</span>
-                <span className={`text-lg font-bold transition-colors ${
-                  side === "buy" ? buyTextColor : (side === "sell" ? subTextClass : buyTextColor)
-                }`}>
-                  {formatVNDCurrency(askPrice)}
-                </span>
-              </button>
-            </div>
-
-            {/* --- PRICE BANDS --- */}
-            <div className={`flex justify-between text-xs px-2 py-1 rounded ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`}>
-              <div className="flex items-center">
-                <span className={`mr-1 ${isDarkMode ? "text-gray-400" : "text-gray-600"}`}>REF:</span>
-                <span className="font-medium text-yellow-500">{formatVNDCurrency(priceBands.reference)}</span>
-              </div>
-              <div className="flex items-center">
-                <span className={`mr-1 ${isDarkMode ? "text-gray-400" : "text-gray-600"}`}>CEIL:</span>
-                <span className="font-medium text-purple-500">{formatVNDCurrency(priceBands.ceiling)}</span>
-              </div>
-              <div className="flex items-center">
-                <span className={`mr-1 ${isDarkMode ? "text-gray-400" : "text-gray-600"}`}>FLOOR:</span>
-                <span className="font-medium text-cyan-500">{formatVNDCurrency(priceBands.floor)}</span>
+          {(orderType === "Stop" || orderType === "StopLimit") && (
+            <div className="mt-3">
+              <div className="text-xs opacity-70 mb-1">Stop (trigger) price</div>
+              <input
+                className={`w-full px-3 py-2 rounded-lg border ${input}`}
+                type="number"
+                value={stopPrice}
+                // Sửa onChange để tránh NaN khi xóa trắng
+                onChange={(e) => {
+                    const val = parseFloat(e.target.value);
+                    setStopPrice(isNaN(val) ? 0 : val);
+                }}
+              />
+              <div className="mt-1 text-[11px] opacity-60">
+                Trigger: {side === "sell" ? "last price ≤ stop" : "last price ≥ stop"}
               </div>
             </div>
+          )}
 
-            {/* --- ORDER TYPE TABS --- */}
-            <div className={`flex gap-1 p-1 rounded-lg ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`}>
-              {(["Market", "Limit", "Stop"] as OrderType[]).map((type) => (
-                <button
-                  key={type}
-                  onClick={() => setOrderType(type)}
-                  className={`flex-1 py-1.5 text-xs font-bold uppercase tracking-wide rounded-[4px] transition-colors ${
-                    orderType === type 
-                      ? `${side === "buy" ? "bg-green-600 text-white shadow-sm" : "bg-red-600 text-white shadow-sm"}` 
-                      : `${subTextClass} hover:${textClass}`
-                  }`}
-                >
-                  {type}
-                </button>
-              ))}
-            </div>
-
-            {/* --- QUANTITY & AMOUNT INPUTS --- */}
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className={labelClasses}>Shares</label>
-                <div className="relative">
-                  <input
-                    type="number"
-                    value={quantity}
-                    onChange={(e) => setQuantity(parseFloat(e.target.value))}
-                    className={inputBaseClasses}
-                    step="100"
-                    min="100"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <div className="flex justify-between items-end mb-1">
-                  <label className={labelClasses}>VND</label>
-                  <ChevronDown size={12} className={`${subTextClass} mb-0.5`} />
-                </div>
-                <div className="relative">
-                  <input
-                    type="number"
-                    readOnly
-                    value={tradeValue.toFixed(0)}
-                    className={`${inputBaseClasses} ${isDarkMode ? "bg-gray-700" : "bg-gray-200"} opacity-70 cursor-not-allowed`}
-                  />
-                </div>
-              </div>
-            </div>
-            
-            {/* --- PRICE INPUT (for Limit/Stop orders) --- */}
-            {orderType !== "Market" && (
-              <div>
-                <label className={labelClasses}>Price</label>
-                <input
-                  type="number"
-                  value={price}
-                  onChange={(e) => setPrice(parseFloat(e.target.value))}
-                  className={inputBaseClasses}
-                />
-              </div>
-            )}
-
-            {/* --- EXITS SECTION --- */}
-            <div className={`rounded-lg border ${borderClass} p-3 ${isDarkMode ? "bg-gray-800/30" : "bg-gray-50"}`}>
-              <div 
-                className="flex justify-between items-center cursor-pointer"
-                onClick={() => setExitsExpanded(!exitsExpanded)}
-              >
-                <span className="font-bold text-sm">Exits</span>
-                <ChevronDown 
-                  size={16} 
-                  className={`transition-transform duration-200 ${exitsExpanded ? 'rotate-180' : ''} ${subTextClass}`} 
-                />
-              </div>
-
-              {exitsExpanded && (
-                <div className="space-y-4 mt-3">
-                  {/* Take Profit */}
-                  <div>
-                    <div className="flex items-center gap-2 mb-2">
-                      <input 
-                        type="checkbox" 
-                        checked={takeProfitEnabled}
-                        onChange={(e) => setTakeProfitEnabled(e.target.checked)}
-                        className="w-4 h-4 accent-blue-500 cursor-pointer"
-                      />
-                      <span className={`text-sm ${textClass}`}>Take profit</span>
-                    </div>
-                    
-                    <div className="grid grid-cols-2 gap-3 pl-6">
-                      <div>
-                        <label className={labelClasses}>Price</label>
-                        <input 
-                          type="number"
-                          disabled={!takeProfitEnabled}
-                          value={takeProfitPrice}
-                          onChange={(e) => setTakeProfitPrice(Number(e.target.value))}
-                          className={`${inputBaseClasses} h-[34px] ${!takeProfitEnabled && 'opacity-40'}`} 
-                        />
-                      </div>
-                      <div>
-                        <div className="flex justify-between">
-                          <label className={labelClasses}>Ticks</label>
-                        </div>
-                        <input 
-                          type="number"
-                          disabled={!takeProfitEnabled}
-                          value={takeProfitTicks}
-                          onChange={(e) => setTakeProfitTicks(Number(e.target.value))}
-                          className={`${inputBaseClasses} h-[34px] ${!takeProfitEnabled && 'opacity-40'}`} 
-                        />
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Stop Loss */}
-                  <div>
-                    <div className="flex items-center gap-2 mb-2">
-                      <input 
-                        type="checkbox" 
-                        checked={stopLossEnabled}
-                        onChange={(e) => setStopLossEnabled(e.target.checked)}
-                        className="w-4 h-4 accent-blue-500 cursor-pointer"
-                      />
-                      <span className={`text-sm ${textClass}`}>Stop loss</span>
-                    </div>
-                    
-                    <div className="grid grid-cols-2 gap-3 pl-6">
-                      <div>
-                        <label className={labelClasses}>Price</label>
-                        <input 
-                          type="number"
-                          disabled={!stopLossEnabled}
-                          value={stopLossPrice}
-                          onChange={(e) => setStopLossPrice(Number(e.target.value))}
-                          className={`${inputBaseClasses} h-[34px] ${!stopLossEnabled && 'opacity-40'}`} 
-                        />
-                      </div>
-                      <div>
-                        <div className="flex justify-between">
-                          <label className={labelClasses}>Ticks</label>
-                        </div>
-                        <input 
-                          type="number"
-                          disabled={!stopLossEnabled}
-                          value={stopLossTicks}
-                          onChange={(e) => setStopLossTicks(Number(e.target.value))}
-                          className={`${inputBaseClasses} h-[34px] ${!stopLossEnabled && 'opacity-40'}`} 
-                        />
-                      </div>
-                    </div>
-                  </div>
+          {(orderType === "Limit" || orderType === "StopLimit") && (
+            <div className="mt-3">
+              <div className="text-xs opacity-70 mb-1">Limit price</div>
+              <input
+                className={`w-full px-3 py-2 rounded-lg border ${input}`}
+                type="number"
+                value={limitPrice}
+                // Sửa onChange để tránh NaN khi xóa trắng
+                onChange={(e) => {
+                    const val = parseFloat(e.target.value);
+                    setLimitPrice(isNaN(val) ? 0 : val);
+                }}
+              />
+              {orderType === "StopLimit" && (
+                <div className="mt-1 text-[11px] opacity-60">
+                  After trigger, order becomes LIMIT...
                 </div>
               )}
             </div>
+          )}
+        </div>
 
-            {/* --- ORDER INFO --- */}
-            <div className="space-y-1.5 pt-2 pb-2">
-              <div className="flex justify-between text-[13px]">
-                <span className={subTextClass}>Trade value</span>
-                <span className={`${textClass} font-mono`}>{formatVNDCurrency(tradeValue)}</span>
-              </div>
-              <div className="flex justify-between text-[13px]">
-                <span className={subTextClass}>Leverage</span>
-                <span className={`${textClass} font-bold`}>1:1</span>
-              </div>
+        {/* Quantity */}
+        <div className={`p-3 rounded-xl border ${card}`}>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <div className="text-xs opacity-70 mb-1">Quantity (shares)</div>
+              <input
+                className={`w-full px-3 py-2 rounded-lg border ${input}`}
+                type="number"
+                step={100}
+                min={100}
+                value={quantity}
+                onChange={(e) => {
+                    const val = parseFloat(e.target.value);
+                    setQuantity(isNaN(val) ? 0 : val);
+                }}
+              />
+              <div className="mt-1 text-[11px] opacity-60">Auto lot: {validQty} shares</div>
             </div>
+            <div>
+              <div className="text-xs opacity-70 mb-1">Trade value (ref)</div>
+              <div className={`w-full px-3 py-2 rounded-lg border ${input} opacity-80 flex items-center`}>
+                {/* Hiển thị NaN nếu tradeValue bị lỗi, sửa lại hiển thị 0 */}
+                {Number.isFinite(tradeValue) ? tradeValue.toLocaleString("vi-VN") : "0"} đ
+              </div>
+              <div className="mt-1 text-[11px] opacity-60">Uses current price as reference</div>
+            </div>
+          </div>
+        </div>
 
-            {/* --- MAIN ACTION BUTTON (FIXED) --- */}
-            {/* Sử dụng class trực tiếp thay vì biến để đảm bảo hiển thị đúng */}
-            <button
-              onClick={handleAction}
-              className={`w-full py-3.5 rounded-lg font-bold text-white shadow-lg transition-all transform active:scale-[0.98] border-2 ${
-                side === "buy"
-                  ? "bg-green-600 hover:bg-green-500 border-green-500 shadow-green-900/20"
-                  : "bg-red-600 hover:bg-red-500 border-red-500 shadow-red-900/20"
-              }`}
-            >
-              <div className="text-[16px] uppercase tracking-wide">
-                {side === "buy" ? "Buy" : "Sell"} {symbol.split('.')[0]}
-              </div>
-              <div className="text-[11px] font-normal opacity-90 mt-0.5">
-                {validQuantity} @ {orderType === 'Market' ? 'MKT' : price}
-              </div>
-            </button>
-            
-          </div>
-        ) : (
-          <div className={`flex items-center justify-center h-40 ${subTextClass} text-sm`}>
-            DOM View Not Available
-          </div>
-        )}
+        {/* Submit */}
+        <button
+          onClick={submit}
+          className={`w-full py-3 rounded-xl font-bold text-white ${
+            side === "buy" ? "bg-green-600 hover:bg-green-500" : "bg-red-600 hover:bg-red-500"
+          }`}
+        >
+          {side === "buy" ? "BUY" : "SELL"} • {orderType}
+        </button>
       </div>
     </div>
   );
-  } 
+}

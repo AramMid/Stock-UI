@@ -1010,7 +1010,7 @@ const equity = balance + realized + unrealized;
 const metrics = [
   { label: "Account Balance", value: formatVNDCurrency(balance) },
   { label: "Equity", value: formatVNDCurrency(equity) },
-  { label: "Realized P&L", value: formatVNDCurrency(realized) },
+  // { label: "Realized P&L", value: formatVNDCurrency(realized) },
   { label: "Unrealized P&L", value: formatVNDCurrency(unrealized) },
   { label: "Available Funds", value: formatVNDCurrency(balance), info: true },
 ];

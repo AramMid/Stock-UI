@@ -290,6 +290,8 @@ export class MarketSimulationService {
   private botPositions = new Map<string, BotPosition>();
   private botOrders = new Map<string, BotOrder>();
   private pendingUserOrders = new Map<string, {order: Order, decisionTime: number}>();
+  private stopOrders = new Map<string, Order[]>();
+
   
   private marketData = new Map<string, SimulatedMarketData>();
   private priceHistory = new Map<string, number[]>();
@@ -429,7 +431,221 @@ export class MarketSimulationService {
       this.initializeBotPosition(botId, symbol, 0);
     }
   }
+  // Thêm method mới để xử lý lệnh có thể khớp ngay
+private processMarketableOrder(order: Order, marketData: SimulatedMarketData): 
+  { success: boolean; filledPrice?: number; filledQuantity?: number } {
   
+  const isBuy = order.type === "buy";
+  const orderPrice = order.price || 0;
+  
+  if (order.orderType === "Limit") {
+    // Kiểm tra xem order có thể khớp ngay không
+    if (isBuy) {
+      // BUY LIMIT: orderPrice >= bestAsk (có thể mua ngay)
+      const bestAsk = marketData.askDepth.length > 0 ? 
+        Math.min(...marketData.askDepth.map(l => l.price)) : Infinity;
+      
+      if (orderPrice >= bestAsk) {
+        console.log(`[MARKETABLE] Buy limit order ${order.id} is marketable! Price: ${orderPrice}, BestAsk: ${bestAsk}`);
+        return this.executeImmediateMatch(order, marketData, bestAsk);
+      }
+    } else {
+      // SELL LIMIT: orderPrice <= bestBid (có thể bán ngay)
+      const bestBid = marketData.bidDepth.length > 0 ? 
+        Math.max(...marketData.bidDepth.map(l => l.price)) : 0;
+      
+      if (orderPrice <= bestBid) {
+        console.log(`[MARKETABLE] Sell limit order ${order.id} is marketable! Price: ${orderPrice}, BestBid: ${bestBid}`);
+        return this.executeImmediateMatch(order, marketData, bestBid);
+      }
+    }
+  }
+  
+  return { success: false };
+}
+private executeImmediateMatch(order: Order, marketData: SimulatedMarketData, matchPrice: number): 
+  { success: boolean; filledPrice?: number; filledQuantity?: number } {
+  
+  const isBuy = order.type === "buy";
+  
+  // Tìm bot có thể khớp ngay
+  const candidates = this.bots
+    .filter(bot => bot.symbol === order.symbol && bot.isActive)
+    .map(bot => {
+      const pos = this.botPositions.get(bot.id);
+      if (!pos) return null;
+      
+      // Bot phải có inventory/khả năng khớp
+      const canTrade = isBuy 
+        ? pos.quantity < PARAMS.MAX_POSITION_SIZE // Bot có thể bán
+        : pos.quantity > 0;                       // Bot có thể mua
+        
+      return canTrade ? { bot, pos } : null;
+    })
+    .filter(x => x !== null);
+    
+  if (candidates.length === 0) {
+    return { success: false };
+  }
+  
+  // Chọn bot ngẫu nhiên
+  const selected = candidates[Math.floor(Math.random() * candidates.length)]!;
+  const tradeQty = Math.min(order.quantity, order.quantity); // Toàn bộ lệnh
+  
+  // Cập nhật position cho bot
+  if (isBuy) {
+    // Bot bán, user mua
+    this.updateBotPositionFromTrade(selected.bot.id, "sell", matchPrice, tradeQty, order.symbol);
+  } else {
+    // Bot mua, user bán
+    this.updateBotPositionFromTrade(selected.bot.id, "buy", matchPrice, tradeQty, order.symbol);
+  }
+  
+  // Ghi log trade
+  this.tradeHistory.push({
+    timestamp: Date.now(),
+    price: matchPrice,
+    quantity: tradeQty,
+    buyerBotId: isBuy ? undefined : selected.bot.id,
+    sellerBotId: isBuy ? selected.bot.id : undefined,
+    userId: order.id,
+    symbol: order.symbol
+  });
+  
+  // Cập nhật market data
+  marketData.price = matchPrice;
+  marketData.volume += tradeQty;
+  
+  console.log(`[IMMEDIATE_MATCH] Order ${order.id} filled immediately: ${tradeQty} @ ${matchPrice}`);
+  
+  return {
+    success: true,
+    filledPrice: matchPrice,
+    filledQuantity: tradeQty
+  };
+}
+private processStopOrders(marketData: SimulatedMarketData, symbol: string) {
+  const list = this.stopOrders.get(symbol);
+  if (!list || list.length === 0) return;
+
+  const last = Number(marketData.price);
+  if (!Number.isFinite(last) || last <= 0) return;
+
+  const remaining: Order[] = [];
+
+  for (const o of list) {
+    const stopPrice = Number((o as any).stopPrice);
+    if (!Number.isFinite(stopPrice) || stopPrice <= 0) {
+      this.sendOrderUpdate({
+        orderId: o.id,
+        status: "REJECTED",
+        filledQuantity: 0,
+        timestamp: Date.now(),
+      });
+      continue;
+    }
+
+    const side = String(o.type).toLowerCase();
+    const triggered =
+      (side === "sell" && last <= stopPrice) ||
+      (side === "buy" && last >= stopPrice);
+
+    if (!triggered) {
+      remaining.push(o);
+      continue;
+    }
+
+    // 🔔 Notify trigger
+    this.sendOrderUpdate({
+      orderId: o.id,
+      status: "TRIGGERED" as OrderStatus,
+      filledQuantity: 0,
+      timestamp: Date.now(),
+    });
+
+    const ot = String(o.orderType || "").toLowerCase();
+
+    // STOP-LIMIT
+    if (ot === "stoplimit" || ot === "stop_limit") {
+      const limitPrice = Number(o.price);
+      if (!Number.isFinite(limitPrice) || limitPrice <= 0) {
+        this.sendOrderUpdate({
+          orderId: o.id,
+          status: "REJECTED",
+          filledQuantity: 0,
+          timestamp: Date.now(),
+        });
+        continue;
+      }
+
+      const converted: Order = {
+        ...o,
+        orderType: "Limit",
+        status: "NEW",
+      };
+
+      this.processUserOrder(converted);
+    } 
+    // STOP-MARKET
+    else {
+      const converted: Order = {
+        ...o,
+        orderType: "Market",
+        status: "NEW",
+      };
+
+      this.executeStopMarketOrder(converted, marketData);
+    }
+  }
+
+  this.stopOrders.set(symbol, remaining);
+}
+
+
+private executeStopMarketOrder(order: Order, marketData: SimulatedMarketData) {
+  const totalQty = Number(order.quantity);
+  if (!Number.isFinite(totalQty) || totalQty <= 0) return;
+
+  // Try normal execution first
+  const result = this.executeUserOrderWithBots(order, marketData); // { filled, price, quantity }
+
+  const filledQty = Number(result?.quantity || 0);
+  const filledPrice = Number(result?.price || 0);
+
+  // Nếu đã fill đủ -> gửi update và thoát
+  if (result?.filled && filledQty >= totalQty) {
+    this.sendOrderUpdate({
+      orderId: order.id,
+      status: "FILLED",
+      filledQuantity: totalQty,
+      filledPrice: filledPrice > 0 ? filledPrice : marketData.price,
+      timestamp: Date.now(),
+    });
+    return;
+  }
+
+  // Còn thiếu -> force fill phần còn lại theo best bid/ask (slippage)
+  const side = String(order.type).toLowerCase();
+
+  // IMPORTANT: bidDepth của bạn đã sort giảm dần, askDepth sort tăng dần
+  const bestOpposite =
+    side === "sell"
+      ? Number(marketData.bidDepth?.[0]?.price ?? marketData.price)
+      : Number(marketData.askDepth?.[0]?.price ?? marketData.price);
+
+  const price =
+    Number.isFinite(bestOpposite) && bestOpposite > 0 ? bestOpposite : Number(marketData.price);
+
+  this.sendOrderUpdate({
+    orderId: order.id,
+    status: "FILLED",
+    filledQuantity: totalQty,
+    filledPrice: price,
+    timestamp: Date.now(),
+  });
+}
+
+
   private initializeBotPosition(botId: string, symbol: string, initialQuantity: number = 0) {
     const initialPrice = SYMBOLS[symbol as keyof typeof SYMBOLS].price;
     this.botPositions.set(botId, { 
@@ -557,7 +773,8 @@ export class MarketSimulationService {
       this.updatePriceWithTrends(marketData, symbol);
       
       this.updateTechnicalIndicators(marketData, symbol);
-      
+      this.processStopOrders(marketData, symbol);
+
       this.processPendingUserOrders(marketData);
       
       // GIẢI PHÁP 2: Update market depth với minimum levels guarantee
@@ -1844,74 +2061,127 @@ export class MarketSimulationService {
   }
   
   public processUserOrder(order: Order): { success: boolean; filledPrice?: number; filledQuantity?: number } {
-  this.userOrderCount += 1; // ✅ ADD
+  this.userOrderCount += 1;
+  
+  // 1. Kiểm tra xem có thể khớp ngay không
+  const marketData = this.marketData.get(order.symbol);
+  if (marketData) {
+    const marketableResult = this.processMarketableOrder(order, marketData);
+    if (marketableResult.success) {
+      console.log(`[USER_ORDER] Order ${order.id} matched immediately as marketable limit order`);
+      return marketableResult;
+    }
+  }
+  
+  // 2. Nếu không khớp ngay, đưa vào pending với delay
   const delay = Math.floor(Math.random() * 6000) + 2000;
-  console.log(`[USER_ORDER] #${this.userOrderCount} Order ${order.id} received. Delay: ${delay}ms`);
-
+  console.log(`[USER_ORDER] #${this.userOrderCount} Order ${order.id} queued. Delay: ${delay}ms`);
+  
   this.pendingUserOrders.set(order.id, { order, decisionTime: Date.now() + delay });
   return { success: false };
 }
 
-  private processPendingUserOrders(marketData: SimulatedMarketData): void {
-    const currentTime = Date.now();
+private processPendingUserOrders(marketData: SimulatedMarketData): void {
+  const currentTime = Date.now();
+  const processedOrders: string[] = [];
 
-    this.pendingUserOrders.forEach((pendingItem, orderId) => {
-      if (currentTime >= pendingItem.decisionTime) {
-        const { order } = pendingItem;
-        const currentData = this.marketData.get(order.symbol);
-
-        if (!currentData) {
-            this.pendingUserOrders.delete(orderId);
-            return;
-        }
-
-        const botDecision = this.evaluateUserOrder(order, currentData);
-        
-        if (botDecision.accepted) {
-            const execution = this.executeUserOrderWithBots(order, currentData);
-            
-            if (execution.filled) {
-                console.log(`[USER_FILL] Order ${orderId} filled: ${execution.quantity} @ ${execution.price}`);
-                
-                this.sendOrderUpdate({
-                    orderId: order.id,
-                    status: execution.quantity < order.quantity ? "PARTIALLY_FILLED" : "FILLED",
-                    filledPrice: execution.price,
-                    filledQuantity: execution.quantity,
-                    timestamp: Date.now()
-                });
-                
-                if (execution.quantity < order.quantity) {
-                  const remainingOrder = { ...order };
-                  remainingOrder.quantity -= execution.quantity;
-                  this.pendingUserOrders.set(orderId, {
-                    order: remainingOrder,
-                    decisionTime: currentTime + 2000
-                  });
-                  return;
-                }
-            } else {
-                this.sendOrderUpdate({
-                    orderId: order.id,
-                    status: "REJECTED",
-                    timestamp: Date.now()
-                });
-            }
-        } else {
-            console.log(`[USER_REJECT] Order ${orderId} rejected: ${botDecision.reason}`);
-            this.sendOrderUpdate({
-                orderId: order.id,
-                status: "REJECTED",
-                timestamp: Date.now()
-            });
-        }
-
-        this.pendingUserOrders.delete(orderId);
+  this.pendingUserOrders.forEach((pendingItem, orderId) => {
+    if (currentTime >= pendingItem.decisionTime) {
+      const { order } = pendingItem;
+      
+      // ✅ FIX: Kiểm tra marketData tồn tại
+      if (!marketData) {
+        console.error(`[PROCESS_PENDING] Market data not found for ${order.symbol}`);
+        this.sendOrderUpdate({
+          orderId: order.id,
+          status: "REJECTED",
+          timestamp: Date.now()
+        });
+        processedOrders.push(orderId);
+        return;
       }
-    });
-  }
 
-  private evaluateUserOrder(order: Order, marketData: SimulatedMarketData): { accepted: boolean; reason: string } {
+      // ✅ FIX: Gọi evaluateUserOrder với kiểm tra an toàn
+      const botDecision = this.evaluateUserOrder(order, marketData);
+      
+      // ✅ FIX: Kiểm tra botDecision không undefined
+      if (!botDecision) {
+        console.error(`[PROCESS_PENDING] evaluateUserOrder returned undefined for order ${orderId}`);
+        this.sendOrderUpdate({
+          orderId: order.id,
+          status: "REJECTED",
+          timestamp: Date.now()
+        });
+        processedOrders.push(orderId);
+        return;
+      }
+      
+      // ✅ FIX: Kiểm tra thuộc tính 'accepted'
+      if (botDecision.accepted === undefined) {
+        console.error(`[PROCESS_PENDING] botDecision.accepted is undefined for order ${orderId}`);
+        this.sendOrderUpdate({
+          orderId: order.id,
+          status: "REJECTED",
+          timestamp: Date.now()
+        });
+        processedOrders.push(orderId);
+        return;
+      }
+      
+      if (botDecision.accepted) {
+        const execution = this.executeUserOrderWithBots(order, marketData);
+        
+        if (execution.filled) {
+          console.log(`[USER_FILL] Order ${orderId} filled: ${execution.quantity} @ ${execution.price}`);
+          
+          this.sendOrderUpdate({
+            orderId: order.id,
+            status: execution.quantity < order.quantity ? "PARTIALLY_FILLED" : "FILLED",
+            filledPrice: execution.price,
+            filledQuantity: execution.quantity,
+            timestamp: Date.now()
+          });
+          
+          if (execution.quantity < order.quantity) {
+            const remainingOrder = { ...order };
+            remainingOrder.quantity -= execution.quantity;
+            this.pendingUserOrders.set(orderId, {
+              order: remainingOrder,
+              decisionTime: currentTime + 2000
+            });
+            return;
+          }
+        } else {
+          this.sendOrderUpdate({
+            orderId: order.id,
+            status: "REJECTED",
+            timestamp: Date.now()
+          });
+        }
+      } else {
+        console.log(`[USER_REJECT] Order ${orderId} rejected: ${botDecision.reason || 'No reason provided'}`);
+        this.sendOrderUpdate({
+          orderId: order.id,
+          status: "REJECTED",
+          timestamp: Date.now()
+        });
+      }
+
+      processedOrders.push(orderId);
+    }
+  });
+
+  // Xóa các order đã xử lý
+  processedOrders.forEach(orderId => {
+    this.pendingUserOrders.delete(orderId);
+  });
+}
+
+private evaluateUserOrder(order: Order, marketData: SimulatedMarketData): 
+  { accepted: boolean; reason: string } {
+  
+  // ✅ FIX: Luôn trả về đúng cấu trúc, kể cả khi có lỗi
+  try {
     const isBuy = order.type === "buy";
     const currentPrice = marketData.price;
     const orderPrice = order.price || currentPrice;
@@ -1921,6 +2191,23 @@ export class MarketSimulationService {
     const bestAsk = marketData.askDepth.length > 0 ? 
       Math.min(...marketData.askDepth.map(l => l.price)) : currentPrice;
     const spread = bestAsk - bestBid;
+    
+    // ✅ FIX: Kiểm tra xem có phải marketable limit order không
+    if (order.orderType === "Limit" || order.orderType === "StopLimit") {
+      if (isBuy && orderPrice >= bestAsk) {
+        return {
+          accepted: true,
+          reason: `Marketable buy limit order (${orderPrice} ≥ best ask ${bestAsk})`
+        };
+      }
+      
+      if (!isBuy && orderPrice <= bestBid) {
+        return {
+          accepted: true,
+          reason: `Marketable sell limit order (${orderPrice} ≤ best bid ${bestBid})`
+        };
+      }
+    }
     
     // Implement decreasing probability logic for first 10 orders
     let acceptanceProbability = 0.7;
@@ -1958,11 +2245,75 @@ export class MarketSimulationService {
         `Bot willing to trade (${Math.round(acceptanceProbability * 100)}%)` :
         `Bot not interested (${Math.round(acceptanceProbability * 100)}%)`
     };
+  } catch (error) {
+    console.error('[EVALUATE_ORDER_ERROR]', error);
+    // ✅ FIX: Luôn trả về đúng cấu trúc khi có lỗi
+    return {
+      accepted: false,
+      reason: `Error evaluating order: ${error instanceof Error ? error.message : 'Unknown error'}`
+    };
   }
+}
 
-  private executeUserOrderWithBots(order: Order, marketData: SimulatedMarketData) {
+private executeUserOrderWithBots(order: Order, marketData: SimulatedMarketData) {
   const isBuy = order.type === "buy";
-
+  const orderPrice = order.price || marketData.price;
+  
+  // ✅ FIX: Ưu tiên xử lý marketable orders trước
+  if (order.orderType === "Limit" || order.orderType === "StopLimit") {
+    // Kiểm tra marketable
+    if (isBuy && orderPrice >= marketData.price) {
+      // Marketable buy: khớp ngay với giá thị trường
+      const executionPrice = marketData.price;
+      const executionQty = order.quantity;
+      
+      // Tìm bot để khớp
+      const bot = this.findBotForImmediateExecution(order, marketData, "sell");
+      if (bot) {
+        this.updateBotPositionFromTrade(bot.id, "sell", executionPrice, executionQty, order.symbol);
+        
+        // Ghi log
+        this.tradeHistory.push({
+          timestamp: Date.now(),
+          price: executionPrice,
+          quantity: executionQty,
+          buyerBotId: undefined,
+          sellerBotId: bot.id,
+          userId: order.id,
+          symbol: order.symbol
+        });
+        
+        return { filled: true, price: executionPrice, quantity: executionQty };
+      }
+    }
+    
+    if (!isBuy && orderPrice <= marketData.price) {
+      // Marketable sell: khớp ngay với giá thị trường
+      const executionPrice = marketData.price;
+      const executionQty = order.quantity;
+      
+      // Tìm bot để khớp
+      const bot = this.findBotForImmediateExecution(order, marketData, "buy");
+      if (bot) {
+        this.updateBotPositionFromTrade(bot.id, "buy", executionPrice, executionQty, order.symbol);
+        
+        // Ghi log
+        this.tradeHistory.push({
+          timestamp: Date.now(),
+          price: executionPrice,
+          quantity: executionQty,
+          buyerBotId: bot.id,
+          sellerBotId: undefined,
+          userId: order.id,
+          symbol: order.symbol
+        });
+        
+        return { filled: true, price: executionPrice, quantity: executionQty };
+      }
+    }
+  }
+  
+  // Logic cũ cho non-marketable orders
   const candidates = this.bots
     .filter(bot => bot.symbol === order.symbol && bot.isActive && this.canBotTradeWithUser(bot, order, marketData))
     .map(bot => {
@@ -1976,23 +2327,64 @@ export class MarketSimulationService {
       return { bot, pos, available };
     })
     .filter((x): x is { bot: Bot; pos: BotPosition; available: number } => !!x && x.available > 0)
-    .sort((a, b) => b.available - a.available); // ưu tiên bot có nhiều khả năng fill
+    .sort((a, b) => b.available - a.available);
 
   if (!candidates.length) return { filled: false, price: 0, quantity: 0 };
 
-  const selected = candidates[0]; // ✅ chọn bot tốt nhất (hoặc random trong top N)
+  const selected = candidates[0];
   const tradeQty = Math.min(selected.available, order.quantity);
-
   const price = this.calculateTradePrice(order, marketData, selected.bot);
 
   // update bot position (bot side opposite user)
   if (isBuy) this.updateBotPositionFromTrade(selected.bot.id, "sell", price, tradeQty, order.symbol);
   else this.updateBotPositionFromTrade(selected.bot.id, "buy", price, tradeQty, order.symbol);
 
-  // ... push tradeHistory, update marketData ...
+  // Ghi log trade
+  this.tradeHistory.push({
+    timestamp: Date.now(),
+    price: price,
+    quantity: tradeQty,
+    buyerBotId: isBuy ? undefined : selected.bot.id,
+    sellerBotId: isBuy ? selected.bot.id : undefined,
+    userId: order.id,
+    symbol: order.symbol
+  });
+
   return { filled: true, price, quantity: tradeQty };
 }
-
+private findBotForImmediateExecution(
+  order: Order, 
+  marketData: SimulatedMarketData, 
+  botSide: "buy" | "sell"
+): Bot | null {
+  
+  // Tìm bot có thể khớp ngay
+  const candidates = this.bots
+    .filter(bot => 
+      bot.symbol === order.symbol && 
+      bot.isActive &&
+      (bot.type === "marketMaker" || bot.type === "noiseTrader")
+    )
+    .map(bot => {
+      const pos = this.botPositions.get(bot.id);
+      if (!pos) return null;
+      
+      // Kiểm tra bot có đủ khả năng khớp không
+      if (botSide === "sell") {
+        // Bot bán -> cần có inventory
+        return pos.quantity >= order.quantity ? bot : null;
+      } else {
+        // Bot mua -> cần có đủ chỗ
+        return (PARAMS.MAX_POSITION_SIZE - pos.quantity) >= order.quantity ? bot : null;
+      }
+    })
+    .filter((x): x is Bot => x !== null);
+    
+  if (candidates.length === 0) return null;
+  
+  // Chọn ngẫu nhiên một bot
+  return candidates[Math.floor(Math.random() * candidates.length)];
+}
 
   private canBotTradeWithUser(bot: Bot, order: Order, marketData: SimulatedMarketData): boolean {
     const position = this.botPositions.get(bot.id);
@@ -2376,7 +2768,74 @@ export class MarketSimulationService {
     
     return stats;
   }
+  public checkMarketableOrder(order: Order): { isMarketable: boolean; executionPrice?: number } {
+  const marketData = this.marketData.get(order.symbol);
+  if (!marketData || !order.price || order.price <= 0) {
+    return { isMarketable: false };
+  }
   
+  const orderPrice = order.price;
+  const currentPrice = marketData.price;
+  const bestBid = marketData.bidDepth.length > 0 ? 
+    Math.max(...marketData.bidDepth.map(l => l.price)) : 0;
+  const bestAsk = marketData.askDepth.length > 0 ? 
+    Math.min(...marketData.askDepth.map(l => l.price)) : Infinity;
+  
+  if (order.type === "buy" && orderPrice >= bestAsk) {
+    return { isMarketable: true, executionPrice: bestAsk };
+  }
+  
+  if (order.type === "sell" && orderPrice <= bestBid) {
+    return { isMarketable: true, executionPrice: bestBid };
+  }
+  
+  return { isMarketable: false };
+}
+private isMarketableLimitOrder(order: Order, marketData: any): 
+  { marketable: boolean; executionPrice?: number } {
+  
+  if (order.orderType !== "Limit" && order.orderType !== "StopLimit") {
+    return { marketable: false };
+  }
+  
+  if (!order.price || order.price <= 0) {
+    return { marketable: false };
+  }
+  
+  const orderPrice = order.price;
+  const currentPrice = marketData.price;
+  const bestBid = marketData.bidDepth.length > 0 ? 
+    Math.max(...marketData.bidDepth.map(l => l.price)) : 0;
+  const bestAsk = marketData.askDepth.length > 0 ? 
+    Math.min(...marketData.askDepth.map(l => l.price)) : Infinity;
+  
+  // BUY LIMIT: orderPrice >= bestAsk → marketable
+  if (order.type === "buy" && orderPrice >= bestAsk) {
+    return { 
+      marketable: true, 
+      executionPrice: Math.min(orderPrice, bestAsk) 
+    };
+  }
+  
+  // SELL LIMIT: orderPrice <= bestBid → marketable
+  if (order.type === "sell" && orderPrice <= bestBid) {
+    return { 
+      marketable: true, 
+      executionPrice: Math.max(orderPrice, bestBid)
+    };
+  }
+  
+  // Ngoại lệ: Nếu thị trường trống, cho phép khớp với giá thị trường
+  if ((order.type === "buy" && orderPrice >= currentPrice) ||
+      (order.type === "sell" && orderPrice <= currentPrice)) {
+    return {
+      marketable: true,
+      executionPrice: currentPrice
+    };
+  }
+  
+  return { marketable: false };
+}
   public getOrderBookStabilityMetrics(symbol: string) {
     const marketData = this.marketData.get(symbol);
     if (!marketData) return null;

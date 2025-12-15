@@ -4,6 +4,7 @@ import { OrderStatus } from "./orderService";
 import { MarketSimulationService } from "./marketSimulationService";
 import { MarketDepthLevel, SimulatedMarketData } from "./marketSimulationService";
 import { validateOrderQuantity, getExchangeBySymbol, getFluctuationLimit } from "../position-sizing";
+import { WebSocketService } from "./webSocketService";
 
 export class OrderBookService {
   private orderBook: OrderBook;
@@ -60,56 +61,159 @@ export class OrderBookService {
   }
 
   // Add a new order to the order book
-  addOrder(order: Order): { success: boolean; message: string } {
-    console.log(`[ORDER_BOOK] Adding order: ${order.id}, type: ${order.type}, price: ${order.price}, quantity: ${order.quantity}`);
-    
-    // Validate order
-    const validation = this.validateOrder(order);
-    if (!validation.valid) {
-      return { success: false, message: validation.message };
-    }
+// Add a new order to the order book
+addOrder(order: Order): { success: boolean; message: string } {
+  console.log(`[ORDER_BOOK] Adding order: ${order.id}, type: ${order.type}, price: ${order.price}, quantity: ${order.quantity}`);
+  
+  // Validate order
+  const validation = this.validateOrder(order);
+  if (!validation.valid) {
+    return { success: false, message: validation.message };
+  }
 
-    // Process through market simulation for realistic matching
-    const simulationResult = this.marketSimulation.processUserOrder(order);
+  // ✅ TRƯỚC KHI gửi vào simulation: Kiểm tra marketable limit order
+  const marketData = this.marketSimulation.getMarketData(order.symbol);
+  const isLimitOrder = order.orderType === "Limit" || order.orderType === "StopLimit";
+  const orderPrice = order.price || 0;
+  
+  if (isLimitOrder && marketData && orderPrice > 0) {
+    const currentPrice = marketData.price;
+    const bestBid = marketData.bidDepth.length > 0 ? 
+      Math.max(...marketData.bidDepth.map(l => l.price)) : 0;
+    const bestAsk = marketData.askDepth.length > 0 ? 
+      Math.min(...marketData.askDepth.map(l => l.price)) : Infinity;
     
-    if (simulationResult.success) {
-      // Order was immediately matched
-      order.status = "FILLED";
-      order.filledQuantity = simulationResult.filledQuantity;
-      order.filledPrice = simulationResult.filledPrice;
+    // ✅ KIỂM TRA MARKETABLE
+    let isMarketable = false;
+    let executionPrice = orderPrice;
+    
+    if (order.type === "buy") {
+      // BUY LIMIT: Giá đặt >= bestAsk (có thể mua ngay)
+      if (orderPrice >= bestAsk) {
+        isMarketable = true;
+        executionPrice = Math.min(orderPrice, bestAsk); // Ưu tiên giá tốt hơn
+        console.log(`[MARKETABLE] Buy limit ${orderPrice} ≥ bestAsk ${bestAsk}`);
+      }
+      // Hoặc giá đặt >= currentPrice (thị trường đang cao hơn)
+      else if (orderPrice >= currentPrice) {
+        isMarketable = true;
+        executionPrice = currentPrice;
+        console.log(`[MARKETABLE] Buy limit ${orderPrice} ≥ market ${currentPrice}`);
+      }
+    } else {
+      // SELL LIMIT: Giá đặt <= bestBid (có thể bán ngay)
+      if (orderPrice <= bestBid) {
+        isMarketable = true;
+        executionPrice = Math.max(orderPrice, bestBid); // Ưu tiên giá tốt hơn
+        console.log(`[MARKETABLE] Sell limit ${orderPrice} ≤ bestBid ${bestBid}`);
+      }
+      // Hoặc giá đặt <= currentPrice (thị trường đang thấp hơn)
+      else if (orderPrice <= currentPrice) {
+        isMarketable = true;
+        executionPrice = currentPrice;
+        console.log(`[MARKETABLE] Sell limit ${orderPrice} ≤ market ${currentPrice}`);
+      }
+    }
+    
+    // ✅ NẾU MARKETABLE: Khớp ngay không cần chờ simulation
+    if (isMarketable) {
+      console.log(`[IMMEDIATE_FILL] Marketable limit order ${order.id} filled immediately at ${executionPrice}`);
       
-      // Add trade record
+      // 1. Cập nhật order status
+      order.status = "FILLED";
+      order.filledQuantity = order.quantity;
+      order.filledPrice = executionPrice;
+      order.timestamp = new Date();
+      
+      // 2. Thêm vào danh sách orders (để tracking)
+      this.orders.set(order.id, order);
+      
+      // 3. Tạo trade record
       this.addTrade({
         id: `TRADE-${Date.now()}-${order.id}`,
-        price: order.filledPrice!,
-        quantity: order.filledQuantity!,
+        price: executionPrice,
+        quantity: order.quantity,
         timestamp: new Date(),
         side: order.type,
         symbol: order.symbol
       });
-
-      // Update order book
+      
+      // 4. Gửi WebSocket update ngay lập tức
+      const ws = WebSocketService.getInstance();
+      ws.sendOrderUpdate({
+        orderId: order.id,
+        status: "FILLED",
+        filledPrice: executionPrice,
+        filledQuantity: order.quantity,
+        timestamp: Date.now()
+      });
+      
+      // 5. Cập nhật order book
       this.updateOrderBook();
       
-      return { 
-        success: true, 
-        message: `Order filled immediately at ${order.filledPrice}` 
-      };
-    } else {
-      // Order is pending, add to order book
-      order.status = "NEW";
-      order.timestamp = new Date();
-      this.orders.set(order.id, order);
+      // 6. Cập nhật market simulation với trade mới
+      this.marketSimulation.getTradeHistory().push({
+        timestamp: Date.now(),
+        price: executionPrice,
+        quantity: order.quantity,
+        symbol: order.symbol,
+        buyerBotId: order.type === "buy" ? undefined : "user",
+        sellerBotId: order.type === "sell" ? undefined : "user",
+        userId: order.id
+      });
       
-      // Update order book
-      this.updateOrderBook();
-      
-      return { 
-        success: true, 
-        message: "Order added to order book" 
+      return {
+        success: true,
+        message: `Marketable limit order filled immediately at ${executionPrice}`
       };
     }
   }
+
+  // ✅ NẾU KHÔNG MARKETABLE: Gửi vào simulation như bình thường
+  const simulationResult = this.marketSimulation.processUserOrder(order);
+  
+  if (simulationResult.success) {
+    // Order was immediately matched by simulation
+    order.status = "FILLED";
+    order.filledQuantity = simulationResult.filledQuantity;
+    order.filledPrice = simulationResult.filledPrice;
+    order.timestamp = new Date();
+    
+    // Add to orders map
+    this.orders.set(order.id, order);
+    
+    // Add trade record
+    this.addTrade({
+      id: `TRADE-${Date.now()}-${order.id}`,
+      price: order.filledPrice!,
+      quantity: order.filledQuantity!,
+      timestamp: new Date(),
+      side: order.type,
+      symbol: order.symbol
+    });
+
+    // Update order book
+    this.updateOrderBook();
+    
+    return { 
+      success: true, 
+      message: `Order filled immediately at ${order.filledPrice}` 
+    };
+  } else {
+    // Order is pending, add to order book
+    order.status = "NEW";
+    order.timestamp = new Date();
+    this.orders.set(order.id, order);
+    
+    // Update order book
+    this.updateOrderBook();
+    
+    return { 
+      success: true, 
+      message: "Order added to order book" 
+    };
+  }
+}
 
   // Validate order before adding
   private validateOrder(order: Order): { valid: boolean; message: string } {

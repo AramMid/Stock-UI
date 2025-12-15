@@ -167,25 +167,24 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
   // Effect to initialize lots from existing positions
   useEffect(() => {
     if (loadingPositions || !positions) return;
-  
+
     // Clear existing lots and re-initialize when positions change
     lotsRef.current.clear();
-  
+
     console.log('[INIT] Initializing lots from positions:', positions);
-  
-    // Convert positions to lots (assuming average price of 10000 for initialization)
-    // In a real implementation, you would need to get the actual average price from the backend
-    positions.forEach((shares, symbol) => {
+
+    // Convert positions to lots (placeholder avg price)
+    positions.forEach((shares, sym) => {
       if (shares > 0) {
-        // Create a single lot with an estimated average price
-        const avgPrice = 10000; // Placeholder - you'd need to get this from backend
-        lotsRef.current.set(symbol, [{ qty: shares, price: avgPrice }]);
-        console.log('[INIT] Created lot for', symbol, ':', { qty: shares, price: avgPrice });
+        const avgPrice = 10000; // Placeholder
+        lotsRef.current.set(sym, [{ qty: shares, price: avgPrice }]);
+        console.log('[INIT] Created lot for', sym, ':', { qty: shares, price: avgPrice });
       }
     });
-  
+
     // Update P&L after initialization
     markToMarketAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [positions, loadingPositions]);
 
   // ✅ MarketSimulation chỉ dùng cho bot, KHÔNG đụng tới ohlcData / bid/ask
@@ -226,14 +225,13 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
       window.removeEventListener("toggleStrategyTesterFullscreen", handleToggleFullscreen);
     };
   }, [layoutManager, isPrivateMode]);
-  // ✅ Re-mark-to-market whenever latest chart price changes
-useEffect(() => {
-  if (!ohlcData?.close) return;
-  // mỗi khi chart close đổi => unrealized/equity update
-  markToMarketAll();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [ohlcData?.close]);
 
+  // ✅ Re-mark-to-market whenever latest chart price changes
+  useEffect(() => {
+    if (!ohlcData?.close) return;
+    markToMarketAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ohlcData?.close]);
 
   // Wrap price update for chart
   const handlePriceUpdate = useCallback(
@@ -278,20 +276,15 @@ useEffect(() => {
   const FEE_RATE = 0.0015; // 0.15%
   const TAX_RATE = 0.001; // 0.1% chỉ bán
 
-  function getLastPrice(symbol: string) {
-    // ✅ FIX: prefer per-symbol cache
-    const p = lastPriceBySymbolRef.current[symbol];
+  function getLastPrice(sym: string) {
+    const p = lastPriceBySymbolRef.current[sym];
     if (Number.isFinite(p) && p > 0) return p;
 
-    // fallback: if currently viewing this symbol, use OHLC close
-    if (symbol === selectedSymbol && ohlcData?.close != null) return Number(ohlcData.close);
-
-    // last fallback
+    if (sym === selectedSymbol && ohlcData?.close != null) return Number(ohlcData.close);
     return Number(lastPriceRef.current || 0);
   }
 
   function markToMarketAll() {
-    // Unrealized = sum( (lastPrice - lotPrice) * lotQty )
     let u = 0;
     for (const [sym, lots] of lotsRef.current.entries()) {
       const p = getLastPrice(sym);
@@ -301,13 +294,12 @@ useEffect(() => {
       }
     }
     setUnrealizedPnl(u);
-    
-    console.log('[P&L] markToMarketAll:', { 
+
+    console.log('[P&L] markToMarketAll:', {
       lots: Array.from(lotsRef.current.entries()),
       unrealized: u
     });
 
-    // Equity = cash + market value
     let mv = 0;
     for (const [sym, lots] of lotsRef.current.entries()) {
       const p = getLastPrice(sym);
@@ -318,7 +310,6 @@ useEffect(() => {
     setEquity(cash + mv);
   }
 
-  // ✅ Bid / Ask chỉ tính từ close của chart (ohlcData.close)
   // ✅ FIX: update per-symbol last price + mark-to-market when price changes
   useEffect(() => {
     if (!ohlcData?.close) return;
@@ -326,13 +317,6 @@ useEffect(() => {
     const closePrice = Number(ohlcData.close);
     lastPriceRef.current = closePrice;
 
-    console.log('[PRICE] Updating last price:', { 
-      symbol: selectedSymbol, 
-      closePrice,
-      previous: lastPriceBySymbolRef.current[selectedSymbol]
-    });
-
-    // ✅ store last price for this symbol
     lastPriceBySymbolRef.current[selectedSymbol] = closePrice;
 
     const bidPrice = closePrice - 100; // SELL
@@ -341,8 +325,8 @@ useEffect(() => {
     setBestBidPrice(bidPrice);
     setBestAskPrice(askPrice);
 
-    // ✅ IMPORTANT: update unrealized in realtime
     markToMarketAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ohlcData?.close, selectedSymbol]);
 
   function applyFillFIFO(params: {
@@ -351,23 +335,18 @@ useEffect(() => {
     qty: number;
     price: number;
   }) {
-    const { symbol, side, qty, price } = params;
+    const { symbol: sym, side, qty, price } = params;
     if (!Number.isFinite(price) || price <= 0 || qty <= 0) return;
 
-    const lots = lotsRef.current.get(symbol) ?? [];
-    
-    console.log('[P&L] applyFillFIFO input:', { symbol, side, qty, price });
+    const lots = lotsRef.current.get(sym) ?? [];
 
     if (side === "buy") {
-      // ✅ Add fee into cost basis
       const effectiveBuyPrice = price * (1 + FEE_RATE);
       lots.push({ qty, price: effectiveBuyPrice });
-      lotsRef.current.set(symbol, lots);
-      console.log('[P&L] Added buy lot:', { symbol, qty, price: effectiveBuyPrice, lots: [...lots] });
+      lotsRef.current.set(sym, lots);
       return;
     }
 
-    // ✅ SELL FIFO: realized = (sellNet - costBasis) for executed qty
     let remaining = qty;
     let cost = 0;
     let executed = 0;
@@ -385,8 +364,7 @@ useEffect(() => {
       if (lot.qty === 0) lots.shift();
     }
 
-    lotsRef.current.set(symbol, lots);
-
+    lotsRef.current.set(sym, lots);
     if (executed <= 0) return;
 
     const grossProceeds = executed * price;
@@ -395,18 +373,7 @@ useEffect(() => {
     const netProceeds = grossProceeds - sellFee - sellTax;
 
     const realized = netProceeds - cost;
-    setRealizedPnl((prev) => {
-      const newRealized = prev + realized;
-      console.log('[P&L] Updated realized P&L:', { 
-        prev, 
-        realized, 
-        newRealized,
-        executed,
-        cost,
-        netProceeds
-      });
-      return newRealized;
-    });
+    setRealizedPnl((prev) => prev + realized);
   }
 
   const isFinal = (s: string) =>
@@ -522,8 +489,36 @@ useEffect(() => {
     }
   }, [showOrderPanel]);
 
+  // ===============================
+  // ✅ ORDER SUBMIT (Market/Limit/Stop/StopLimit)
+  // ===============================
+  type UIOrderType = Order["orderType"]; // "Market" | "Limit" | "Stop" | "StopLimit"
+
+  function mapOrderTypeToApi(t: UIOrderType) {
+    switch (t) {
+      case "Market":
+        return "market";
+      case "Limit":
+        return "limit";
+      case "Stop":
+        return "stop";
+      case "StopLimit":
+        return "stop_limit";
+      default:
+        return "market";
+    }
+  }
+
   const handleOrderSubmit = useCallback(
-    (side: "buy" | "sell", quantity: number, price: number) => {
+    (
+      side: "buy" | "sell",
+      quantity: number,
+      price: number,
+      orderType?: UIOrderType,
+      stopPrice?: number,
+      limitPrice?: number
+    ) => {
+      const type: UIOrderType = orderType ?? "Market";
       const orderQuantities = splitOrderForExchangeLimit(quantity);
 
       const webSocketService = WebSocketService.getInstance();
@@ -532,13 +527,28 @@ useEffect(() => {
       orderQuantities.forEach((orderQty, index) => {
         const orderSymbol = selectedSymbol;
 
+        // Normalize price fields
+        const normalizedStopPrice =
+          type === "Stop" || type === "StopLimit" ? stopPrice : undefined;
+
+        const normalizedLimitPrice =
+          type === "StopLimit"
+            ? (Number.isFinite(limitPrice) && (limitPrice as number) > 0 ? (limitPrice as number) : price)
+            : price;
+
+        const normalizedPrice =
+          type === "Stop"
+            ? undefined // stop-market: no limit price
+            : normalizedLimitPrice;
+
         const order: Order = {
           id: `ORD${Date.now()}-${index}`,
           symbol: orderSymbol,
           type: side,
-          orderType: "Market",
+          orderType: type,
           quantity: orderQty,
-          price,
+          price: normalizedPrice,
+          stopPrice: normalizedStopPrice,
           status: "NEW",
           timestamp: new Date(),
         };
@@ -552,10 +562,10 @@ useEffect(() => {
 
           // --- Sync orderBookService ---
           orderBookService.updateOrder(update.orderId, {
-            status: update.status,
+            status: update.status as OrderStatus,
             filledPrice: update.filledPrice,
             filledQuantity: update.filledQuantity,
-          });
+          } as any);
 
           // --- Sync React state ---
           setOrders((prev) =>
@@ -563,7 +573,7 @@ useEffect(() => {
               o.id === update.orderId
                 ? {
                     ...o,
-                    status: update.status,
+                    status: update.status as any,
                     filledPrice: update.filledPrice,
                     filledQuantity: update.filledQuantity,
                   }
@@ -571,33 +581,8 @@ useEffect(() => {
             )
           );
 
-          // Update position on FILLED
-          if (upperStatus === "FILLED" && update.filledPrice != null) {
-            const filledQty = update.filledQuantity ?? orderQty;
-
-            const success =
-              side === "buy"
-                ? handleBuy(orderSymbol, filledQty, update.filledPrice)
-                : handleSell(orderSymbol, filledQty, update.filledPrice);
-
-            if (success) {
-              notificationService.showSuccess(
-                `Order ${update.orderId} filled successfully`
-              );
-              refreshUserData();
-              setTimeout(() => refreshWatchlistPositions(), 1000);
-            }
-          }
-
           // ✅ Apply P&L only for NEW delta filled qty
           const normalizedStatus = String(update.status).toUpperCase();
-
-          console.log('[WS] Order update received:', { 
-            orderId: update.orderId, 
-            status: normalizedStatus, 
-            filledQuantity: update.filledQuantity, 
-            filledPrice: update.filledPrice 
-          });
 
           const totalFilled =
             update.filledQuantity != null
@@ -609,31 +594,27 @@ useEffect(() => {
           const prevApplied = appliedFilledQtyRef.current[update.orderId] ?? 0;
           const deltaQty = totalFilled - prevApplied;
 
-          console.log('[WS] Quantity calculation:', { 
-            totalFilled, 
-            prevApplied, 
-            deltaQty 
-          });
-
           if (deltaQty > 0 && update.filledPrice != null) {
             appliedFilledQtyRef.current[update.orderId] = totalFilled;
 
-            console.log('[WS] Applying fill FIFO:', { 
-              symbol: orderSymbol, 
-              side, 
-              qty: deltaQty, 
-              price: Number(update.filledPrice) 
-            });
-
             applyFillFIFO({
-              symbol: orderSymbol, // ✅ FIX
+              symbol: orderSymbol,
               side,
               qty: deltaQty,
               price: Number(update.filledPrice),
             });
 
-            // ensure we have last price for this symbol (if currently selected, already updated by OHLC)
-            // and recalc unrealized
+            // Update position (only when actually filled)
+            const success =
+              side === "buy"
+                ? handleBuy(orderSymbol, deltaQty, Number(update.filledPrice))
+                : handleSell(orderSymbol, deltaQty, Number(update.filledPrice));
+
+            if (success) {
+              refreshUserData();
+              setTimeout(() => refreshWatchlistPositions(), 600);
+            }
+
             markToMarketAll();
           }
 
@@ -654,11 +635,11 @@ useEffect(() => {
                     stockSymbol: orderSymbol,
                     side,
                     quantity: orderQty,
-                    orderType: "market",
-                    price,
+                    orderType: mapOrderTypeToApi(type) as any,
+                    price: normalizedPrice ?? price, // fallback
                     status: dbStatus,
                     filledQuantity: update.filledQuantity ?? undefined,
-                    filledPrice: update.filledPrice ?? price,
+                    filledPrice: update.filledPrice ?? (normalizedPrice ?? price),
                     commission: 0,
                     filledAt: new Date().toISOString(),
                   };
@@ -961,16 +942,42 @@ useEffect(() => {
                     symbol={selectedSymbol}
                     currentPrice={ohlcData?.close || lastPriceRef.current}
                     onClose={handleCloseOrderPanel}
-                    onBuy={(quantity: number, price: number) =>
-                      handleOrderSubmit("buy", quantity, price)
-                    }
-                    onSell={(quantity: number, price: number) =>
-                      handleOrderSubmit("sell", quantity, price)
-                    }
                     isDarkMode={isDarkMode}
-                    side={orderPanelSide}
-                    onSideChange={setOrderPanelSide}
-                  />
+  side={orderPanelSide}
+  onSideChange={setOrderPanelSide}
+
+  // ✅ SỬA LẠI ĐOẠN NÀY ĐỂ KHỚP THAM SỐ
+  // OrderPanel gửi ra: (quantity, orderType, opts)
+  onBuy={(qty, type, opts) => {
+    // Lấy giá từ opts.limitPrice (đã được xử lý an toàn ở con)
+    const effectivePrice = opts?.limitPrice || 0;
+    const effectiveStop = opts?.stopPrice;
+
+    // Gọi hàm submit của Page với đúng thứ tự nó mong đợi
+    handleOrderSubmit(
+      "buy",           // side
+      qty,             // quantity
+      effectivePrice,  // price (dùng limitPrice làm giá chính)
+      type,            // orderType
+      effectiveStop,   // stopPrice
+      effectivePrice   // limitPrice
+    );
+  }}
+
+  onSell={(qty, type, opts) => {
+    const effectivePrice = opts?.limitPrice || 0;
+    const effectiveStop = opts?.stopPrice;
+
+    handleOrderSubmit(
+      "sell",
+      qty,
+      effectivePrice,
+      type,
+      effectiveStop,
+      effectivePrice
+    );
+  }}
+/>
                 </div>
 
                 <ResizableDivider
