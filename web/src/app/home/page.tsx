@@ -1,5 +1,5 @@
 "use client";
-import { useRef, useState, useCallback, useEffect } from "react";
+import { useRef, useState, useCallback, useEffect, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { Timeframe } from "@/lib/types";
 import { useChart } from "@/lib/hooks/useChart";
@@ -38,6 +38,8 @@ import {
   getOrders,
 } from "@/lib/services/orderApiService";
 
+import { useWatchlistPositions } from "@/lib/hooks/useWatchlistPositions";
+
 interface TradingPageProps {
   symbol?: string;
 }
@@ -75,7 +77,11 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
   >("candlestick");
   const [showRSI, setShowRSI] = useState(false);
   const [showMACD, setShowMACD] = useState(false);
+
   const lastPriceRef = useRef(0);
+  // ✅ FIX: store last price per symbol so unrealized can update correctly
+  const lastPriceBySymbolRef = useRef<Record<string, number>>({});
+
   const [chartData, setChartData] = useState<{ time: number; value: number }[]>(
     []
   );
@@ -106,6 +112,24 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
   // Orders state
   const [orders, setOrders] = useState<Order[]>([]);
 
+  // ===== Orders refs (tránh stale closure) =====
+  const ordersRef = useRef<Order[]>([]);
+  useEffect(() => {
+    ordersRef.current = orders;
+  }, [orders]);
+
+  // ===== Prevent double-apply filled qty (WS có thể bắn nhiều lần) =====
+  const appliedFilledQtyRef = useRef<Record<string, number>>({});
+
+  // ===== Ledger để tính cost-basis & realized PnL theo FIFO =====
+  type Lot = { qty: number; price: number };
+  const lotsRef = useRef<Map<string, Lot[]>>(new Map()); // key = symbol
+
+  // ===== P&L state =====
+  const [realizedPnl, setRealizedPnl] = useState(0);
+  const [unrealizedPnl, setUnrealizedPnl] = useState(0);
+  const [equity, setEquity] = useState(0);
+
   // Market simulation
   const {
     tradingPosition,
@@ -122,63 +146,33 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
   const layoutManager = useLayoutManager();
   const isDarkMode = true;
 
-  // Reactive positions map for watchlist
-  const [positionsMap, setPositionsMap] = useState<Map<string, number>>(
-    new Map()
-  );
-  const previousPositionsRef = useRef<{ symbol: string; position: number }[]>(
+  // Watchlist symbols
+  const watchlistStocks = useMemo(
+    () => ["VIC.VN", "VHM.VN", "VCB.VN", "TCB.VN", "FPT.VN", "VNM.VN", "HPG.VN", "MSN.VN"],
     []
   );
 
-  // Update positions map when trading positions change
+  // Use the new watchlist positions hook
+  const { positions, refreshWatchlistPositions, loadingPositions } =
+    useWatchlistPositions(watchlistStocks);
+
+  // Effect to refresh positions on mount
   useEffect(() => {
-    const currentPositions = getAllPositions();
-    const newPositionsMap = new Map<string, number>();
-
-    currentPositions.forEach((position) => {
-      newPositionsMap.set(position.symbol, position.position);
-    });
-
-    const previousPositions = previousPositionsRef.current;
-
-    if (previousPositions.length !== currentPositions.length) {
-      setPositionsMap(newPositionsMap);
-      previousPositionsRef.current = currentPositions;
-      return;
-    }
-
-    let hasChanged = false;
-    for (let i = 0; i < currentPositions.length; i++) {
-      const currentPos = currentPositions[i];
-      const previousPos = previousPositions[i];
-
-      if (
-        currentPos.symbol !== previousPos.symbol ||
-        currentPos.position !== previousPos.position
-      ) {
-        hasChanged = true;
-        break;
-      }
-    }
-
-    if (hasChanged) {
-      setPositionsMap(newPositionsMap);
-      previousPositionsRef.current = currentPositions;
-    }
-  }); // intentionally no deps → check on each render but only set when changed
+    const timer = setTimeout(() => {
+      refreshWatchlistPositions();
+    }, 100);
+    return () => clearTimeout(timer);
+  }, [refreshWatchlistPositions]);
 
   // ✅ MarketSimulation chỉ dùng cho bot, KHÔNG đụng tới ohlcData / bid/ask
   useEffect(() => {
     marketSimulationRef.current = new MarketSimulationService();
 
-    marketSimulationRef.current.startSimulation(
-      (data: SimulatedMarketData) => {
-        if (data.symbol === selectedSymbol) {
-          // chỉ update giá cho tradingPosition / bot
-          updateLastPrice(data.symbol, data.price);
-        }
+    marketSimulationRef.current.startSimulation((data: SimulatedMarketData) => {
+      if (data.symbol === selectedSymbol) {
+        updateLastPrice(data.symbol, data.price);
       }
-    );
+    });
 
     return () => {
       marketSimulationRef.current?.stopSimulation();
@@ -203,17 +197,19 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
       }
     };
 
-    window.addEventListener(
-      "toggleStrategyTesterFullscreen",
-      handleToggleFullscreen
-    );
+    window.addEventListener("toggleStrategyTesterFullscreen", handleToggleFullscreen);
     return () => {
-      window.removeEventListener(
-        "toggleStrategyTesterFullscreen",
-        handleToggleFullscreen
-      );
+      window.removeEventListener("toggleStrategyTesterFullscreen", handleToggleFullscreen);
     };
   }, [layoutManager, isPrivateMode]);
+  // ✅ Re-mark-to-market whenever latest chart price changes
+useEffect(() => {
+  if (!ohlcData?.close) return;
+  // mỗi khi chart close đổi => unrealized/equity update
+  markToMarketAll();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [ohlcData?.close]);
+
 
   // Wrap price update for chart
   const handlePriceUpdate = useCallback(
@@ -245,20 +241,6 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
     },
   });
 
-  // ✅ Bid / Ask chỉ tính từ close của chart (ohlcData.close)
-  useEffect(() => {
-    if (!ohlcData?.close) return;
-
-    const closePrice = ohlcData.close;
-    lastPriceRef.current = closePrice;
-
-    const bidPrice = closePrice - 100; // SELL
-    const askPrice = closePrice + 100; // BUY
-
-    setBestBidPrice(bidPrice);
-    setBestAskPrice(askPrice);
-  }, [ohlcData?.close]);
-
   const drawing = chartResult?.drawing || {
     isEnabled: false,
     isDrawing: false,
@@ -268,6 +250,168 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
     clearAll: () => {},
     undo: () => {},
   };
+
+  const FEE_RATE = 0.0015; // 0.15%
+  const TAX_RATE = 0.001; // 0.1% chỉ bán
+
+  function getLastPrice(symbol: string) {
+    // ✅ FIX: prefer per-symbol cache
+    const p = lastPriceBySymbolRef.current[symbol];
+    if (Number.isFinite(p) && p > 0) return p;
+
+    // fallback: if currently viewing this symbol, use OHLC close
+    if (symbol === selectedSymbol && ohlcData?.close != null) return Number(ohlcData.close);
+
+    // last fallback
+    return Number(lastPriceRef.current || 0);
+  }
+
+  function markToMarketAll() {
+    // Unrealized = sum( (lastPrice - lotPrice) * lotQty )
+    let u = 0;
+    for (const [sym, lots] of lotsRef.current.entries()) {
+      const p = getLastPrice(sym);
+      if (!Number.isFinite(p) || p <= 0) continue;
+      for (const lot of lots) {
+        u += (p - lot.price) * lot.qty;
+      }
+    }
+    setUnrealizedPnl(u);
+
+    // Equity = cash + market value
+    let mv = 0;
+    for (const [sym, lots] of lotsRef.current.entries()) {
+      const p = getLastPrice(sym);
+      if (!Number.isFinite(p) || p <= 0) continue;
+      for (const lot of lots) mv += p * lot.qty;
+    }
+    const cash = Number(userBalance?.balance?.availableBalance ?? 0);
+    setEquity(cash + mv);
+  }
+
+  // ✅ Bid / Ask chỉ tính từ close của chart (ohlcData.close)
+  // ✅ FIX: update per-symbol last price + mark-to-market when price changes
+  useEffect(() => {
+    if (!ohlcData?.close) return;
+
+    const closePrice = Number(ohlcData.close);
+    lastPriceRef.current = closePrice;
+
+    // ✅ store last price for this symbol
+    lastPriceBySymbolRef.current[selectedSymbol] = closePrice;
+
+    const bidPrice = closePrice - 100; // SELL
+    const askPrice = closePrice + 100; // BUY
+
+    setBestBidPrice(bidPrice);
+    setBestAskPrice(askPrice);
+
+    // ✅ IMPORTANT: update unrealized in realtime
+    markToMarketAll();
+  }, [ohlcData?.close, selectedSymbol]);
+
+  function applyFillFIFO(params: {
+    symbol: string;
+    side: "buy" | "sell";
+    qty: number;
+    price: number;
+  }) {
+    const { symbol, side, qty, price } = params;
+    if (!Number.isFinite(price) || price <= 0 || qty <= 0) return;
+
+    const lots = lotsRef.current.get(symbol) ?? [];
+
+    if (side === "buy") {
+      // ✅ Add fee into cost basis
+      const effectiveBuyPrice = price * (1 + FEE_RATE);
+      lots.push({ qty, price: effectiveBuyPrice });
+      lotsRef.current.set(symbol, lots);
+      return;
+    }
+
+    // ✅ SELL FIFO: realized = (sellNet - costBasis) for executed qty
+    let remaining = qty;
+    let cost = 0;
+    let executed = 0;
+
+    while (remaining > 0 && lots.length > 0) {
+      const lot = lots[0];
+      const used = Math.min(remaining, lot.qty);
+
+      cost += used * lot.price;
+      executed += used;
+
+      lot.qty -= used;
+      remaining -= used;
+
+      if (lot.qty === 0) lots.shift();
+    }
+
+    lotsRef.current.set(symbol, lots);
+
+    if (executed <= 0) return;
+
+    const grossProceeds = executed * price;
+    const sellFee = grossProceeds * FEE_RATE;
+    const sellTax = grossProceeds * TAX_RATE;
+    const netProceeds = grossProceeds - sellFee - sellTax;
+
+    const realized = netProceeds - cost;
+    setRealizedPnl((prev) => prev + realized);
+  }
+
+  const isFinal = (s: string) =>
+    ["FILLED", "REJECTED", "CANCELED"].includes(String(s).toUpperCase());
+
+  const handleTimeframeChange = useCallback((newTimeframe: Timeframe) => {
+    setTimeframe(newTimeframe);
+  }, []);
+
+  const handleSymbolChange = useCallback((newSymbol: string) => {
+    setSelectedSymbol(newSymbol);
+  }, []);
+
+  const handleScreenshot = useCallback(async () => {
+    console.log("Screenshot functionality not implemented yet");
+  }, [selectedSymbol, timeframe]);
+
+  const handleToolSelect = useCallback(
+    (toolId: string) => {
+      if (toolId === "trendline") {
+        const newDrawingState = !enableTrendlineDrawing;
+        setEnableTrendlineDrawing(newDrawingState);
+        setEnableBrushDrawing(false);
+
+        if (newDrawingState && drawing.startDrawing) {
+          drawing.startDrawing();
+        } else if (!newDrawingState && drawing.cancelDrawing) {
+          drawing.cancelDrawing();
+        }
+      } else if (toolId === "brush") {
+        const newBrushState = !enableBrushDrawing;
+        setEnableBrushDrawing(newBrushState);
+        setEnableTrendlineDrawing(false);
+      } else {
+        setEnableTrendlineDrawing(false);
+        setEnableBrushDrawing(false);
+      }
+
+      setActiveTool(toolId as Parameters<typeof setActiveTool>[0]);
+    },
+    [enableTrendlineDrawing, enableBrushDrawing, drawing, setActiveTool]
+  );
+
+  const handleGroupToggle = useCallback((groupId: string) => {
+    console.log("Group toggled:", groupId);
+  }, []);
+
+  const handleMenuOpen = useCallback(() => {
+    console.log("Menu opened");
+  }, []);
+
+  const handleCloseOrderPanel = useCallback(() => {
+    setShowOrderPanel(false);
+  }, []);
 
   // Resize handling
   useEffect(() => {
@@ -306,8 +450,7 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
         const container = layoutManager.rightSectionRef.current;
         if (container) {
           const containerHeight = container.clientHeight;
-          const availableHeight =
-            containerHeight - 12 - 12 - 12 - 12; // 4 dividers
+          const availableHeight = containerHeight - 12 - 12 - 12 - 12;
           const estimatedOrderHeight = availableHeight * 0.75;
           layoutManager.handleOrderPanelResize(estimatedOrderHeight);
         }
@@ -330,91 +473,44 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
     }
   }, [showOrderPanel]);
 
-  // Handlers
-  const handleTimeframeChange = useCallback((newTimeframe: Timeframe) => {
-    setTimeframe(newTimeframe);
-  }, []);
-
-  const handleSymbolChange = useCallback((newSymbol: string) => {
-    setSelectedSymbol(newSymbol);
-  }, []);
-
-  const handleScreenshot = useCallback(async () => {
-    console.log("Screenshot functionality not implemented yet");
-  }, [selectedSymbol, timeframe]);
-
-  const handleToolSelect = useCallback(
-    (toolId: string) => {
-      console.log("Selected tool:", toolId);
-
-      if (toolId === "trendline") {
-        const newDrawingState = !enableTrendlineDrawing;
-        setEnableTrendlineDrawing(newDrawingState);
-        setEnableBrushDrawing(false);
-
-        if (newDrawingState && drawing.startDrawing) {
-          drawing.startDrawing();
-        } else if (!newDrawingState && drawing.cancelDrawing) {
-          drawing.cancelDrawing();
-        }
-      } else if (toolId === "brush") {
-        const newBrushState = !enableBrushDrawing;
-        setEnableBrushDrawing(newBrushState);
-        setEnableTrendlineDrawing(false);
-      } else {
-        setEnableTrendlineDrawing(false);
-        setEnableBrushDrawing(false);
-      }
-
-      setActiveTool(toolId as Parameters<typeof setActiveTool>[0]);
-    },
-    [enableTrendlineDrawing, enableBrushDrawing, drawing, setActiveTool]
-  );
-
-  const handleGroupToggle = useCallback((groupId: string) => {
-    console.log("Group toggled:", groupId);
-  }, []);
-
-  const handleMenuOpen = useCallback(() => {
-    console.log("Menu opened");
-  }, []);
-
-  const handleCloseOrderPanel = useCallback(() => {
-    setShowOrderPanel(false);
-  }, []);
-
   const handleOrderSubmit = useCallback(
     (side: "buy" | "sell", quantity: number, price: number) => {
-      console.log(`Order submitted: ${side} ${quantity} shares at ${price}`);
-
       const orderQuantities = splitOrderForExchangeLimit(quantity);
 
+      const webSocketService = WebSocketService.getInstance();
+      const notificationService = NotificationService.getInstance();
+
       orderQuantities.forEach((orderQty, index) => {
+        const orderSymbol = selectedSymbol;
+
         const order: Order = {
           id: `ORD${Date.now()}-${index}`,
-          symbol: selectedSymbol,
+          symbol: orderSymbol,
           type: side,
           orderType: "Market",
           quantity: orderQty,
-          price: price,
+          price,
           status: "NEW",
           timestamp: new Date(),
         };
 
-        orderBookService.addOrder(order);
+        // 1) Add to UI first
+        setOrders((prev) => [order, ...prev]);
 
-        const webSocketService = WebSocketService.getInstance();
-        const notificationService = NotificationService.getInstance();
+        // 2) Subscribe BEFORE sending
+        const unsubscribe = webSocketService.subscribe(order.id, (update) => {
+          const upperStatus = String(update.status).toUpperCase();
 
-        webSocketService.subscribe(order.id, (update) => {
+          // --- Sync orderBookService ---
           orderBookService.updateOrder(update.orderId, {
             status: update.status,
             filledPrice: update.filledPrice,
             filledQuantity: update.filledQuantity,
           });
 
-          setOrders((prevOrders) =>
-            prevOrders.map((o) =>
+          // --- Sync React state ---
+          setOrders((prev) =>
+            prev.map((o) =>
               o.id === update.orderId
                 ? {
                     ...o,
@@ -426,153 +522,110 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
             )
           );
 
-          let localStatus: OrderStatus | "pending" | "partial" = "pending";
-          if (
-            update.filledQuantity !== undefined &&
-            update.filledQuantity === orderQty
-          ) {
-            localStatus = "FILLED";
-          } else if (
-            update.filledQuantity !== undefined &&
-            update.filledQuantity > 0 &&
-            update.filledQuantity < orderQty
-          ) {
-            localStatus = "partial";
-          } else if (update.status === "CANCELED") {
-            localStatus = "CANCELED";
-          }
+          // Update position on FILLED
+          if (upperStatus === "FILLED" && update.filledPrice != null) {
+            const filledQty = update.filledQuantity ?? orderQty;
 
-          if (localStatus === "FILLED" && update.filledPrice) {
-            let success = false;
-            if (side === "buy") {
-              success = handleBuy(
-                selectedSymbol,
-                update.filledQuantity || quantity,
-                update.filledPrice
-              );
-            } else {
-              success = handleSell(
-                selectedSymbol,
-                update.filledQuantity || quantity,
-                update.filledPrice
-              );
-            }
+            const success =
+              side === "buy"
+                ? handleBuy(orderSymbol, filledQty, update.filledPrice)
+                : handleSell(orderSymbol, filledQty, update.filledPrice);
 
             if (success) {
               notificationService.showSuccess(
-                `Order ${update.orderId} filled successfully!`
+                `Order ${update.orderId} filled successfully`
               );
               refreshUserData();
+              setTimeout(() => refreshWatchlistPositions(), 1000);
             }
           }
 
-          if (
-            update.status === "FILLED" ||
-            update.status === "REJECTED" ||
-            update.status === "CANCELED"
-          ) {
-            const hasCalledApi = sessionStorage.getItem(
-              `order_api_called_${order.id}`
-            );
-            if (!hasCalledApi) {
-              sessionStorage.setItem(`order_api_called_${order.id}`, "true");
+          // ✅ Apply P&L only for NEW delta filled qty
+          const normalizedStatus = String(update.status).toUpperCase();
 
-              let dbStatus: string | null = null;
-              if (update.status === "FILLED") dbStatus = "filled";
-              else if (update.status === "CANCELED") dbStatus = "cancelled";
-              else if (update.status === "REJECTED") dbStatus = "cancelled";
+          const totalFilled =
+            update.filledQuantity != null
+              ? Number(update.filledQuantity)
+              : normalizedStatus === "FILLED"
+              ? orderQty
+              : 0;
 
-              if (dbStatus === null) {
-                console.warn(
-                  "Unexpected status received, not saving to database:",
-                  update.status
-                );
-                return;
+          const prevApplied = appliedFilledQtyRef.current[update.orderId] ?? 0;
+          const deltaQty = totalFilled - prevApplied;
+
+          if (deltaQty > 0 && update.filledPrice != null) {
+            appliedFilledQtyRef.current[update.orderId] = totalFilled;
+
+            applyFillFIFO({
+              symbol: orderSymbol, // ✅ FIX
+              side,
+              qty: deltaQty,
+              price: Number(update.filledPrice),
+            });
+
+            // ensure we have last price for this symbol (if currently selected, already updated by OHLC)
+            // and recalc unrealized
+            markToMarketAll();
+          }
+
+          // Final status → sync backend 1 lần + unsubscribe
+          if (isFinal(upperStatus)) {
+            try {
+              const calledKey = `order_api_called_${order.id}`;
+              if (!sessionStorage.getItem(calledKey)) {
+                sessionStorage.setItem(calledKey, "true");
+
+                let dbStatus: "filled" | "cancelled" | null = null;
+                if (upperStatus === "FILLED") dbStatus = "filled";
+                if (upperStatus === "REJECTED" || upperStatus === "CANCELED")
+                  dbStatus = "cancelled";
+
+                if (dbStatus) {
+                  const payload: CreateOrderDto = {
+                    stockSymbol: orderSymbol,
+                    side,
+                    quantity: orderQty,
+                    orderType: "market",
+                    price,
+                    status: dbStatus,
+                    filledQuantity: update.filledQuantity ?? undefined,
+                    filledPrice: update.filledPrice ?? price,
+                    commission: 0,
+                    filledAt: new Date().toISOString(),
+                  };
+
+                  createOrder(payload)
+                    .then(() => {
+                      refreshUserData();
+                      setTimeout(() => refreshWatchlistPositions(), 600);
+                    })
+                    .catch((err) => console.error("[OrderSync] Error:", err));
+                }
               }
-
-              const payload: CreateOrderDto = {
-                stockSymbol: selectedSymbol,
-                side: side,
-                quantity: orderQty,
-                orderType: order.orderType?.toLowerCase() ?? "limit",
-                price: price !== undefined ? price : undefined,
-                status: dbStatus,
-                filledQuantity: order.filledQuantity ?? undefined,
-                filledPrice: order.filledPrice ?? price ?? undefined,
-                commission: 0,
-                filledAt:
-                  (order as unknown as { filledAt?: Date }).filledAt
-                    ?.toISOString?.() ??
-                  order.timestamp?.toISOString?.() ??
-                  new Date().toISOString(),
-              };
-
-              console.log(
-                "[OrderSync] Sending payload to backend:",
-                JSON.stringify(payload, null, 2)
-              );
-
-              createOrder(payload)
-                .then((response) => {
-                  console.log(
-                    "Order saved to database with status:",
-                    dbStatus,
-                    response
-                  );
-                  refreshUserData();
-                })
-                .catch((error) => {
-                  console.error("Error saving order to database:", error);
-                  console.error(
-                    "[OrderSync] Payload that caused error:",
-                    JSON.stringify(payload, null, 2)
-                  );
-                });
+            } finally {
+              unsubscribe?.();
             }
           }
         });
 
-        if (marketSimulationRef.current) {
-          marketSimulationRef.current.processUserOrder(order);
-        }
+        // 3) Send order into the engine
+        orderBookService.addOrder(order);
 
-        orderBookService.updateOrder(order.id, {
-          status: "NEW",
-        });
-
-        const updatedOrder: Order = {
-          ...order,
-          orderType: "Market",
-          status: "NEW",
-          filledPrice: undefined,
-          filledQuantity: undefined,
-        };
-
-        setTimeout(() => {
-          orderBookService.updateOrder(order.id, {
-            status: "PARTIALLY_FILLED",
-          });
-
-          setOrders((prevOrders) =>
-            prevOrders.map((o) =>
-              o.id === order.id ? { ...o, status: "PARTIALLY_FILLED" } : o
-            )
-          );
-        }, 1000);
-
-        setOrders((prevOrders) => [updatedOrder, ...prevOrders]);
-
-        // FIX: Removed redeclaration 'const notificationService'.
-        // It uses the instance declared at the top of the forEach loop.
         notificationService.showSuccess(
-          `Order submitted. Waiting for status update from server.`,
-          5000
+          "Order submitted. Waiting for execution...",
+          3000
         );
       });
 
       setShowOrderPanel(false);
     },
-    [handleBuy, handleSell, selectedSymbol, tradingPosition]
+    [
+      selectedSymbol,
+      handleBuy,
+      handleSell,
+      refreshUserData,
+      refreshWatchlistPositions,
+    ]
   );
 
   const handleBuyClick = useCallback(() => {
@@ -587,7 +640,6 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
 
   return (
     <div className="h-screen flex flex-col transition-colors duration-200 bg-[#131722]">
-      {/* Top Navigation */}
       <TopNavigation
         symbol={selectedSymbol}
         timeframe={timeframe}
@@ -604,28 +656,23 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
         onTogglePrivateMode={() => setIsPrivateMode(!isPrivateMode)}
       />
 
-      {/* Stock Info Bar */}
       <StockInfoBar
         symbol={selectedSymbol}
         ohlcData={ohlcData}
         isDarkMode={isDarkMode}
       />
 
-      {/* Main Content */}
       <div className="flex-1 flex relative overflow-hidden">
-        {/* Left Sidebar */}
         <LeftSidebar
           onToolSelect={handleToolSelect}
           onGroupToggle={handleGroupToggle}
           onMenuOpen={handleMenuOpen}
         />
 
-        {/* Main Grid */}
         <div
           ref={layoutManager.mainContainerRef}
           className="flex-1 flex gap-2 p-2"
         >
-          {/* Left Column: Chart + Account/Strategy */}
           <div
             ref={layoutManager.leftColumnRef}
             className="grid gap-2 transition-none relative"
@@ -636,7 +683,6 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
               }fr`,
             }}
           >
-            {/* Chart Panel */}
             <ChartSection
               containerRef={containerRef}
               ohlcData={ohlcData}
@@ -675,7 +721,6 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
               bestAskPrice={bestAskPrice}
             />
 
-            {/* Divider between chart and account/strategy */}
             <ResizableDivider
               isVertical={true}
               isDragging={layoutManager.chartAccountLayout.isDragging}
@@ -692,7 +737,6 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
               isDarkMode={isDarkMode}
             />
 
-            {/* Account / Strategy section */}
             {isPrivateMode ? (
               <div
                 className="border rounded overflow-hidden relative flex flex-col transition-colors duration-200"
@@ -769,11 +813,12 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
                     ? `${userDetail.first_name} ${userDetail.last_name}`
                     : userDetail?.email?.split("@")[0] || "User"
                 }
+                realizedPnl={realizedPnl}
+                unrealizedPnl={unrealizedPnl}
               />
             )}
           </div>
 
-          {/* Vertical divider between left & right sections */}
           <ResizableDivider
             isVertical={false}
             isDragging={layoutManager.horizontalLayout.isDragging}
@@ -786,7 +831,6 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
             isDarkMode={isDarkMode}
           />
 
-          {/* Right Column */}
           <div
             ref={layoutManager.rightSectionRef}
             className="grid gap-2 transition-none"
@@ -819,19 +863,17 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
                   )}fr`,
             }}
           >
-            {/* Watchlist */}
             <div className="rounded-lg overflow-hidden bg-[#131722] h-full">
               <WatchlistSection
                 selectedSymbol={selectedSymbol}
                 onSymbolSelect={handleSymbolChange}
                 isDarkMode={isDarkMode}
-                positions={positionsMap}
+                positions={positions}
                 isPrivateMode={isPrivateMode}
                 marketSimulation={marketSimulationRef.current || undefined}
               />
             </div>
 
-            {/* Divider Watchlist / below */}
             <ResizableDivider
               isVertical={true}
               isDragging={layoutManager.watchlistLayout.isDragging}
@@ -843,7 +885,6 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
               isDarkMode={isDarkMode}
             />
 
-            {/* Order Panel (optional) */}
             {showOrderPanel && (
               <>
                 <div className="rounded-lg overflow-hidden bg-[#131722] h-full">
@@ -901,10 +942,7 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
 
                     const handleMouseUp = () => {
                       setIsOrderPanelDragging(false);
-                      document.removeEventListener(
-                        "mousemove",
-                        handleMouseMove
-                      );
+                      document.removeEventListener("mousemove", handleMouseMove);
                       document.removeEventListener("mouseup", handleMouseUp);
                       document.body.style.cursor = "";
                       document.body.style.userSelect = "";
@@ -916,21 +954,16 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
                     document.addEventListener("mouseup", handleMouseUp);
                   }}
                   title="Drag to resize order panel"
-                  splitPercentage={0} // Not used for fixed height panels usually, or irrelevant here
+                  splitPercentage={0}
                   isDarkMode={isDarkMode}
                 />
               </>
             )}
 
-            {/* Stock Info Section */}
             <div className="rounded-lg overflow-hidden bg-[#131722] h-full">
-              <StockInfoSection
-                selectedSymbol={selectedSymbol}
-                isDarkMode={isDarkMode}
-              />
+              <StockInfoSection selectedSymbol={selectedSymbol} isDarkMode={isDarkMode} />
             </div>
 
-            {/* Divider Stock Info / News */}
             <ResizableDivider
               isVertical={true}
               isDragging={layoutManager.stockInfoLayout.isDragging}
@@ -942,7 +975,6 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
               isDarkMode={isDarkMode}
             />
 
-            {/* News Section */}
             <div className="rounded-lg overflow-hidden bg-[#131722] h-full">
               <NewsSection isDarkMode={isDarkMode} />
             </div>

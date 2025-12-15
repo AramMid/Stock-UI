@@ -102,7 +102,7 @@ export default function RightSidebar({
       <div
         key={item.symbol}
         onClick={() => onSymbolSelect(item.symbol)}
-        className={`grid grid-cols-6 gap-2 px-3 py-2 cursor-pointer transition-colors text-xs ${
+        className={`grid grid-cols-7 gap-2 px-3 py-2 cursor-pointer transition-colors text-xs ${
           isDarkMode ? "hover:bg-[#1e222d]" : "hover:bg-gray-50"
         } ${
           selectedSymbol === item.symbol
@@ -139,7 +139,7 @@ export default function RightSidebar({
             isDarkMode ? "text-white" : "text-gray-900"
           }`}
         >
-          {item.position !== undefined && item.position > 0 ? item.position : "-"}
+          {item.position !== undefined ? item.position : 0}
         </div>
 
         {/* Price */}
@@ -155,7 +155,7 @@ export default function RightSidebar({
 
         {/* Change */}
         <div
-          className={`text-right font-mono ${
+          className={`text-right font-mono col-span-2 ${
             item.change >= 0 ? "text-green-400" : "text-red-400"
           }`}
         >
@@ -194,9 +194,9 @@ export default function RightSidebar({
             : ""
         }`}
       >
-        <div className="grid grid-cols-12 gap-2">
+        <div className="grid grid-cols-7 gap-2">
           {/* Symbol with flag/icon and position */}
-          <div className="col-span-3 flex items-center space-x-1">
+          <div className="col-span-4 flex items-center space-x-1">
             {item.category === "STOCKS" && (
               <div className="w-3 h-3 rounded bg-blue-500 flex items-center justify-center text-[8px] font-bold text-white">
                 {item.symbol.charAt(0)}
@@ -215,16 +215,14 @@ export default function RightSidebar({
               >
                 {item.symbol}
               </span>
-              {item.position !== undefined && item.position > 0 && (
-                <span className="text-xs text-gray-500">
-                  Pos: {item.position}
-                </span>
-              )}
+              <span className="text-xs text-gray-500">
+                Shares: {item.position !== undefined ? item.position : 0}
+              </span>
             </div>
           </div>
 
           {/* Price and Change */}
-          <div className="col-span-5">
+          <div className="col-span-3">
             <div className="flex items-center justify-between">
               <span
                 className={`font-mono transition-colors duration-200 ${
@@ -250,8 +248,6 @@ export default function RightSidebar({
               </span>
             </div>
           </div>
-
-          {/* Price Bands for Stocks - REMOVED as per user request to avoid static data */}
         </div>
       </div>
     ));
@@ -342,10 +338,12 @@ export default function RightSidebar({
           isDarkMode ? "border-[#2a2e39]" : "border-gray-200"
         }`}
       >
-        <div className="grid grid-cols-12 gap-2 text-xs">
-          <div className="col-span-3 font-medium">Symbol</div>
-          <div className="col-span-5 font-medium">Price</div>
-          <div className="col-span-4 font-medium text-right">Bands</div>
+        <div className="grid grid-cols-7 gap-2 text-xs">
+          <div className="col-span-2 font-medium">Symbol</div>
+          <div className="font-medium text-right">Shares</div>
+          <div className="font-medium text-right pr-4">Price</div>
+          <div className="col-span-2 font-medium text-right">Change</div>
+          <div className="font-medium text-right">%</div>
         </div>
       </div>
 

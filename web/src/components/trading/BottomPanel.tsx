@@ -351,9 +351,9 @@ export default function BottomPanel({
                     <td className="py-3 px-4">
                       <span
                         className={`px-2.5 py-1 rounded text-xs font-medium ${
-                          order.status === "Filled"
+                          order.status === "FILLED"
                             ? "bg-green-900/30 text-green-400"
-                            : order.status === "Pending"
+                            : order.status === "PENDING"
                             ? "bg-yellow-900/30 text-yellow-400"
                             : "bg-red-900/30 text-red-400"
                         }`}
@@ -457,7 +457,7 @@ export default function BottomPanel({
                           <span
                             className={`px-2.5 py-1 rounded text-xs font-medium ${
                               order.status === "NEW" ||
-                              order.status === "PENDING"
+                              order.status === "PARTIALLY_FILLED"
                                 ? "bg-yellow-900/30 text-yellow-400"
                                 : order.status === "FILLED"
                                 ? "bg-green-900/30 text-green-400"

@@ -227,7 +227,7 @@ const PARAMS = {
   TREND_DURATION_MIN_BOT: 5 * 60 * 1000,
   TREND_DURATION_MAX_BOT: 30 * 60 * 1000,
   TREND_IMPACT: 0.008,
-  TREND_FOLLOWER_STOP_LOSS: 0.015,
+  TREND_FOLLOWER_STOP_LOSS: 0.025, // Increased from 0.015 to be less aggressive
   TREND_FOLLOWER_TAKE_PROFIT: 0.025,
   
   MOMENTUM_WAVE_PROBABILITY: 0.35,
@@ -312,7 +312,7 @@ export class MarketSimulationService {
   private lastTrendGenerationTime = 0;
   private trendCooldown = 30000;
   private lastStabilityCheckTime = 0;
-
+  private userOrderCount = 0;
   constructor() {
     this.webSocketService = WebSocketService.getInstance();
     this.initializeBots();
@@ -1844,16 +1844,13 @@ export class MarketSimulationService {
   }
   
   public processUserOrder(order: Order): { success: boolean; filledPrice?: number; filledQuantity?: number } {
-    const delay = Math.floor(Math.random() * 6000) + 2000; 
-    console.log(`[USER_ORDER] Order ${order.id} received. Delay: ${delay}ms`);
-    
-    this.pendingUserOrders.set(order.id, {
-      order: order,
-      decisionTime: Date.now() + delay
-    });
+  this.userOrderCount += 1; // ✅ ADD
+  const delay = Math.floor(Math.random() * 6000) + 2000;
+  console.log(`[USER_ORDER] #${this.userOrderCount} Order ${order.id} received. Delay: ${delay}ms`);
 
-    return { success: false };
-  }
+  this.pendingUserOrders.set(order.id, { order, decisionTime: Date.now() + delay });
+  return { success: false };
+}
 
   private processPendingUserOrders(marketData: SimulatedMarketData): void {
     const currentTime = Date.now();
@@ -1925,25 +1922,33 @@ export class MarketSimulationService {
       Math.min(...marketData.askDepth.map(l => l.price)) : currentPrice;
     const spread = bestAsk - bestBid;
     
+    // Implement decreasing probability logic for first 10 orders
     let acceptanceProbability = 0.7;
     
-    if (order.orderType === "Market") {
-      acceptanceProbability = 0.9;
-    } else if (order.orderType === "Limit") {
-      if (isBuy) {
-        const priceAdvantage = (orderPrice - bestAsk) / bestAsk;
-        acceptanceProbability = 0.6 + Math.min(0.3, priceAdvantage * 10);
-      } else {
-        const priceAdvantage = (bestBid - orderPrice) / bestBid;
-        acceptanceProbability = 0.6 + Math.min(0.3, priceAdvantage * 10);
+    if (this.userOrderCount <= 10) {
+      // For first 10 orders, start with 100% and decrease
+      acceptanceProbability = Math.max(1.0 - (this.userOrderCount - 1) * 0.1, 0.1);
+      console.log(`[USER_ORDER] First 10 orders - Order #${this.userOrderCount}, Acceptance Probability: ${acceptanceProbability}`);
+    } else {
+      // After 10 orders, use normal logic
+      if (order.orderType === "Market") {
+        acceptanceProbability = 0.9;
+      } else if (order.orderType === "Limit") {
+        if (isBuy) {
+          const priceAdvantage = (orderPrice - bestAsk) / bestAsk;
+          acceptanceProbability = 0.6 + Math.min(0.3, priceAdvantage * 10);
+        } else {
+          const priceAdvantage = (bestBid - orderPrice) / bestBid;
+          acceptanceProbability = 0.6 + Math.min(0.3, priceAdvantage * 10);
+        }
       }
+      
+      const spreadFactor = Math.max(0.5, 1 - (spread / (currentPrice * 0.01)));
+      acceptanceProbability *= spreadFactor;
+      
+      const sizeFactor = Math.max(0.3, 1 - (order.quantity / 10000));
+      acceptanceProbability *= sizeFactor;
     }
-    
-    const spreadFactor = Math.max(0.5, 1 - (spread / (currentPrice * 0.01)));
-    acceptanceProbability *= spreadFactor;
-    
-    const sizeFactor = Math.max(0.3, 1 - (order.quantity / 10000));
-    acceptanceProbability *= sizeFactor;
     
     const accepted = Math.random() < acceptanceProbability;
     
@@ -1955,66 +1960,39 @@ export class MarketSimulationService {
     };
   }
 
-  private executeUserOrderWithBots(order: Order, marketData: SimulatedMarketData): { 
-    filled: boolean; 
-    price: number; 
-    quantity: number;
-  } {
-    const isBuy = order.type === "buy";
-    
-    const suitableBots = this.bots.filter(bot => 
-      bot.symbol === order.symbol && 
-      bot.isActive &&
-      this.canBotTradeWithUser(bot, order, marketData)
-    );
-    
-    if (suitableBots.length === 0) {
-      return { filled: false, price: 0, quantity: 0 };
-    }
-    
-    const selectedBot = suitableBots[Math.floor(Math.random() * suitableBots.length)];
-    const botPosition = this.botPositions.get(selectedBot.id);
-    
-    if (!botPosition) {
-      return { filled: false, price: 0, quantity: 0 };
-    }
-    
-    const maxQuantity = isBuy ? 
-      Math.min(botPosition.quantity, order.quantity) :
-      Math.min(PARAMS.MAX_POSITION_SIZE - botPosition.quantity, order.quantity);
-    
-    if (maxQuantity <= 0) {
-      return { filled: false, price: 0, quantity: 0 };
-    }
-    
-    const price = this.calculateTradePrice(order, marketData, selectedBot);
-    const tradeQuantity = Math.min(maxQuantity, order.quantity);
-    
-    if (isBuy) {
-      this.updateBotPositionFromTrade(selectedBot.id, 'sell', price, tradeQuantity, order.symbol);
-    } else {
-      this.updateBotPositionFromTrade(selectedBot.id, 'buy', price, tradeQuantity, order.symbol);
-    }
-    
-    this.tradeHistory.push({
-      timestamp: Date.now(),
-      price,
-      quantity: tradeQuantity,
-      buyerBotId: isBuy ? undefined : selectedBot.id,
-      sellerBotId: isBuy ? selectedBot.id : undefined,
-      userId: order.id,
-      symbol: order.symbol
-    });
-    
-    marketData.price = price;
-    marketData.volume += tradeQuantity;
-    
-    return {
-      filled: true,
-      price,
-      quantity: tradeQuantity
-    };
-  }
+  private executeUserOrderWithBots(order: Order, marketData: SimulatedMarketData) {
+  const isBuy = order.type === "buy";
+
+  const candidates = this.bots
+    .filter(bot => bot.symbol === order.symbol && bot.isActive && this.canBotTradeWithUser(bot, order, marketData))
+    .map(bot => {
+      const pos = this.botPositions.get(bot.id);
+      if (!pos) return null;
+
+      const available = isBuy
+        ? pos.quantity               // bot sells -> must have inventory
+        : (PARAMS.MAX_POSITION_SIZE - pos.quantity); // bot buys -> capacity
+
+      return { bot, pos, available };
+    })
+    .filter((x): x is { bot: Bot; pos: BotPosition; available: number } => !!x && x.available > 0)
+    .sort((a, b) => b.available - a.available); // ưu tiên bot có nhiều khả năng fill
+
+  if (!candidates.length) return { filled: false, price: 0, quantity: 0 };
+
+  const selected = candidates[0]; // ✅ chọn bot tốt nhất (hoặc random trong top N)
+  const tradeQty = Math.min(selected.available, order.quantity);
+
+  const price = this.calculateTradePrice(order, marketData, selected.bot);
+
+  // update bot position (bot side opposite user)
+  if (isBuy) this.updateBotPositionFromTrade(selected.bot.id, "sell", price, tradeQty, order.symbol);
+  else this.updateBotPositionFromTrade(selected.bot.id, "buy", price, tradeQty, order.symbol);
+
+  // ... push tradeHistory, update marketData ...
+  return { filled: true, price, quantity: tradeQty };
+}
+
 
   private canBotTradeWithUser(bot: Bot, order: Order, marketData: SimulatedMarketData): boolean {
     const position = this.botPositions.get(bot.id);

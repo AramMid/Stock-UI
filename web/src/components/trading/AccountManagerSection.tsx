@@ -62,6 +62,8 @@ interface AccountManagerSectionProps {
   selectedSymbol?: string;
   userBalance?: number; // Add userBalance prop
   userName?: string; // Add userName prop
+  realizedPnl?: number;
+  unrealizedPnl?: number;
 }
 
 export default function AccountManagerSection({
@@ -82,6 +84,8 @@ export default function AccountManagerSection({
   selectedSymbol = "VIC.VN",
   userBalance, // Destructure userBalance prop
   userName, // Destructure userName prop
+  realizedPnl,
+  unrealizedPnl,
 }: AccountManagerSectionProps) {
   const [activeTab, setActiveTab] = useState("Order Book");
   const [orderBook, setOrderBook] = useState<OrderBook | null>(null);
@@ -111,6 +115,36 @@ export default function AccountManagerSection({
   const [orderHistoryError, setOrderHistoryError] = useState<string | null>(
     null
   );
+  const getStatusBadge = (status: string) => {
+  const s = String(status).toUpperCase();
+
+  // ✅ FILLED xanh lá
+  if (s === "FILLED") {
+    return isDarkMode
+      ? "bg-emerald-900/30 text-emerald-400 border border-emerald-500/20"
+      : "bg-emerald-100 text-emerald-700 border border-emerald-200";
+  }
+
+  // ✅ CANCELLED / CANCELED / REJECTED đỏ
+  if (s === "CANCELLED" || s === "CANCELED" || s === "REJECTED") {
+    return isDarkMode
+      ? "bg-rose-900/30 text-rose-400 border border-rose-500/20"
+      : "bg-rose-100 text-rose-700 border border-rose-200";
+  }
+
+  // ⏳ các trạng thái đang chạy
+  if (s === "NEW" || s === "PENDING" || s === "PARTIALLY_FILLED") {
+    return isDarkMode
+      ? "bg-amber-900/30 text-amber-400 border border-amber-500/20"
+      : "bg-amber-100 text-amber-700 border border-amber-200";
+  }
+
+  // mặc định
+  return isDarkMode
+    ? "bg-gray-800 text-gray-300 border border-gray-700"
+    : "bg-gray-100 text-gray-700 border border-gray-200";
+};
+
 
   // ========================
   // ORDER SYNC STATE
@@ -383,6 +417,12 @@ export default function AccountManagerSection({
       asks: OrderBookLevel[]
     ): { buy: SuggestionData | null; sell: SuggestionData | null } => {
       const currentPrice = marketData.price;
+      if (!Number.isFinite(currentPrice) || currentPrice <= 0) {
+    setDebugInfo(
+      `Invalid current price from simulation (${currentPrice}), skip signals`
+    );
+    return { buy: null, sell: null };
+  }
       const bestAsk = asks.length > 0 ? asks[0] : null;
       const bestBid = bids.length > 0 ? bids[0] : null;
 
@@ -587,6 +627,12 @@ export default function AccountManagerSection({
       if (marketSimulation) {
         const marketData = marketSimulation.getMarketData(selectedSymbol);
         if (marketData) {
+            const cleanBidDepth = marketData.bidDepth.filter(
+    (l) => Number.isFinite(l.price) && l.price > 0
+  );
+  const cleanAskDepth = marketData.askDepth.filter(
+    (l) => Number.isFinite(l.price) && l.price > 0
+  );
           const aggregateLevels = (depth: MarketDepthLevel[]) => {
             const priceMap: {
               [price: number]: { totalQuantity: number; orderCount: number };
@@ -612,12 +658,9 @@ export default function AccountManagerSection({
               .slice(0, 20);
           };
 
-          const bids = aggregateLevels(marketData.bidDepth).sort(
-            (a, b) => b.price - a.price
-          );
-          const asks = aggregateLevels(marketData.askDepth).sort(
-            (a, b) => a.price - b.price
-          );
+          
+  const bids = aggregateLevels(cleanBidDepth).sort((a, b) => b.price - a.price);
+  const asks = aggregateLevels(cleanAskDepth).sort((a, b) => a.price - b.price);
 
           setOrderBook({
             bids: bids.map((bid) => ({
@@ -684,17 +727,24 @@ export default function AccountManagerSection({
   };
 
   const calculateVolatility = (prices: number[]): number => {
-    if (prices.length < 2) return 0;
-    const returns: number[] = [];
-    for (let i = 1; i < prices.length; i++) {
-      returns.push(Math.log(prices[i] / prices[i - 1]));
-    }
-    const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
-    const variance =
-      returns.reduce((a, b) => a + Math.pow(b - mean, 2), 0) /
-      returns.length;
-    return Math.sqrt(variance * 252);
-  };
+  const cleaned = prices.filter(
+    (p) => Number.isFinite(p) && p > 0
+  );
+  if (cleaned.length < 2) return 0;
+
+  const returns: number[] = [];
+  for (let i = 1; i < cleaned.length; i++) {
+    const r = Math.log(cleaned[i] / cleaned[i - 1]);
+    if (Number.isFinite(r)) returns.push(r);
+  }
+  if (returns.length === 0) return 0;
+
+  const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
+  const variance =
+    returns.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / returns.length;
+  return Math.sqrt(variance * 252);
+};
+
 
   const identifySupportLevels = (bids: OrderBookLevel[]): number[] => {
     if (bids.length < 3) return [];
@@ -938,22 +988,33 @@ export default function AccountManagerSection({
   const tabs = ["Orders", "Order Book", "Order History", "AI Insights"];
 
   // Use userBalance if provided, otherwise fallback to tradingPosition.cash
-  const balance = userBalance !== undefined ? userBalance : tradingPosition.cash;
-  
-  const metrics = [
-    { label: "Account Balance", value: formatVNDCurrency(balance) },
-    {
-      label: "Equity",
-      value: formatVNDCurrency(balance + tradingPosition.pnl),
-    },
-    { label: "Realized P&L", value: formatVNDCurrency(0) },
-    { label: "Unrealized P&L", value: formatVNDCurrency(tradingPosition.pnl) },
-    {
-      label: "Available Funds",
-      value: formatVNDCurrency(balance),
-      info: true,
-    },
-  ];
+ const toNumber = (v: unknown, fallback = 0) => {
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : fallback;
+};
+
+// Balance: ưu tiên userBalance (từ backend), fallback tradingPosition.cash
+// Use userBalance if provided, otherwise fallback to tradingPosition.cash
+const balance = toNumber(userBalance, toNumber(tradingPosition.cash, 0));
+
+// ✅ IMPORTANT: use props from Home (FIFO ledger)
+const realized = toNumber(realizedPnl, 0);
+const unrealized = toNumber(
+  unrealizedPnl,
+  toNumber((tradingPosition as any)?.pnl, 0) // fallback nếu bạn có pnl trong tradingPosition
+);
+
+// ✅ Equity đúng nghĩa: cash + realized + unrealized
+const equity = balance + realized + unrealized;
+
+const metrics = [
+  { label: "Account Balance", value: formatVNDCurrency(balance) },
+  { label: "Equity", value: formatVNDCurrency(equity) },
+  { label: "Realized P&L", value: formatVNDCurrency(realized) },
+  { label: "Unrealized P&L", value: formatVNDCurrency(unrealized) },
+  { label: "Available Funds", value: formatVNDCurrency(balance), info: true },
+];
+
 
   return (
     <div
@@ -1242,9 +1303,11 @@ export default function AccountManagerSection({
                               {formatVNDCurrency(order.price || 0)}
                             </td>
                             <td className="py-3 px-4">
-                              <span className="bg-amber-900/30 text-amber-400 px-2 py-1 rounded text-[10px]">
-                                {order.status}
-                              </span>
+                            <span
+                              className={`px-2 py-1 rounded text-[10px] inline-flex items-center ${getStatusBadge(order.status)}`}
+                            >
+                              {order.status}
+                            </span>
                             </td>
                           </tr>
                         ))}
@@ -2213,14 +2276,11 @@ export default function AccountManagerSection({
                             </td>
                             <td className="py-3 px-4">
                               <span
-                                className={`px-2 py-0.5 rounded text-[10px] ${
-                                  order.status === "FILLED"
-                                    ? "bg-emerald-900/30 text-emerald-400"
-                                    : "bg-gray-700 text-gray-400"
-                                }`}
+                                className={`px-2 py-0.5 rounded text-[10px] inline-flex items-center ${getStatusBadge(order.status)}`}
                               >
                                 {order.status}
                               </span>
+
                             </td>
                           </tr>
                         ))}
@@ -2259,17 +2319,11 @@ export default function AccountManagerSection({
                             </td>
                             <td className="py-3 px-4">
                               <span
-                                className={`px-2 py-0.5 rounded text-[10px] ${
-                                  order.status === "FILLED"
-                                    ? "bg-emerald-900/30 text-emerald-400"
-                                    : order.status === "PENDING" ||
-                                      order.status === "NEW"
-                                    ? "bg-amber-900/30 text-amber-400"
-                                    : "bg-gray-700 text-gray-400"
-                                }`}
-                              >
-                                {order.status}
-                              </span>
+  className={`px-2 py-0.5 rounded text-[10px] inline-flex items-center ${getStatusBadge(order.status)}`}
+>
+  {order.status}
+</span>
+
                             </td>
                           </tr>
                         ))}

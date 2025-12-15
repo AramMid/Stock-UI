@@ -8,45 +8,60 @@ import { apiCache } from "./cache";
  * @param symbol Stock symbol (e.g., "VIC.VN")
  * @returns Current price
  */
+/**
+ * Fetch current market price from Yahoo Finance API (robust)
+ * - Handles last close = null (common)
+ * - Fallback to meta.regularMarketPrice if needed
+ */
 export async function fetchCurrentPrice(symbol: string = "VIC.VN"): Promise<number> {
-  try {
-    // Use 1d interval and 1d range to get the most recent price
-    const res = await fetch(
-      `/api/yahoo?symbol=${encodeURIComponent(symbol)}&interval=1d&range=1d`,
-      {
-        method: "GET",
-        headers: {
-          Accept: "application/json",
-          "Content-Type": "application/json",
-        },
-      }
-    );
+  const url = `/api/yahoo?symbol=${encodeURIComponent(symbol)}&interval=1d&range=5d`; // 5d để có nhiều candle hơn
 
-    if (!res.ok) {
-      throw new Error(`Failed to fetch price: ${res.statusText}`);
-    }
+  const res = await fetch(url, {
+    method: "GET",
+    headers: { Accept: "application/json" },
+    cache: "no-store",
+  });
 
-    const json = await res.json();
+  const text = await res.text();
 
-    if (!json.chart?.result?.[0]?.indicators?.quote?.[0]?.close) {
-      throw new Error("Invalid Yahoo response for price data");
-    }
-
-    const quotes = json.chart.result[0].indicators.quote[0];
-    const closePrices = quotes.close;
-    
-    // Get the most recent closing price
-    const currentPrice = closePrices[closePrices.length - 1];
-    
-    if (currentPrice == null) {
-      throw new Error("No valid price data available");
-    }
-    
-    return currentPrice;
-  } catch (error) {
-    console.error(`Error fetching current price for ${symbol}:`, error);
-    throw error;
+  // Nếu API proxy của bạn trả HTML / text lạ -> log ra để debug
+  if (!res.ok) {
+    throw new Error(`Failed to fetch price: ${res.status} ${res.statusText} | ${text.slice(0, 120)}`);
   }
+
+  let json: any;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    throw new Error(`Invalid JSON from /api/yahoo | sample: ${text.slice(0, 120)}`);
+  }
+
+  const result = json?.chart?.result?.[0];
+  if (!result) {
+    throw new Error("Invalid Yahoo response: missing chart.result[0]");
+  }
+
+  const quotes = result?.indicators?.quote?.[0];
+  const closes: Array<number | null> | undefined = quotes?.close;
+
+  // 1) Ưu tiên lấy close hợp lệ gần nhất (scan ngược)
+  if (Array.isArray(closes) && closes.length > 0) {
+    for (let i = closes.length - 1; i >= 0; i--) {
+      const v = closes[i];
+      if (typeof v === "number" && Number.isFinite(v) && v > 0) return v;
+    }
+  }
+
+  // 2) Fallback sang meta (hay có regularMarketPrice)
+  const metaPrice =
+    result?.meta?.regularMarketPrice ??
+    result?.meta?.chartPreviousClose;
+
+  if (typeof metaPrice === "number" && Number.isFinite(metaPrice) && metaPrice > 0) {
+    return metaPrice;
+  }
+
+  throw new Error("No valid price data available (close[] all null & meta missing)");
 }
 
 export async function fetchYahooSeries(

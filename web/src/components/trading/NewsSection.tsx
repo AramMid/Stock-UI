@@ -14,61 +14,61 @@ interface NewsSectionProps {
 }
 
 export default function NewsSection({ isDarkMode }: NewsSectionProps) {
-  const vietnamStockNews: NewsItem[] = [
+  const englishStockNews: NewsItem[] = [
     {
       time: "22:21 • 10/12/2025",
       source: "NLĐ",
-      title: "Chứng khoán Việt Nam không có bong bóng, xác suất tăng điểm tháng 12 tới 75%",
+      title: "Vietnamese stocks show no bubble, probability of market rise in December at 75%",
       isBreaking: true,
-      category: "Phân tích",
+      category: "Analysis",
       url: "https://nld.com.vn/chung-khoan-viet-nam-khong-co-bong-bong-xac-suat-tang-diem-thang-12-toi-75-196251210222120889.htm"
     },
     {
-      time: "Cập nhật liên tục",
+      time: "Live Updates",
       source: "VnExpress",
-      title: "Chứng khoán - VnExpress Kinh doanh",
+      title: "Stock Market - VnExpress Business",
       isBreaking: false,
-      category: "Tin tức",
+      category: "News",
       url: "https://vnexpress.net/kinh-doanh/chung-khoan"
     },
     {
       time: "22:19 • 10/12/2025",
       source: "Báo Mới",
-      title: "Thị trường chứng khoán ngày 10/12/2025: VN-Index giảm 28,19 điểm xuống 1.718,98 điểm",
+      title: "Stock market on 10/12/2025: VN-Index drops 28.19 points to 1,718.98 points",
       isBreaking: true,
-      category: "Thị trường",
+      category: "Market",
       url: "https://baomoi.com/thi-truong-chung-khoan-ngay-10-12-2025-vn-index-giam-28-19-diem-xuong-1-718-98-diem-c53976379.epi"
     },
     {
       time: "15:30 • 10/12/2025",
-      source: "Tạp chí KT&TC",
-      title: "Thoái vốn dồn dập, thị trường chứng khoán tháng 12 vào cao điểm",
+      source: "KT&TC Magazine",
+      title: "Capital withdrawal surge, stock market in December reaches peak",
       isBreaking: false,
-      category: "Phân tích",
+      category: "Analysis",
       url: "https://tapchikinhtetaichinh.vn/thoai-von-don-dap-thi-truong-chung-khoan-thang-12-vao-cao-diem-127432.html"
     },
     {
       time: "10:45 • 10/12/2025",
       source: "Vietstock",
-      title: "Nhận định thị trường",
+      title: "Market Analysis",
       isBreaking: false,
-      category: "Phân tích",
+      category: "Analysis",
       url: "https://vietstock.vn/nhan-dinh-thi-truong.htm"
     },
     {
-      time: "Cập nhật liên tục",
+      time: "Live Updates",
       source: "Cafef",
-      title: "Thị trường chứng khoán",
+      title: "Stock Market",
       isBreaking: false,
-      category: "Tin tức",
+      category: "News",
       url: "https://cafef.vn/thi-truong-chung-khoan.chn"
     },
     {
       time: "09:15 • 10/12/2025",
       source: "VnEconomy",
-      title: "Nhận định chứng khoán",
+      title: "Stock Market Forecast",
       isBreaking: false,
-      category: "Phân tích",
+      category: "Analysis",
       url: "https://vneconomy.vn/tag/nhan-dinh-chung-khoan"
     }
   ];
@@ -98,13 +98,13 @@ export default function NewsSection({ isDarkMode }: NewsSectionProps) {
               isDarkMode ? "text-white" : "text-gray-900"
             }`}
           >
-            Tin tức thị trường chứng khoán Việt Nam
+            Vietnamese Stock Market News
           </h4>
         </div>
 
         {/* News List */}
         <div className="flex-1 overflow-y-auto right-section-scrollbar">
-          {vietnamStockNews.map((item, index) => (
+          {englishStockNews.map((item, index) => (
             <div
               key={index}
               onClick={() => openNewsArticle(item.url)}
@@ -139,7 +139,7 @@ export default function NewsSection({ isDarkMode }: NewsSectionProps) {
                 </span>
                 {item.isBreaking && (
                   <span className="bg-red-600 text-white text-[10px] px-1.5 py-0.5 rounded font-medium">
-                    MỚI
+                    NEW
                   </span>
                 )}
                 {item.category && (
@@ -175,7 +175,7 @@ export default function NewsSection({ isDarkMode }: NewsSectionProps) {
                   : "text-gray-600 hover:text-gray-900"
               }`}
             >
-              Xem thêm tin tức...
+              Load more news...
             </button>
           </div>
         </div>

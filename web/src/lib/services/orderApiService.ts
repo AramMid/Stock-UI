@@ -78,214 +78,116 @@ interface ApiEnvelope<T> {
 }
 
 /**
- * Create a new order via REST API
- * @param orderData The order data to create
- * @returns Promise with the order object from the API
+ * Create a new order
+ * @param order Order data to create
+ * @returns Promise resolving to the created order
  */
-export async function createOrder(
-  orderData: CreateOrderDto
-): Promise<ApiOrder> {
-  // Safety check to prevent invalid statuses from being sent to database
-  // Only "filled" and "cancelled" statuses should be sent to the database
-  const validStatuses = ["filled", "cancelled"];
-  if (orderData.status && !validStatuses.includes(orderData.status.toLowerCase())) {
-    console.error("Attempted to send invalid status to database. Only 'filled' and 'cancelled' are allowed.", orderData);
-    throw new Error(`Invalid status: '${orderData.status}' orders should not be sent to database. Only 'filled' and 'cancelled' are allowed.`);
-  }
-  
+export async function createOrder(order: CreateOrderDto): Promise<ApiOrder> {
   try {
     const response = await fetch(`${API_BASE_URL}/api/orders`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...getAuthHeader()
+        ...getAuthHeader(),
       },
-      body: JSON.stringify(orderData),
+      body: JSON.stringify(order),
     });
 
     if (!response.ok) {
-      // Nếu backend chưa bật route / lỗi gì đó
-      if (response.status === 404) {
-        console.warn(
-          "Order API not found (404). Order will be processed locally without backend persistence."
-        );
-        // Trả về mock cho FE nếu bạn vẫn muốn xử lý local
-        const now = new Date().toISOString();
-        // Safety check to prevent invalid statuses from being sent to database
-        // Only "filled" and "cancelled" statuses should be sent to the database
-        const validStatuses = ["filled", "cancelled"];
-        const statusToSend = (orderData.status && validStatuses.includes(orderData.status.toLowerCase())) 
-          ? orderData.status 
-          : "LOCAL";
-        
-        return {
-          id: Date.now(),
-          stock_symbol: orderData.stockSymbol,
-          order_type: orderData.orderType,
-          side: orderData.side,
-          quantity: orderData.quantity,
-          price:
-            orderData.price != null ? orderData.price.toString() : null,
-          status: statusToSend, // Use provided status or default to "LOCAL", but never "pending"
-          created_at: now,
-        };
-      }
-      // For other errors, try to get more details
-      let errorMessage = `HTTP error! status: ${response.status}`;
-      try {
-        const errorText = await response.text();
-        errorMessage += ` - Details: ${errorText}`;
-      } catch (e) {
-        // If we can't read the error details, just use the status
-        console.warn("Could not read error details from response");
-      }
-      
-      throw new Error(errorMessage);
+      throw new Error(`Failed to create order: ${response.statusText}`);
     }
 
-    const raw = (await response.json()) as ApiEnvelope<ApiOrder> | ApiOrder;
-
-    // Backend có thể trả { success, data, timestamp } hoặc trả thẳng order
-    const apiOrder =
-      (raw as ApiEnvelope<ApiOrder>).data && (raw as ApiEnvelope<ApiOrder>).success
-        ? ((raw as ApiEnvelope<ApiOrder>).data as ApiOrder)
-        : (raw as ApiOrder);
-
-    return apiOrder;
+    const result: ApiEnvelope<ApiOrder> = await response.json();
+    return result.data;
   } catch (error) {
-    if (error instanceof TypeError && error.message.includes("fetch")) {
-      console.warn(
-        "Unable to connect to order API. Order will be processed locally without backend persistence.",
-        error
-      );
-      const now = new Date().toISOString();
-      // mock order local
-      // Safety check to prevent invalid statuses from being sent to database
-      // Only "filled" and "cancelled" statuses should be sent to the database
-      const validStatuses = ["filled", "cancelled"];
-      const statusToSend = (orderData.status && validStatuses.includes(orderData.status.toLowerCase())) 
-        ? orderData.status 
-        : "LOCAL";
-      
-      return {
-        id: Date.now(),
-        stock_symbol: orderData.stockSymbol,
-        order_type: orderData.orderType,
-        side: orderData.side,
-        quantity: orderData.quantity,
-        price:
-          orderData.price != null ? orderData.price.toString() : null,
-        status: statusToSend, // Use provided status or default to "LOCAL", but never "pending"
-        created_at: now,
-      };
-    }
-
     console.error("Error creating order:", error);
     throw error;
   }
 }
 
 /**
- * Get orders via REST API
- * @param queryParams Query parameters for filtering orders
- * @returns Promise with the response from the API mapped to OrderResponse[]
+ * Fetch orders with optional query parameters
+ * @param query Optional query parameters
+ * @returns Promise resolving to array of orders
  */
-export async function getOrders(
-  queryParams: GetOrdersQuery
-): Promise<OrderResponse[]> {
+export async function getOrders(query?: GetOrdersQuery): Promise<OrderResponse[]> {
   try {
-    // Build query string from parameters
-    const queryString = new URLSearchParams();
+    const params = new URLSearchParams();
+    if (query) {
+      Object.entries(query).forEach(([key, value]) => {
+        if (value !== undefined) {
+          params.append(key, String(value));
+        }
+      });
+    }
 
-    Object.entries(queryParams || {}).forEach(([key, value]) => {
-      if (value !== undefined && value !== null) {
-        queryString.append(key, value.toString());
-      }
-    });
-
-    const url =
-      `${API_BASE_URL}/api/orders` +
-      (queryString.toString() ? `?${queryString.toString()}` : "");
-
-    const response = await fetch(url, {
-      method: "GET",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-        ...getAuthHeader()
-      },
+    const response = await fetch(`${API_BASE_URL}/api/orders?${params.toString()}`, {
+      headers: getAuthHeader(),
     });
 
     if (!response.ok) {
-      if (response.status === 404) {
-        console.warn(
-          "Order API not found (404). Returning empty order list."
-        );
-        return [];
-      }
-      // For other errors, try to get more details
-      let errorMessage = `HTTP error! status: ${response.status}`;
-      try {
-        const errorText = await response.text();
-        errorMessage += ` - Details: ${errorText}`;
-      } catch (e) {
-        // If we can't read the error details, just use the status
-        console.warn("Could not read error details from response");
-      }
-      
-      throw new Error(errorMessage);
+      throw new Error(`Failed to fetch orders: ${response.statusText}`);
     }
 
-    const raw = (await response.json()) as
-      | ApiEnvelope<ApiListPayload>
-      | ApiListPayload
-      | ApiOrder[];
-
-    console.log("getOrders raw response:", raw);
-
-    // 1. unwrap layer { success, data, timestamp } nếu có
-    const payload = (raw as ApiEnvelope<ApiListPayload>).data ?? (raw as ApiListPayload);
-
-    // 2. xác định mảng orders
-    let list: ApiOrder[] = [];
-
-    if (payload && Array.isArray(payload.data)) {
-      // dạng { data: [...], meta: {...} }
-      list = payload.data as ApiOrder[];
-    } else if (Array.isArray(payload)) {
-      // dạng [...orders]
-      list = payload as ApiOrder[];
-    } else {
-      console.warn("getOrders: Unexpected payload shape:", payload);
-      return [];
-    }
-
-    // 3. map sang OrderResponse cho UI
-    const mapped: OrderResponse[] = list.map((order) => ({
-      id: order.id.toString(),
+    const result: ApiEnvelope<ApiListPayload> = await response.json();
+    return result.data.data.map((order: ApiOrder) => ({
+      id: String(order.id),
       stockSymbol: order.stock_symbol,
       orderType: order.order_type,
-      side: order.side === "buy" ? "buy" : "sell",
+      side: order.side as "buy" | "sell",
       quantity: order.quantity,
-      price:
-        order.price != null
-          ? parseFloat(order.price as string)
-          : undefined,
-      status: order.status.toUpperCase(), // "PENDING" -> "PENDING"
+      price: order.price ? parseFloat(order.price) : undefined,
+      status: order.status,
       createdAt: order.created_at,
     }));
-
-    return mapped;
   } catch (error) {
-    if (error instanceof TypeError && error.message.includes("fetch")) {
-      console.warn(
-        "Unable to connect to order API. Returning empty order list.",
-        error
-      );
-      return [];
+    console.error("Error fetching orders:", error);
+    return [];
+  }
+}
+
+/**
+ * Fetch user's share positions for specified stocks
+ * @param stocks Array of stock symbols to fetch positions for
+ * @returns Promise resolving to a map of symbol -> quantity
+ */
+export async function fetchSharePositions(stocks: string[]): Promise<Map<string, number>> {
+  try {
+    // Filter to only include Vietnamese stocks (ending with .VN)
+    const vnStocks = stocks.filter(symbol => symbol.endsWith('.VN'));
+    
+    console.log('Fetching share positions for stocks:', vnStocks);
+    
+    const response = await fetch(`${API_BASE_URL}/api/orders/shares`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...getAuthHeader()
+      },
+      body: JSON.stringify({
+        stocks: vnStocks
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch share positions: ${response.statusText}`);
     }
 
-    console.error("Error fetching orders:", error);
-    throw error;
+    const result = await response.json();
+    console.log('Share positions API response:', result);
+    
+    // Convert the shares object to a Map
+    const positions = new Map<string, number>();
+    if (result.data && result.data.shares && typeof result.data.shares === 'object') {
+      Object.entries(result.data.shares).forEach(([symbol, quantity]) => {
+        positions.set(symbol, Number(quantity) || 0);
+      });
+    }
+    
+    console.log('Processed positions map:', positions);
+    return positions;
+  } catch (error) {
+    console.error('Error fetching share positions:', error);
+    return new Map(); // Return empty map on error
   }
 }

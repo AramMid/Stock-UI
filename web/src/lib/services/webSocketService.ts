@@ -1,4 +1,3 @@
-import { Order } from "../order-management";
 import { OrderStatus } from "./orderService";
 
 export interface OrderUpdate {
@@ -12,15 +11,21 @@ export interface OrderUpdate {
 export type OrderUpdateCallback = (update: OrderUpdate) => void;
 
 /**
- * WebSocket Service for real-time order updates
+ * WebSocket Service (in-memory event bus)
+ * - Supports replay (avoid missing FILLED if subscribed late)
+ * - Supports unsubscribe via returned function
  */
 export class WebSocketService {
   private static instance: WebSocketService;
-  private subscribers: Map<string, OrderUpdateCallback[]> = new Map();
-  private mockInterval: NodeJS.Timeout | null = null;
+
+  // orderId -> callbacks
+  private subscribers: Map<string, Set<OrderUpdateCallback>> = new Map();
+
+  // orderId -> last update (for replay)
+  private lastUpdate: Map<string, OrderUpdate> = new Map();
 
   private constructor() {
-    this.startMockUpdates();
+    // No mock updates here — updates come from MarketSimulationService.sendOrderUpdate()
   }
 
   public static getInstance(): WebSocketService {
@@ -31,88 +36,79 @@ export class WebSocketService {
   }
 
   /**
-   * Subscribe to order updates
-   * @param orderId The order ID to subscribe to
-   * @param callback Function to call when updates arrive
+   * Subscribe to order updates.
+   * Returns an unsubscribe function.
+   * Also replays the last known update (if any).
    */
-  public subscribe(orderId: string, callback: OrderUpdateCallback): void {
+  public subscribe(orderId: string, callback: OrderUpdateCallback): () => void {
     if (!this.subscribers.has(orderId)) {
-      this.subscribers.set(orderId, []);
+      this.subscribers.set(orderId, new Set());
     }
-    this.subscribers.get(orderId)?.push(callback);
+
+    const set = this.subscribers.get(orderId)!;
+    set.add(callback);
+
+    // ✅ Replay last update to avoid missing events when subscribing late
+    const cached = this.lastUpdate.get(orderId);
+    if (cached) {
+      try {
+        callback(cached);
+      } catch (e) {
+        console.error("Error in replayed order update callback:", e);
+      }
+    }
+
+    // ✅ Return unsubscribe function
+    return () => {
+      this.unsubscribe(orderId, callback);
+    };
   }
 
   /**
    * Unsubscribe from order updates
-   * @param orderId The order ID to unsubscribe from
-   * @param callback The callback function to remove
    */
   public unsubscribe(orderId: string, callback: OrderUpdateCallback): void {
-    const callbacks = this.subscribers.get(orderId);
-    if (callbacks) {
-      const index = callbacks.indexOf(callback);
-      if (index > -1) {
-        callbacks.splice(index, 1);
-      }
-      if (callbacks.length === 0) {
-        this.subscribers.delete(orderId);
-      }
+    const set = this.subscribers.get(orderId);
+    if (!set) return;
+
+    set.delete(callback);
+
+    if (set.size === 0) {
+      this.subscribers.delete(orderId);
+      // optional: keep lastUpdate for later UI refresh, or clear if you want
+      // this.lastUpdate.delete(orderId);
     }
   }
 
   /**
-   * Simulate real-time order updates
-   * In a real implementation, this would connect to a WebSocket server
-   */
-  private startMockUpdates(): void {
-    // Clear any existing interval
-    if (this.mockInterval) {
-      clearInterval(this.mockInterval);
-    }
-
-    // Simulate order updates every 2 seconds
-    this.mockInterval = setInterval(() => {
-      this.simulateOrderUpdates();
-    }, 2000);
-  }
-
-  /**
-   * Simulate order updates for demonstration
-   */
-  private simulateOrderUpdates(): void {
-    // In a real implementation, this would receive actual updates from the server
-    // For now, we'll just simulate some updates
-  }
-
-  /**
-   * Send order update to subscribers
-   * @param update The order update to send
+   * Send order update to subscribers (called by simulator)
    */
   public sendOrderUpdate(update: OrderUpdate): void {
-    console.log(`Sending order update: ${update.orderId}, status: ${update.status}`);
-    const callbacks = this.subscribers.get(update.orderId);
-    if (callbacks) {
-      console.log(`Found ${callbacks.length} subscribers for order ${update.orderId}`);
-      callbacks.forEach((callback, index) => {
-        try {
-          console.log(`Calling callback ${index} for order ${update.orderId}`);
-          callback(update);
-        } catch (error) {
-          console.error("Error in order update callback:", error);
-        }
-      });
-    } else {
-      console.log(`No subscribers found for order ${update.orderId}`);
+    // Cache last update for replay
+    this.lastUpdate.set(update.orderId, update);
+
+    const set = this.subscribers.get(update.orderId);
+
+    console.log(
+      `[WS] sendOrderUpdate order=${update.orderId} status=${update.status} subs=${set ? set.size : 0}`
+    );
+
+    if (!set || set.size === 0) return;
+
+    for (const cb of set) {
+      try {
+        cb(update);
+      } catch (error) {
+        console.error("Error in order update callback:", error);
+      }
     }
   }
 
   /**
-   * Stop the mock updates
+   * Clear cached updates (optional utility)
    */
-  public stopMockUpdates(): void {
-    if (this.mockInterval) {
-      clearInterval(this.mockInterval);
-      this.mockInterval = null;
-    }
+  public clearOrderCache(orderId?: string): void {
+    if (orderId) this.lastUpdate.delete(orderId);
+    else this.lastUpdate.clear();
   }
 }

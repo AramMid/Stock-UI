@@ -48,44 +48,40 @@ export function useTradingPosition(initialCash = 200000000) {
     return result.success;
   };
 
-  const handleSell = (symbol: string, quantity: number, price: number) => {
-    // Get current position for this symbol
-    const currentPosition = positions.get(symbol);
-    if (!currentPosition) {
-      alert("No shares to sell");
-      return false;
+const handleSell = (symbol: string, quantity: number, price: number) => {
+  const currentPosition = positions.get(symbol);
+
+  // ⚠️ QUAN TRỌNG: KHÔNG alert trong WS flow
+  if (!currentPosition || currentPosition.position <= 0) {
+    console.warn(`[SELL] Skip – no position yet for ${symbol}`);
+    return true; // ✅ coi như handled
+  }
+
+  // nếu chunk > số còn lại → bán phần còn lại
+  const sellQty = Math.min(quantity, currentPosition.position);
+
+  const result = executeSellOrder(currentPosition, cash, sellQty, price);
+  if (result.success) {
+    if (result.updatedAccount.position <= 0) {
+      setPositions(prev => {
+        const m = new Map(prev);
+        m.delete(symbol);
+        return m;
+      });
+    } else {
+      setPositions(prev => {
+        const m = new Map(prev);
+        m.set(symbol, { ...result.updatedAccount, symbol });
+        return m;
+      });
     }
 
-    const result = executeSellOrder(currentPosition, cash, quantity, price);
-    if (result.success) {
-      // Update symbol position
-      if (result.updatedAccount.position <= 0) {
-        // Remove position if no shares left
-        setPositions(prev => {
-          const newPositions = new Map(prev);
-          newPositions.delete(symbol);
-          return newPositions;
-        });
-      } else {
-        const updatedPosition: SymbolPosition = {
-          ...result.updatedAccount,
-          symbol
-        };
-        
-        setPositions(prev => {
-          const newPositions = new Map(prev);
-          newPositions.set(symbol, updatedPosition);
-          return newPositions;
-        });
-      }
-      
-      // Update cash
-      setCash(prev => prev + (quantity * price));
-    } else {
-      alert(result.errorMessage);
-    }
-    return result.success;
-  };
+    setCash(prev => prev + sellQty * price);
+  }
+
+  return result.success;
+};
+
 
   const getPosition = (symbol: string): SymbolPosition | undefined => {
     return positions.get(symbol);

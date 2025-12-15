@@ -52,6 +52,81 @@ export function executeOrder(order: OrderRequest, account: TradingPosition): Exe
       errorMessage: validation.message
     };
   }
+  const FEE_RATE = 0.0015;
+const TAX_RATE = 0.001;
+
+type Side = "buy" | "sell";
+
+type PositionLot = {
+  qty: number;
+  avgCost: number; // giá vốn /1 cp, đã bao gồm phí BUY
+};
+
+type PnlState = {
+  cash: number;
+  realized: number;
+  positions: Record<string, PositionLot>; // key = symbol
+};
+
+function applyFill(
+  prev: PnlState,
+  fill: { symbol: string; side: Side; qty: number; price: number }
+): PnlState {
+  const { symbol, side, qty, price } = fill;
+  if (!Number.isFinite(qty) || qty <= 0) return prev;
+  if (!Number.isFinite(price) || price <= 0) return prev;
+
+  const positions = { ...prev.positions };
+  const pos = positions[symbol] ?? { qty: 0, avgCost: 0 };
+
+  const gross = price * qty;
+
+  if (side === "buy") {
+    const fee = gross * FEE_RATE;
+    const totalCost = gross + fee;
+
+    const newQty = pos.qty + qty;
+    const newAvgCost =
+      newQty > 0 ? (pos.qty * pos.avgCost + totalCost) / newQty : 0;
+
+    positions[symbol] = { qty: newQty, avgCost: newAvgCost };
+
+    return {
+      cash: prev.cash - totalCost,
+      realized: prev.realized,
+      positions,
+    };
+  }
+
+  // sell
+  const fee = gross * FEE_RATE;
+  const tax = gross * TAX_RATE;
+  const proceeds = gross - fee - tax;
+
+  const sellQty = Math.min(qty, pos.qty); // long-only guard
+  const realizedDelta = proceeds - pos.avgCost * sellQty;
+  const newQty = pos.qty - sellQty;
+
+  positions[symbol] = newQty > 0 ? { qty: newQty, avgCost: pos.avgCost } : { qty: 0, avgCost: 0 };
+
+  return {
+    cash: prev.cash + proceeds,
+    realized: prev.realized + realizedDelta,
+    positions,
+  };
+}
+
+function computeUnrealized(positions: Record<string, PositionLot>, lastPrices: Record<string, number>) {
+  let u = 0;
+  for (const [sym, p] of Object.entries(positions)) {
+    if (p.qty <= 0) continue;
+    const last = lastPrices[sym];
+    if (!Number.isFinite(last) || last <= 0) continue; // ✅ chống NaN
+    u += (last - p.avgCost) * p.qty;
+  }
+  return u;
+}
+
 
   // For market orders, use current price
   // For StopLimit orders, we need both stopPrice and price
@@ -77,8 +152,6 @@ export function executeOrder(order: OrderRequest, account: TradingPosition): Exe
 
   // Check if order can be filled
   const cost = order.quantity * executionPrice;
-  const FEE_RATE = 0.0015; // 0.15% phí
-  const TAX_RATE = 0.001;  // 0.1% thuế (chỉ bán)
 
   let totalCost = cost;
 if (order.type === 'buy') {

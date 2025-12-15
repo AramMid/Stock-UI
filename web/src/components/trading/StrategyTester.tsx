@@ -105,6 +105,8 @@ interface StrategyTesterProps {
   tradingPosition: TradingPosition;
   selectedSymbol: string;
   marketSimulation: MarketSimulationService | null;
+  isAuthenticated?: () => boolean;
+  showAuthModal?: (message?: string) => void;
 }
 
 interface BacktestJobSummary {
