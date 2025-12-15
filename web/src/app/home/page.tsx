@@ -164,6 +164,30 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
     return () => clearTimeout(timer);
   }, [refreshWatchlistPositions]);
 
+  // Effect to initialize lots from existing positions
+  useEffect(() => {
+    if (loadingPositions || !positions) return;
+  
+    // Clear existing lots and re-initialize when positions change
+    lotsRef.current.clear();
+  
+    console.log('[INIT] Initializing lots from positions:', positions);
+  
+    // Convert positions to lots (assuming average price of 10000 for initialization)
+    // In a real implementation, you would need to get the actual average price from the backend
+    positions.forEach((shares, symbol) => {
+      if (shares > 0) {
+        // Create a single lot with an estimated average price
+        const avgPrice = 10000; // Placeholder - you'd need to get this from backend
+        lotsRef.current.set(symbol, [{ qty: shares, price: avgPrice }]);
+        console.log('[INIT] Created lot for', symbol, ':', { qty: shares, price: avgPrice });
+      }
+    });
+  
+    // Update P&L after initialization
+    markToMarketAll();
+  }, [positions, loadingPositions]);
+
   // ✅ MarketSimulation chỉ dùng cho bot, KHÔNG đụng tới ohlcData / bid/ask
   useEffect(() => {
     marketSimulationRef.current = new MarketSimulationService();
@@ -277,6 +301,11 @@ useEffect(() => {
       }
     }
     setUnrealizedPnl(u);
+    
+    console.log('[P&L] markToMarketAll:', { 
+      lots: Array.from(lotsRef.current.entries()),
+      unrealized: u
+    });
 
     // Equity = cash + market value
     let mv = 0;
@@ -296,6 +325,12 @@ useEffect(() => {
 
     const closePrice = Number(ohlcData.close);
     lastPriceRef.current = closePrice;
+
+    console.log('[PRICE] Updating last price:', { 
+      symbol: selectedSymbol, 
+      closePrice,
+      previous: lastPriceBySymbolRef.current[selectedSymbol]
+    });
 
     // ✅ store last price for this symbol
     lastPriceBySymbolRef.current[selectedSymbol] = closePrice;
@@ -320,12 +355,15 @@ useEffect(() => {
     if (!Number.isFinite(price) || price <= 0 || qty <= 0) return;
 
     const lots = lotsRef.current.get(symbol) ?? [];
+    
+    console.log('[P&L] applyFillFIFO input:', { symbol, side, qty, price });
 
     if (side === "buy") {
       // ✅ Add fee into cost basis
       const effectiveBuyPrice = price * (1 + FEE_RATE);
       lots.push({ qty, price: effectiveBuyPrice });
       lotsRef.current.set(symbol, lots);
+      console.log('[P&L] Added buy lot:', { symbol, qty, price: effectiveBuyPrice, lots: [...lots] });
       return;
     }
 
@@ -357,7 +395,18 @@ useEffect(() => {
     const netProceeds = grossProceeds - sellFee - sellTax;
 
     const realized = netProceeds - cost;
-    setRealizedPnl((prev) => prev + realized);
+    setRealizedPnl((prev) => {
+      const newRealized = prev + realized;
+      console.log('[P&L] Updated realized P&L:', { 
+        prev, 
+        realized, 
+        newRealized,
+        executed,
+        cost,
+        netProceeds
+      });
+      return newRealized;
+    });
   }
 
   const isFinal = (s: string) =>
@@ -543,6 +592,13 @@ useEffect(() => {
           // ✅ Apply P&L only for NEW delta filled qty
           const normalizedStatus = String(update.status).toUpperCase();
 
+          console.log('[WS] Order update received:', { 
+            orderId: update.orderId, 
+            status: normalizedStatus, 
+            filledQuantity: update.filledQuantity, 
+            filledPrice: update.filledPrice 
+          });
+
           const totalFilled =
             update.filledQuantity != null
               ? Number(update.filledQuantity)
@@ -553,8 +609,21 @@ useEffect(() => {
           const prevApplied = appliedFilledQtyRef.current[update.orderId] ?? 0;
           const deltaQty = totalFilled - prevApplied;
 
+          console.log('[WS] Quantity calculation:', { 
+            totalFilled, 
+            prevApplied, 
+            deltaQty 
+          });
+
           if (deltaQty > 0 && update.filledPrice != null) {
             appliedFilledQtyRef.current[update.orderId] = totalFilled;
+
+            console.log('[WS] Applying fill FIFO:', { 
+              symbol: orderSymbol, 
+              side, 
+              qty: deltaQty, 
+              price: Number(update.filledPrice) 
+            });
 
             applyFillFIFO({
               symbol: orderSymbol, // ✅ FIX
