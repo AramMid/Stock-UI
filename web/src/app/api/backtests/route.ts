@@ -112,7 +112,28 @@ async function processBacktestStrategy(strategyData: StrategyData, jobId: number
   return mockResults;
 }
 
+// Helper function to verify access token
+function verifyAccessToken(request: Request): boolean {
+  const authHeader = request.headers.get('authorization');
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return false;
+  }
+  
+  const token = authHeader.substring(7); // Remove 'Bearer ' prefix
+  // In a real application, you would verify the token with your authentication service
+  // For now, we just check if token exists (basic validation)
+  return !!token;
+}
+
 export async function POST(request: Request) {
+  // Verify access token
+  if (!verifyAccessToken(request)) {
+    return NextResponse.json(
+      { error: 'Unauthorized: Missing or invalid access token' },
+      { status: 401 }
+    );
+  }
+  
   try {
     // Parse the incoming JSON data
     const strategyData = await request.json();

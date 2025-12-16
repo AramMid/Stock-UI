@@ -1,4 +1,5 @@
 // Drawing service to handle chart drawing operations
+import { toolCursors } from './data/toolCursors';
 export class DrawingService {
   private container: HTMLElement | null = null;
   private activeTool: string | null = null;
@@ -18,6 +19,10 @@ export class DrawingService {
     this.handleMouseDown = this.handleMouseDown.bind(this);
     this.handleMouseMove = this.handleMouseMove.bind(this);
     this.handleMouseUp = this.handleMouseUp.bind(this);
+    // Initialize global cursor type
+    if (typeof window !== 'undefined') {
+      (window as any).currentCursorType = this.cursorType;
+    }
   }
 
   initialize(container: HTMLElement) {
@@ -58,6 +63,13 @@ export class DrawingService {
     }
   }
 
+  // Helper method to check if a tool is a drawing tool
+  private isDrawingTool(tool: string): boolean {
+    const drawingTools = ['trendline', 'brush', 'horizontal-line', 'vertical-line', 
+                         'rectangle', 'ellipse', 'polygon', 'triangle', 'arrow', 'text'];
+    return drawingTools.includes(tool);
+  }
+
   setActiveTool(tool: string | null) {
     this.activeTool = tool;
     this.updateCursor();
@@ -66,6 +78,8 @@ export class DrawingService {
   setCursorType(cursorType: 'diagonal' | 'dot' | 'arrow' | 'illustration') {
     console.log('DrawingService: Setting cursor type:', cursorType);
     this.cursorType = cursorType;
+    // Store cursor type globally so popup menu can access it
+    (window as any).currentCursorType = cursorType;
     // Force update cursor immediately
     this.updateCursor();
     // Also update after a small delay to ensure it sticks
@@ -83,23 +97,50 @@ export class DrawingService {
   private updateCursor() {
     if (!this.container) return;
 
-    if (this.activeTool === 'selection') {
-      const cursorStyle = this.getCursorStyle();
-      console.log('Updating cursor to:', cursorStyle, 'for tool:', this.activeTool, 'cursorType:', this.cursorType);
+    if (this.activeTool) {
+      let cursorStyle = 'default';
+      
+      // Get tool-specific cursor from configuration
+      const toolCursor = toolCursors[this.activeTool];
+      
+      if (toolCursor === 'dynamic' && this.activeTool === 'selection') {
+        // For selection tool, use the dynamically selected cursor
+        cursorStyle = this.getCursorStyle();
+      } else if (toolCursor) {
+        // Use tool-specific cursor
+        cursorStyle = toolCursor;
+      } else if (this.isDrawingTool(this.activeTool)) {
+        // Fallback to crosshair for drawing tools
+        cursorStyle = 'crosshair';
+      }
+      
+      console.log('Updating cursor to:', cursorStyle, 'for tool:', this.activeTool);
       this.container.style.cursor = cursorStyle;
 
       // Also update document body cursor for immediate feedback
       document.body.style.cursor = cursorStyle;
-    } else if (this.activeTool) {
-      this.container.style.cursor = 'crosshair';
-      document.body.style.cursor = 'crosshair';
+      
+      // Override any conflicting styles with !important
+      this.container.style.setProperty('cursor', cursorStyle, 'important');
+      document.body.style.setProperty('cursor', cursorStyle, 'important');
     } else {
       this.container.style.cursor = 'default';
       document.body.style.cursor = 'default';
+      
+      // Override any conflicting styles with !important
+      this.container.style.setProperty('cursor', 'default', 'important');
+      document.body.style.setProperty('cursor', 'default', 'important');
     }
   }
 
   private getCursorStyle(): string {
+    // Import cursor options to get the correct cursor values
+    const cursorOption = (window as any).cursorOptions?.find((opt: any) => opt.id === this.cursorType);
+    if (cursorOption && cursorOption.cursor) {
+      return cursorOption.cursor;
+    }
+    
+    // Fallback to default mapping
     switch (this.cursorType) {
       case 'diagonal':
         return 'crosshair';

@@ -20,6 +20,10 @@ import { WebSocketService } from "@/lib/services/webSocketService";
 import { NotificationService } from "@/lib/services/notificationService";
 import { splitOrderForExchangeLimit } from "@/lib/position-sizing";
 
+// Import cursor configurations to ensure they're loaded
+import "@/lib/data/cursorOptions";
+import "@/lib/data/toolCursors";
+
 import TopNavigation from "@/components/trading/TopNavigation";
 import StockInfoBar from "@/components/trading/StockInfoBar";
 import LeftSidebar from "@/components/trading/LeftSidebar";

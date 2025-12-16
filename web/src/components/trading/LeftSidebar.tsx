@@ -74,7 +74,25 @@ export default function LeftSidebar({
       return;
     }
     
-    // Handle drawing tools
+    // Handle selection tool - open cursor popup menu
+    if (toolId === "selection") {
+      // Get position of the selection tool button to position the popup menu
+      const toolButton = document.querySelector(`[data-tool-id="${toolId}"]`);
+      if (toolButton) {
+        const rect = toolButton.getBoundingClientRect();
+        setCursorMenuPosition({
+          x: rect.right + 10, // Position to the right of the button
+          y: rect.top
+        });
+        setCursorMenuOpen(true);
+      } else {
+        // Fallback position if we can't find the button
+        setCursorMenuPosition({ x: 50, y: 50 });
+        setCursorMenuOpen(true);
+      }
+    }
+    
+    // Set the active tool and notify listeners
     setActiveTool(toolId as never);
     if (onToolSelect) onToolSelect(toolId);
   };

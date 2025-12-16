@@ -18,8 +18,17 @@ export default function CursorPopupMenu({
   onCursorSelect,
   position = { x: 0, y: 0 }
 }: CursorPopupMenuProps) {
-  const [selectedCursor, setSelectedCursor] = useState<'diagonal' | 'dot' | 'arrow' | 'illustration'>('dot');
+  const [selectedCursor, setSelectedCursor] = useState<'diagonal' | 'dot' | 'arrow' | 'illustration'>('arrow');
   const menuRef = useRef<HTMLDivElement>(null);
+
+  // Update selected cursor when popup opens to match current drawing service cursor
+  useEffect(() => {
+    if (isOpen) {
+      // Get the current cursor type from drawing service
+      const currentCursorType = (window as any).currentCursorType || 'arrow';
+      setSelectedCursor(currentCursorType);
+    }
+  }, [isOpen]);
 
   // Close menu when clicking outside
   useEffect(() => {

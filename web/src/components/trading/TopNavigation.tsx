@@ -400,9 +400,6 @@ export default function TopNavigation({
                     enabled: showMACD,
                     handler: onToggleMACD,
                   },
-                  { id: "sma", name: "SMA (20)", enabled: false },
-                  { id: "ema", name: "EMA (20)", enabled: false },
-                  { id: "bb", name: "Bollinger Bands", enabled: false },
                 ].map((indicator) => (
                   <label
                     key={indicator.id}
