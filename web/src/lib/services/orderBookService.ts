@@ -2,8 +2,15 @@ import { OrderBook, OrderBookLevel, OrderBookUpdate, Trade } from "../types";
 import { Order } from "../order-management";
 import { OrderStatus } from "./orderService";
 import { MarketSimulationService } from "./marketSimulationService";
-import { MarketDepthLevel, SimulatedMarketData } from "./marketSimulationService";
-import { validateOrderQuantity, getExchangeBySymbol, getFluctuationLimit } from "../position-sizing";
+import {
+  MarketDepthLevel,
+  SimulatedMarketData,
+} from "./marketSimulationService";
+import {
+  validateOrderQuantity,
+  getExchangeBySymbol,
+  getFluctuationLimit,
+} from "../position-sizing";
 
 export class OrderBookService {
   private orderBook: OrderBook;
@@ -23,12 +30,12 @@ export class OrderBookService {
       symbol: "VIC.VN",
       spread: 0,
       totalBidVolume: 0,
-      totalAskVolume: 0
+      totalAskVolume: 0,
     };
 
     // Initialize market simulation
     this.marketSimulation = new MarketSimulationService();
-    
+
     // Start listening to market simulation updates
     this.startMarketSimulation();
   }
@@ -61,8 +68,8 @@ export class OrderBookService {
 
   // Add a new order to the order book
   addOrder(order: Order): { success: boolean; message: string } {
-    console.log(`[ORDER_BOOK] Adding order: ${order.id}, type: ${order.type}, price: ${order.price}, quantity: ${order.quantity}`);
-    
+    // Adding order to order book
+
     // Validate order
     const validation = this.validateOrder(order);
     if (!validation.valid) {
@@ -71,13 +78,13 @@ export class OrderBookService {
 
     // Process through market simulation for realistic matching
     const simulationResult = this.marketSimulation.processUserOrder(order);
-    
+
     if (simulationResult.success) {
       // Order was immediately matched
       order.status = "FILLED";
       order.filledQuantity = simulationResult.filledQuantity;
       order.filledPrice = simulationResult.filledPrice;
-      
+
       // Add trade record
       this.addTrade({
         id: `TRADE-${Date.now()}-${order.id}`,
@@ -85,28 +92,28 @@ export class OrderBookService {
         quantity: order.filledQuantity!,
         timestamp: new Date(),
         side: order.type,
-        symbol: order.symbol
+        symbol: order.symbol,
       });
 
       // Update order book
       this.updateOrderBook();
-      
-      return { 
-        success: true, 
-        message: `Order filled immediately at ${order.filledPrice}` 
+
+      return {
+        success: true,
+        message: `Order filled immediately at ${order.filledPrice}`,
       };
     } else {
       // Order is pending, add to order book
       order.status = "NEW";
       order.timestamp = new Date();
       this.orders.set(order.id, order);
-      
+
       // Update order book
       this.updateOrderBook();
-      
-      return { 
-        success: true, 
-        message: "Order added to order book" 
+
+      return {
+        success: true,
+        message: "Order added to order book",
       };
     }
   }
@@ -114,7 +121,12 @@ export class OrderBookService {
   // Validate order before adding
   private validateOrder(order: Order): { valid: boolean; message: string } {
     // Check required fields
-    if (!order.symbol || !order.type || !order.quantity || order.quantity <= 0) {
+    if (
+      !order.symbol ||
+      !order.type ||
+      !order.quantity ||
+      order.quantity <= 0
+    ) {
       return { valid: false, message: "Invalid order parameters" };
     }
 
@@ -135,13 +147,16 @@ export class OrderBookService {
       const currentPrice = marketData.price;
       const exchange = getExchangeBySymbol(order.symbol);
       const flucLimit = getFluctuationLimit(exchange);
-      
+
       // Calculate ceiling and floor prices with proper rounding
       const ceilingPrice = Math.floor(currentPrice * (1 + flucLimit));
       const floorPrice = Math.ceil(currentPrice * (1 - flucLimit));
 
       if (order.price! > ceilingPrice || order.price! < floorPrice) {
-        return { valid: false, message: `Price out of fluctuation band (Trần/Sàn). Valid range: ${floorPrice} - ${ceilingPrice}` };
+        return {
+          valid: false,
+          message: `Price out of fluctuation band (Trần/Sàn). Valid range: ${floorPrice} - ${ceilingPrice}`,
+        };
       }
     }
 
@@ -165,8 +180,6 @@ export class OrderBookService {
     order.canceledTime = new Date();
     this.orders.set(orderId, order);
 
-    console.log(`[ORDER_BOOK] Canceled order: ${orderId}`);
-
     // Update order book
     this.updateOrderBook();
 
@@ -174,7 +187,10 @@ export class OrderBookService {
   }
 
   // Update an order
-  updateOrder(orderId: string, updates: Partial<Order>): { success: boolean; message: string } {
+  updateOrder(
+    orderId: string,
+    updates: Partial<Order>
+  ): { success: boolean; message: string } {
     const order = this.orders.get(orderId);
     if (!order) {
       return { success: false, message: "Order not found" };
@@ -191,7 +207,10 @@ export class OrderBookService {
 
     for (const key in updates) {
       if (allowedUpdates.includes(key)) {
-        if (key in filteredUpdates && updates[key as keyof Order] !== undefined) {
+        if (
+          key in filteredUpdates &&
+          updates[key as keyof Order] !== undefined
+        ) {
           // Type-safe assignment for allowed update fields
           if (key === "quantity") {
             filteredUpdates.quantity = updates.quantity;
@@ -203,7 +222,10 @@ export class OrderBookService {
     }
 
     // Validate new values
-    if (filteredUpdates.quantity !== undefined && filteredUpdates.quantity <= 0) {
+    if (
+      filteredUpdates.quantity !== undefined &&
+      filteredUpdates.quantity <= 0
+    ) {
       return { success: false, message: "Quantity must be positive" };
     }
 
@@ -212,10 +234,12 @@ export class OrderBookService {
     }
 
     // Update order
-    const updatedOrder = { ...order, ...filteredUpdates, updatedTime: new Date() };
+    const updatedOrder = {
+      ...order,
+      ...filteredUpdates,
+      updatedTime: new Date(),
+    };
     this.orders.set(orderId, updatedOrder);
-
-    console.log(`[ORDER_BOOK] Updated order: ${orderId}`, filteredUpdates);
 
     // Update order book
     this.updateOrderBook();
@@ -229,13 +253,13 @@ export class OrderBookService {
       // Get market depth for specific symbol
       const depth = this.marketSimulation.getMarketDepth(symbol);
       const marketData = this.marketSimulation.getMarketData(symbol);
-      
+
       if (!marketData) {
         return this.orderBook;
       }
 
       const spread = this.calculateSpread(depth.bids, depth.asks);
-      
+
       return {
         bids: depth.bids,
         asks: depth.asks,
@@ -243,26 +267,32 @@ export class OrderBookService {
         timestamp: new Date(),
         symbol: symbol,
         spread: spread,
-        totalBidVolume: depth.bids.reduce((sum, bid) => sum + bid.totalQuantity, 0),
-        totalAskVolume: depth.asks.reduce((sum, ask) => sum + ask.totalQuantity, 0)
+        totalBidVolume: depth.bids.reduce(
+          (sum, bid) => sum + bid.totalQuantity,
+          0
+        ),
+        totalAskVolume: depth.asks.reduce(
+          (sum, ask) => sum + ask.totalQuantity,
+          0
+        ),
       };
     }
-    
+
     return { ...this.orderBook };
   }
 
   // Get recent trades
   getRecentTrades(limit: number = 50, symbol?: string): Trade[] {
     const allTrades = this.marketSimulation.getTradeHistory(symbol);
-    
+
     return allTrades
-      .map(trade => ({
+      .map((trade) => ({
         id: `TRADE-${trade.timestamp}`,
         price: trade.price,
         quantity: trade.quantity,
         timestamp: new Date(trade.timestamp),
-        side: trade.buyerBotId ? 'buy' : ('sell' as 'buy' | 'sell'),
-        symbol: trade.symbol
+        side: trade.buyerBotId ? "buy" : ("sell" as "buy" | "sell"),
+        symbol: trade.symbol,
       }))
       .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
       .slice(0, limit);
@@ -276,26 +306,24 @@ export class OrderBookService {
   // Get all orders
   getAllOrders(filters?: {
     status?: OrderStatus;
-    type?: 'buy' | 'sell';
+    type?: "buy" | "sell";
     symbol?: string;
   }): Order[] {
     let orders = Array.from(this.orders.values());
 
     if (filters) {
       if (filters.status) {
-        orders = orders.filter(order => order.status === filters.status);
+        orders = orders.filter((order) => order.status === filters.status);
       }
       if (filters.type) {
-        orders = orders.filter(order => order.type === filters.type);
+        orders = orders.filter((order) => order.type === filters.type);
       }
       if (filters.symbol) {
-        orders = orders.filter(order => order.symbol === filters.symbol);
+        orders = orders.filter((order) => order.symbol === filters.symbol);
       }
     }
 
-    return orders.sort((a, b) => 
-      b.timestamp.getTime() - a.timestamp.getTime()
-    );
+    return orders.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
   }
 
   // Register callback for order book updates
@@ -305,16 +333,18 @@ export class OrderBookService {
 
   // Unregister callback
   offOrderBookUpdate(callback: (orderBook: OrderBook) => void): void {
-    this.orderBookUpdateCallbacks = this.orderBookUpdateCallbacks.filter(cb => cb !== callback);
+    this.orderBookUpdateCallbacks = this.orderBookUpdateCallbacks.filter(
+      (cb) => cb !== callback
+    );
   }
 
   // Notify all callbacks of order book update
   private notifyOrderBookUpdate(orderBook: OrderBook): void {
-    this.orderBookUpdateCallbacks.forEach(callback => {
+    this.orderBookUpdateCallbacks.forEach((callback) => {
       try {
         callback(orderBook);
       } catch (error) {
-        console.error('Error in order book update callback:', error);
+        // Error in order book update callback handling
       }
     });
   }
@@ -328,7 +358,7 @@ export class OrderBookService {
         price: level.price,
         totalQuantity: level.quantity,
         orderCount: 1,
-        type: level.type
+        type: level.type,
       }))
       .sort((a: OrderBookLevel, b: OrderBookLevel) => b.price - a.price);
 
@@ -337,7 +367,7 @@ export class OrderBookService {
         price: level.price,
         totalQuantity: level.quantity,
         orderCount: 1,
-        type: level.type
+        type: level.type,
       }))
       .sort((a: OrderBookLevel, b: OrderBookLevel) => a.price - b.price);
 
@@ -351,7 +381,7 @@ export class OrderBookService {
       symbol: marketData.symbol,
       spread: spread,
       totalBidVolume: bids.reduce((sum, bid) => sum + bid.totalQuantity, 0),
-      totalAskVolume: asks.reduce((sum, ask) => sum + ask.totalQuantity, 0)
+      totalAskVolume: asks.reduce((sum, ask) => sum + ask.totalQuantity, 0),
     };
 
     // Notify subscribers
@@ -359,74 +389,92 @@ export class OrderBookService {
   }
 
   // Calculate spread between best bid and ask
-  private calculateSpread(bids: OrderBookLevel[], asks: OrderBookLevel[]): number {
+  private calculateSpread(
+    bids: OrderBookLevel[],
+    asks: OrderBookLevel[]
+  ): number {
     if (bids.length === 0 || asks.length === 0) return 0;
-    
+
     const bestBid = bids[0]?.price || 0;
     const bestAsk = asks[0]?.price || 0;
-    
+
     return bestAsk - bestBid;
   }
 
   // Update order book based on actual orders
   private updateOrderBook(): void {
     // Group orders by price level
-    const bidLevels = new Map<number, { totalQuantity: number; orderCount: number }>();
-    const askLevels = new Map<number, { totalQuantity: number; orderCount: number }>();
-    
+    const bidLevels = new Map<
+      number,
+      { totalQuantity: number; orderCount: number }
+    >();
+    const askLevels = new Map<
+      number,
+      { totalQuantity: number; orderCount: number }
+    >();
+
     // Process all orders to build order book levels
-    this.orders.forEach(order => {
+    this.orders.forEach((order) => {
       // Only include active orders in the order book
       if (order.status === "NEW" || order.status === "PARTIALLY_FILLED") {
         const price = order.price || 0;
         if (price > 0) {
-          const remainingQuantity = order.quantity - (order.filledQuantity || 0);
-          
+          const remainingQuantity =
+            order.quantity - (order.filledQuantity || 0);
+
           if (remainingQuantity > 0) {
             if (order.type === "buy") {
               // Add to bid levels
-              const existing = bidLevels.get(price) || { totalQuantity: 0, orderCount: 0 };
+              const existing = bidLevels.get(price) || {
+                totalQuantity: 0,
+                orderCount: 0,
+              };
               bidLevels.set(price, {
                 totalQuantity: existing.totalQuantity + remainingQuantity,
-                orderCount: existing.orderCount + 1
+                orderCount: existing.orderCount + 1,
               });
             } else {
               // Add to ask levels
-              const existing = askLevels.get(price) || { totalQuantity: 0, orderCount: 0 };
+              const existing = askLevels.get(price) || {
+                totalQuantity: 0,
+                orderCount: 0,
+              };
               askLevels.set(price, {
                 totalQuantity: existing.totalQuantity + remainingQuantity,
-                orderCount: existing.orderCount + 1
+                orderCount: existing.orderCount + 1,
               });
             }
           }
         }
       }
     });
-    
+
     // Convert maps to arrays and sort
     const bids: OrderBookLevel[] = Array.from(bidLevels.entries())
       .map(([price, data]) => ({
         price,
         totalQuantity: data.totalQuantity,
         orderCount: data.orderCount,
-        type: 'limit'
+        type: "limit",
       }))
       .sort((a, b) => b.price - a.price); // Highest price first for bids
-      
+
     const asks: OrderBookLevel[] = Array.from(askLevels.entries())
       .map(([price, data]) => ({
         price,
         totalQuantity: data.totalQuantity,
         orderCount: data.orderCount,
-        type: 'limit'
+        type: "limit",
       }))
       .sort((a, b) => a.price - b.price); // Lowest price first for asks
 
     // Get market data for last traded price
-    const marketData = this.marketSimulation.getMarketData(this.orderBook.symbol ?? 'VIC.VN');
+    const marketData = this.marketSimulation.getMarketData(
+      this.orderBook.symbol ?? "VIC.VN"
+    );
     const lastTradedPrice = marketData?.price || this.orderBook.lastTradedPrice;
     const spread = this.calculateSpread(bids, asks);
-    
+
     this.orderBook = {
       bids,
       asks,
@@ -435,7 +483,7 @@ export class OrderBookService {
       symbol: this.orderBook.symbol,
       spread: spread,
       totalBidVolume: bids.reduce((sum, bid) => sum + bid.totalQuantity, 0),
-      totalAskVolume: asks.reduce((sum, ask) => sum + ask.totalQuantity, 0)
+      totalAskVolume: asks.reduce((sum, ask) => sum + ask.totalQuantity, 0),
     };
 
     // Notify subscribers
@@ -445,12 +493,12 @@ export class OrderBookService {
   // Matching engine logic
   private matchOrders(): void {
     const ordersToMatch = this.getAllOrders({ status: "NEW" });
-    
+
     if (ordersToMatch.length === 0) return;
 
     // Group orders by symbol
     const ordersBySymbol = new Map<string, Order[]>();
-    ordersToMatch.forEach(order => {
+    ordersToMatch.forEach((order) => {
       if (!ordersBySymbol.has(order.symbol)) {
         ordersBySymbol.set(order.symbol, []);
       }
@@ -467,7 +515,7 @@ export class OrderBookService {
   private matchOrdersForSymbol(orders: Order[], symbol: string): void {
     // Separate buy and sell orders
     const buyOrders = orders
-      .filter(order => order.type === "buy" && order.status === "NEW")
+      .filter((order) => order.type === "buy" && order.status === "NEW")
       .sort((a, b) => {
         // Price-time priority: higher price first, then earlier timestamp
         const priceDiff = (b.price || 0) - (a.price || 0);
@@ -476,7 +524,7 @@ export class OrderBookService {
       });
 
     const sellOrders = orders
-      .filter(order => order.type === "sell" && order.status === "NEW")
+      .filter((order) => order.type === "sell" && order.status === "NEW")
       .sort((a, b) => {
         // Price-time priority: lower price first, then earlier timestamp
         const priceDiff = (a.price || 0) - (b.price || 0);
@@ -493,7 +541,7 @@ export class OrderBookService {
 
         // Check if prices match (for limit orders)
         const canMatch = this.canOrdersMatch(buyOrder, sellOrder);
-        
+
         if (canMatch) {
           this.executeMatch(buyOrder, sellOrder, symbol);
           break; // Move to next buy order
@@ -512,44 +560,50 @@ export class OrderBookService {
     // Limit orders: buy price must be >= sell price
     const buyPrice = buyOrder.price || 0;
     const sellPrice = sellOrder.price || 0;
-    
+
     return buyPrice >= sellPrice;
   }
 
   // Execute a match between two orders
-  private executeMatch(buyOrder: Order, sellOrder: Order, symbol: string): void {
+  private executeMatch(
+    buyOrder: Order,
+    sellOrder: Order,
+    symbol: string
+  ): void {
     const buyRemaining = buyOrder.quantity - (buyOrder.filledQuantity || 0);
     const sellRemaining = sellOrder.quantity - (sellOrder.filledQuantity || 0);
     const matchQuantity = Math.min(buyRemaining, sellRemaining);
-    
+
     if (matchQuantity <= 0) return;
 
     // Determine match price
     const matchPrice = this.determineMatchPrice(buyOrder, sellOrder);
-    
+
     // Update buy order
     const newBuyFilled = (buyOrder.filledQuantity || 0) + matchQuantity;
-    const buyStatus: OrderStatus = newBuyFilled === buyOrder.quantity ? "FILLED" : "PARTIALLY_FILLED";
-    
+    const buyStatus: OrderStatus =
+      newBuyFilled === buyOrder.quantity ? "FILLED" : "PARTIALLY_FILLED";
+
     const updatedBuyOrder: Order = {
       ...buyOrder,
       status: buyStatus,
       filledQuantity: newBuyFilled,
       filledPrice: matchPrice,
-      updatedTime: new Date()
+      updatedTime: new Date(),
     };
     this.orders.set(buyOrder.id, updatedBuyOrder);
 
     // Update sell order
     const newSellFilled = (sellOrder.filledQuantity || 0) + matchQuantity;
-    const sellStatus: OrderStatus = newSellFilled === sellOrder.quantity ? "FILLED" : "PARTIALLY_FILLED";
-    
+    const sellStatus: OrderStatus =
+      newSellFilled === sellOrder.quantity ? "FILLED" : "PARTIALLY_FILLED";
+
     const updatedSellOrder: Order = {
       ...sellOrder,
       status: sellStatus,
       filledQuantity: newSellFilled,
       filledPrice: matchPrice,
-      updatedTime: new Date()
+      updatedTime: new Date(),
     };
     this.orders.set(sellOrder.id, updatedSellOrder);
 
@@ -559,13 +613,11 @@ export class OrderBookService {
       price: matchPrice,
       quantity: matchQuantity,
       timestamp: new Date(),
-      side: 'buy', // The buy side initiated the match
+      side: "buy", // The buy side initiated the match
       symbol: symbol,
       // buyOrderId and sellOrderId are not part of Trade interface
       // side: 'buy', // The buy side initiated the match
     });
-
-    console.log(`[ORDER_MATCH] Matched ${matchQuantity} shares at ${matchPrice} between ${buyOrder.id} and ${sellOrder.id}`);
 
     // Update order book
     this.updateOrderBook();
@@ -591,7 +643,7 @@ export class OrderBookService {
       // Both limit orders: use midpoint or whichever came first
       const buyPrice = buyOrder.price || currentPrice;
       const sellPrice = sellOrder.price || currentPrice;
-      
+
       // If buy price >= sell price, use the price of the order that was placed first
       if (buyOrder.timestamp < sellOrder.timestamp) {
         return buyPrice;
@@ -604,7 +656,7 @@ export class OrderBookService {
   // Add a trade to the history
   private addTrade(trade: Trade): void {
     this.trades.push(trade);
-    
+
     // Keep only last 1000 trades
     if (this.trades.length > 1000) {
       this.trades = this.trades.slice(-1000);
@@ -615,12 +667,18 @@ export class OrderBookService {
   }
 
   // Get market statistics
-  getMarketStatistics(): ReturnType<typeof MarketSimulationService.prototype.getMarketStatistics> {
+  getMarketStatistics(): ReturnType<
+    typeof MarketSimulationService.prototype.getMarketStatistics
+  > {
     return this.marketSimulation.getMarketStatistics();
   }
 
   // Get order book stability metrics
-  getOrderBookStability(symbol: string): ReturnType<typeof MarketSimulationService.prototype.getOrderBookStabilityMetrics> {
+  getOrderBookStability(
+    symbol: string
+  ): ReturnType<
+    typeof MarketSimulationService.prototype.getOrderBookStabilityMetrics
+  > {
     return this.marketSimulation.getOrderBookStabilityMetrics(symbol);
   }
 

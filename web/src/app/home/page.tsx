@@ -76,9 +76,9 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
 
   // Chart state
   const [currentVolume, setCurrentVolume] = useState(0);
-  const [chartType, setChartType] = useState<
-    "candlestick" | "line" | "area"
-  >("candlestick");
+  const [chartType, setChartType] = useState<"candlestick" | "line" | "area">(
+    "candlestick"
+  );
   const [showRSI, setShowRSI] = useState(false);
   const [showMACD, setShowMACD] = useState(false);
 
@@ -152,7 +152,16 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
 
   // Watchlist symbols
   const watchlistStocks = useMemo(
-    () => ["VIC.VN", "VHM.VN", "VCB.VN", "TCB.VN", "FPT.VN", "VNM.VN", "HPG.VN", "MSN.VN"],
+    () => [
+      "VIC.VN",
+      "VHM.VN",
+      "VCB.VN",
+      "TCB.VN",
+      "FPT.VN",
+      "VNM.VN",
+      "HPG.VN",
+      "MSN.VN",
+    ],
     []
   );
 
@@ -171,12 +180,10 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
   // Effect to initialize lots from existing positions
   useEffect(() => {
     if (loadingPositions || !positions) return;
-  
+
     // Clear existing lots and re-initialize when positions change
     lotsRef.current.clear();
-  
-    console.log('[INIT] Initializing lots from positions:', positions);
-  
+
     // Convert positions to lots (assuming average price of 10000 for initialization)
     // In a real implementation, you would need to get the actual average price from the backend
     positions.forEach((shares, symbol) => {
@@ -184,10 +191,9 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
         // Create a single lot with an estimated average price
         const avgPrice = 10000; // Placeholder - you'd need to get this from backend
         lotsRef.current.set(symbol, [{ qty: shares, price: avgPrice }]);
-        console.log('[INIT] Created lot for', symbol, ':', { qty: shares, price: avgPrice });
       }
     });
-  
+
     // Update P&L after initialization
     markToMarketAll();
   }, [positions, loadingPositions]);
@@ -225,19 +231,24 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
       }
     };
 
-    window.addEventListener("toggleStrategyTesterFullscreen", handleToggleFullscreen);
+    window.addEventListener(
+      "toggleStrategyTesterFullscreen",
+      handleToggleFullscreen
+    );
     return () => {
-      window.removeEventListener("toggleStrategyTesterFullscreen", handleToggleFullscreen);
+      window.removeEventListener(
+        "toggleStrategyTesterFullscreen",
+        handleToggleFullscreen
+      );
     };
   }, [layoutManager, isPrivateMode]);
   // ✅ Re-mark-to-market whenever latest chart price changes
-useEffect(() => {
-  if (!ohlcData?.close) return;
-  // mỗi khi chart close đổi => unrealized/equity update
-  markToMarketAll();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [ohlcData?.close]);
-
+  useEffect(() => {
+    if (!ohlcData?.close) return;
+    // mỗi khi chart close đổi => unrealized/equity update
+    markToMarketAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ohlcData?.close]);
 
   // Wrap price update for chart
   const handlePriceUpdate = useCallback(
@@ -288,7 +299,8 @@ useEffect(() => {
     if (Number.isFinite(p) && p > 0) return p;
 
     // fallback: if currently viewing this symbol, use OHLC close
-    if (symbol === selectedSymbol && ohlcData?.close != null) return Number(ohlcData.close);
+    if (symbol === selectedSymbol && ohlcData?.close != null)
+      return Number(ohlcData.close);
 
     // last fallback
     return Number(lastPriceRef.current || 0);
@@ -305,11 +317,6 @@ useEffect(() => {
       }
     }
     setUnrealizedPnl(u);
-    
-    console.log('[P&L] markToMarketAll:', { 
-      lots: Array.from(lotsRef.current.entries()),
-      unrealized: u
-    });
 
     // Equity = cash + market value
     let mv = 0;
@@ -329,12 +336,6 @@ useEffect(() => {
 
     const closePrice = Number(ohlcData.close);
     lastPriceRef.current = closePrice;
-
-    console.log('[PRICE] Updating last price:', { 
-      symbol: selectedSymbol, 
-      closePrice,
-      previous: lastPriceBySymbolRef.current[selectedSymbol]
-    });
 
     // ✅ store last price for this symbol
     lastPriceBySymbolRef.current[selectedSymbol] = closePrice;
@@ -359,15 +360,12 @@ useEffect(() => {
     if (!Number.isFinite(price) || price <= 0 || qty <= 0) return;
 
     const lots = lotsRef.current.get(symbol) ?? [];
-    
-    console.log('[P&L] applyFillFIFO input:', { symbol, side, qty, price });
 
     if (side === "buy") {
       // ✅ Add fee into cost basis
       const effectiveBuyPrice = price * (1 + FEE_RATE);
       lots.push({ qty, price: effectiveBuyPrice });
       lotsRef.current.set(symbol, lots);
-      console.log('[P&L] Added buy lot:', { symbol, qty, price: effectiveBuyPrice, lots: [...lots] });
       return;
     }
 
@@ -401,14 +399,6 @@ useEffect(() => {
     const realized = netProceeds - cost;
     setRealizedPnl((prev) => {
       const newRealized = prev + realized;
-      console.log('[P&L] Updated realized P&L:', { 
-        prev, 
-        realized, 
-        newRealized,
-        executed,
-        cost,
-        netProceeds
-      });
       return newRealized;
     });
   }
@@ -425,7 +415,7 @@ useEffect(() => {
   }, []);
 
   const handleScreenshot = useCallback(async () => {
-    console.log("Screenshot functionality not implemented yet");
+    // Screenshot functionality not implemented yet
   }, [selectedSymbol, timeframe]);
 
   const handleToolSelect = useCallback(
@@ -455,11 +445,11 @@ useEffect(() => {
   );
 
   const handleGroupToggle = useCallback((groupId: string) => {
-    console.log("Group toggled:", groupId);
+    // Group toggled: groupId
   }, []);
 
   const handleMenuOpen = useCallback(() => {
-    console.log("Menu opened");
+    // Menu opened
   }, []);
 
   const handleCloseOrderPanel = useCallback(() => {
@@ -596,13 +586,6 @@ useEffect(() => {
           // ✅ Apply P&L only for NEW delta filled qty
           const normalizedStatus = String(update.status).toUpperCase();
 
-          console.log('[WS] Order update received:', { 
-            orderId: update.orderId, 
-            status: normalizedStatus, 
-            filledQuantity: update.filledQuantity, 
-            filledPrice: update.filledPrice 
-          });
-
           const totalFilled =
             update.filledQuantity != null
               ? Number(update.filledQuantity)
@@ -613,21 +596,8 @@ useEffect(() => {
           const prevApplied = appliedFilledQtyRef.current[update.orderId] ?? 0;
           const deltaQty = totalFilled - prevApplied;
 
-          console.log('[WS] Quantity calculation:', { 
-            totalFilled, 
-            prevApplied, 
-            deltaQty 
-          });
-
           if (deltaQty > 0 && update.filledPrice != null) {
             appliedFilledQtyRef.current[update.orderId] = totalFilled;
-
-            console.log('[WS] Applying fill FIFO:', { 
-              symbol: orderSymbol, 
-              side, 
-              qty: deltaQty, 
-              price: Number(update.filledPrice) 
-            });
 
             applyFillFIFO({
               symbol: orderSymbol, // ✅ FIX
@@ -751,9 +721,9 @@ useEffect(() => {
             className="grid gap-2 transition-none relative"
             style={{
               width: `${layoutManager.horizontalLayout.split}%`,
-              gridTemplateRows: `${layoutManager.chartAccountLayout.split}fr 12px ${
-                100 - layoutManager.chartAccountLayout.split
-              }fr`,
+              gridTemplateRows: `${
+                layoutManager.chartAccountLayout.split
+              }fr 12px ${100 - layoutManager.chartAccountLayout.split}fr`,
             }}
           >
             <ChartSection
@@ -1015,7 +985,10 @@ useEffect(() => {
 
                     const handleMouseUp = () => {
                       setIsOrderPanelDragging(false);
-                      document.removeEventListener("mousemove", handleMouseMove);
+                      document.removeEventListener(
+                        "mousemove",
+                        handleMouseMove
+                      );
                       document.removeEventListener("mouseup", handleMouseUp);
                       document.body.style.cursor = "";
                       document.body.style.userSelect = "";
@@ -1034,7 +1007,10 @@ useEffect(() => {
             )}
 
             <div className="rounded-lg overflow-hidden bg-[#131722] h-full">
-              <StockInfoSection selectedSymbol={selectedSymbol} isDarkMode={isDarkMode} />
+              <StockInfoSection
+                selectedSymbol={selectedSymbol}
+                isDarkMode={isDarkMode}
+              />
             </div>
 
             <ResizableDivider

@@ -54,7 +54,7 @@ export class WebSocketService {
       try {
         callback(cached);
       } catch (e) {
-        console.error("Error in replayed order update callback:", e);
+        // Error in replayed order update callback handling
       }
     }
 
@@ -89,9 +89,7 @@ export class WebSocketService {
 
     const set = this.subscribers.get(update.orderId);
 
-    console.log(
-      `[WS] sendOrderUpdate order=${update.orderId} status=${update.status} subs=${set ? set.size : 0}`
-    );
+    // Send order update to subscribers
 
     if (!set || set.size === 0) return;
 
@@ -99,7 +97,7 @@ export class WebSocketService {
       try {
         cb(update);
       } catch (error) {
-        console.error("Error in order update callback:", error);
+        // Error in order update callback
       }
     }
   }

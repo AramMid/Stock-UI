@@ -42,7 +42,7 @@ interface SettingsModalProps {
     userBalance: {
       balance: {
         availableBalance: number;
-      }
+      };
     } | null;
   };
 }
@@ -65,7 +65,7 @@ export default function SettingsModal({
 
   // Debugging: Log the userData to see what's being passed
   useEffect(() => {
-    console.log('SettingsModal userData:', userData);
+    // Removed debug logging
   }, [userData]);
 
   const [firstName, setFirstName] = useState(userDetail?.first_name || "");
@@ -75,7 +75,7 @@ export default function SettingsModal({
   const [address, setAddress] = useState("123 Nguyễn Huệ, Quận 1, TP.HCM");
   const [dob, setDob] = useState("1995-03-15");
   const [occupation, setOccupation] = useState("Software Developer");
-  
+
   const [topUpAmount, setTopUpAmount] = useState<number | "">(0);
   const [selectedPreset, setSelectedPreset] = useState<number | null>(1000000);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
@@ -141,8 +141,10 @@ export default function SettingsModal({
     // For demo purposes, we'll just show a success message
     // In a real implementation, this would call an API to update the balance
     onMoneyRequest(amount);
-    
-    showSuccess(`Yêu cầu nạp ${formatCurrency(amount)} đã được gửi thành công!`);
+
+    showSuccess(
+      `Yêu cầu nạp ${formatCurrency(amount)} đã được gửi thành công!`
+    );
     setSelectedPreset(null);
     setTopUpAmount(0);
   };
@@ -215,11 +217,13 @@ export default function SettingsModal({
           {/* LEFT SIDEBAR */}
           <aside className="lg:w-1/4 bg-gray-50 border-r border-gray-200">
             <nav className="p-1">
-              {([
-                { key: "profile", label: "👤 Profile", color: "blue" },
-                { key: "funds", label: "💰 Funds", color: "green" },
-                { key: "logout", label: "🚪 Log Out", color: "red" },
-              ] as const).map((item) => (
+              {(
+                [
+                  { key: "profile", label: "👤 Profile", color: "blue" },
+                  { key: "funds", label: "💰 Funds", color: "green" },
+                  { key: "logout", label: "🚪 Log Out", color: "red" },
+                ] as const
+              ).map((item) => (
                 <button
                   key={item.key}
                   onClick={() => setActiveTab(item.key)}
@@ -229,7 +233,9 @@ export default function SettingsModal({
                       : "text-gray-600 hover:bg-gray-100"
                   }`}
                 >
-                  <span className="mr-3 text-lg">{item.label.split(" ")[0]}</span>
+                  <span className="mr-3 text-lg">
+                    {item.label.split(" ")[0]}
+                  </span>
                   <span>{item.label.split(" ").slice(1).join(" ")}</span>
                   {item.key === "profile" && (
                     <div
@@ -281,11 +287,14 @@ export default function SettingsModal({
                     <div className="flex items-center">
                       <div className="bg-white/20 rounded-full w-16 h-16 flex items-center justify-center mr-4">
                         <span className="text-2xl font-bold">
-                          {firstName.charAt(0)}{lastName.charAt(0)}
+                          {firstName.charAt(0)}
+                          {lastName.charAt(0)}
                         </span>
                       </div>
                       <div>
-                        <h2 className="text-xl font-bold">{firstName} {lastName}</h2>
+                        <h2 className="text-xl font-bold">
+                          {firstName} {lastName}
+                        </h2>
                         <p className="text-blue-100">{email}</p>
                         <div className="flex items-center mt-1">
                           <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-white/20 text-white">
@@ -436,7 +445,9 @@ export default function SettingsModal({
                           <p className="text-gray-500">Member Since</p>
                           <p className="font-medium mt-1">
                             {userDetail?.created_at
-                              ? new Date(userDetail.created_at).toLocaleDateString()
+                              ? new Date(
+                                  userDetail.created_at
+                                ).toLocaleDateString()
                               : "N/A"}
                           </p>
                         </div>
@@ -444,7 +455,9 @@ export default function SettingsModal({
                           <p className="text-gray-500">Last Login</p>
                           <p className="font-medium mt-1">
                             {userDetail?.last_login_at
-                              ? new Date(userDetail.last_login_at).toLocaleDateString()
+                              ? new Date(
+                                  userDetail.last_login_at
+                                ).toLocaleDateString()
                               : "Never"}
                           </p>
                         </div>
@@ -483,13 +496,19 @@ export default function SettingsModal({
                   <div
                     className="rounded-xl p-6 text-center text-white mb-8"
                     style={{
-                      background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
+                      background:
+                        "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
                     }}
                   >
-                    <h3 className="text-sm font-medium opacity-90 mb-2">Số Dư Tài Khoản</h3>
-                    <div className="text-3xl font-bold mb-2">{formatCurrency(balance)}</div>
+                    <h3 className="text-sm font-medium opacity-90 mb-2">
+                      Số Dư Tài Khoản
+                    </h3>
+                    <div className="text-3xl font-bold mb-2">
+                      {formatCurrency(balance)}
+                    </div>
                     <p className="text-sm opacity-90">
-                      Cập nhật lúc: {new Date().toLocaleTimeString("vi-VN")} - {new Date().toLocaleDateString("vi-VN")}
+                      Cập nhật lúc: {new Date().toLocaleTimeString("vi-VN")} -{" "}
+                      {new Date().toLocaleDateString("vi-VN")}
                     </p>
                   </div>
 
@@ -513,7 +532,8 @@ export default function SettingsModal({
                           style={
                             selectedPreset === amount
                               ? {
-                                  background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
+                                  background:
+                                    "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
                                 }
                               : undefined
                           }
@@ -552,7 +572,8 @@ export default function SettingsModal({
                     onClick={handleMoneyRequest}
                     className="w-full rounded-xl py-4 text-sm font-semibold text-white transition hover:shadow-lg hover:-translate-y-0.5 mt-2"
                     style={{
-                      background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
+                      background:
+                        "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
                     }}
                   >
                     Cập Nhật Thông Tin
@@ -573,8 +594,8 @@ export default function SettingsModal({
                       Ready to Leave?
                     </h3>
                     <p className="text-gray-600 max-w-md mx-auto">
-                      Are you sure you want to log out? You&apos;ll need to log back in to
-                      access your account.
+                      Are you sure you want to log out? You&apos;ll need to log
+                      back in to access your account.
                     </p>
                   </div>
                   <div className="flex gap-4 w-full max-w-xs">

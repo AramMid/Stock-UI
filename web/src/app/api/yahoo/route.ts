@@ -11,10 +11,6 @@ export async function GET(request: NextRequest) {
     const interval = searchParams.get("interval") || "1d";
     const range = searchParams.get("range") || "1y";
 
-    console.log(
-      `API Request - Symbol: ${symbol}, Interval: ${interval}, Range: ${range}`
-    );
-
     // Handle special symbols like FUESSV30.HM
     let yahooSymbol = symbol;
     if (symbol === "FUESSV30.HM") {
@@ -24,8 +20,6 @@ export async function GET(request: NextRequest) {
 
     // Yahoo Finance API endpoint
     const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=${interval}&range=${range}`;
-
-    console.log(`Fetching data from Yahoo Finance: ${yahooUrl}`);
 
     const response = await fetch(yahooUrl, {
       method: "GET",
@@ -42,12 +36,8 @@ export async function GET(request: NextRequest) {
     });
 
     if (!response.ok) {
-      console.error(
-        `Yahoo Finance API error: ${response.status} ${response.statusText}`
-      );
-
+      // Yahoo Finance API error handling
       // Return mock data for development instead of error
-      console.log("Returning mock data due to API error");
       const mockData = generateMockData(symbol);
       return NextResponse.json(mockData, {
         headers: {
@@ -57,15 +47,13 @@ export async function GET(request: NextRequest) {
         },
       });
     }
-
     const data = await response.json();
 
     // Validate the response structure
     if (!data.chart || !data.chart.result || data.chart.result.length === 0) {
-      console.error("Invalid Yahoo Finance response structure:", data);
+      // Invalid Yahoo Finance response structure handling
 
       // Return mock data instead of error
-      console.log("Returning mock data due to invalid response structure");
       const mockData = generateMockData(symbol);
       return NextResponse.json(mockData, {
         headers: {
@@ -83,10 +71,9 @@ export async function GET(request: NextRequest) {
       "Access-Control-Allow-Headers": "Content-Type, Authorization",
     };
 
-    console.log(`Successfully fetched data for ${symbol}`);
     return NextResponse.json(data, { headers });
   } catch (error) {
-    console.error("Yahoo Finance API route error:", error);
+    // Yahoo Finance API route error handling
 
     // Return mock data if Yahoo Finance is unavailable
     const mockData = generateMockData();
@@ -101,7 +88,6 @@ export async function GET(request: NextRequest) {
   }
 }
 
-
 export async function OPTIONS() {
   return new NextResponse(null, {
     status: 200,
@@ -112,7 +98,6 @@ export async function OPTIONS() {
     },
   });
 }
-
 
 function generateMockData(symbol = "MOCK") {
   const now = Math.floor(Date.now() / 1000);
@@ -143,19 +128,19 @@ function generateMockData(symbol = "MOCK") {
     // Add more realistic price movements
     const trend = (Math.random() - 0.5) * 0.02; // -1% to +1% trend
     const volatility = 0.02 + Math.random() * 0.03; // 2% to 5% volatility
-    
+
     const open = basePrice;
     const changePercent = trend + (Math.random() - 0.5) * volatility;
     const close = +(open * (1 + changePercent)).toFixed(2);
-    
+
     // Ensure high and low are realistic
-    const high = +(
-      Math.max(open, close) * (1 + Math.random() * 0.01)
-    ).toFixed(2);
-    const low = +(
-      Math.min(open, close) * (1 - Math.random() * 0.01)
-    ).toFixed(2);
-    
+    const high = +(Math.max(open, close) * (1 + Math.random() * 0.01)).toFixed(
+      2
+    );
+    const low = +(Math.min(open, close) * (1 - Math.random() * 0.01)).toFixed(
+      2
+    );
+
     // Volume with realistic variations
     const volume = Math.floor(
       (500000 + Math.random() * 2000000) * (0.8 + Math.random() * 0.4)

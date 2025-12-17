@@ -1,48 +1,159 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getUserBalance, getUserDetail } from "@/lib/services/userService";
+
+import styles from "./settings.scope.module.css";
 
 // --- SVG ICONS ---
 const Icons = {
   User: () => (
-    <svg width="22" height="22" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+    <svg
+      width="22"
+      height="22"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+      strokeWidth={1.5}
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
+      />
     </svg>
   ),
   Wallet: () => (
-    <svg width="22" height="22" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
+    <svg
+      width="22"
+      height="22"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+      strokeWidth={1.5}
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"
+      />
     </svg>
   ),
   Logout: () => (
-    <svg width="22" height="22" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+    <svg
+      width="22"
+      height="22"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+      strokeWidth={1.5}
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"
+      />
     </svg>
   ),
   Back: () => (
-    <svg width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+    <svg
+      width="24"
+      height="24"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+      strokeWidth={2}
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M10 19l-7-7m0 0l7-7m-7 7h18"
+      />
     </svg>
   ),
   Check: () => (
-    <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+    <svg
+      width="20"
+      height="20"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+      strokeWidth={3}
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M5 13l4 4L19 7"
+      />
     </svg>
   ),
   Shield: () => (
-    <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+    <svg
+      width="18"
+      height="18"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+      strokeWidth={1.5}
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"
+      />
     </svg>
   ),
 };
 
+type TabId = "profile" | "funds" | "logout";
+
+type UserData = {
+  id: number;
+  email: string;
+  first_name: string;
+  last_name: string;
+  phone: string | null;
+  balance: number;
+  is_active: boolean;
+  address: string;
+  dob: string;
+  occupation: string;
+  email_verified_at: Date | null;
+  last_login_at: Date | null;
+  created_at: Date | null;
+};
+
+const colorMap = {
+  blue: {
+    iconActive: "text-blue-400",
+    dot: "bg-blue-500",
+  },
+  emerald: {
+    iconActive: "text-emerald-400",
+    dot: "bg-emerald-500",
+  },
+  red: {
+    iconActive: "text-red-400",
+    dot: "bg-red-500",
+  },
+} as const;
+
+const NAV_ITEMS: Array<{
+  id: TabId;
+  label: string;
+  icon: () => JSX.Element;
+  color: keyof typeof colorMap;
+}> = [
+  { id: "profile", label: "Profile Settings", icon: Icons.User, color: "blue" },
+  { id: "funds", label: "Wallet & Funds", icon: Icons.Wallet, color: "emerald" },
+  { id: "logout", label: "Log Out", icon: Icons.Logout, color: "red" },
+];
+
 export default function SettingsPage() {
   const router = useRouter();
 
-  // State for user data
-  const [userData, setUserData] = useState({
+  const [userData, setUserData] = useState<UserData>({
     id: 0,
     email: "",
     first_name: "",
@@ -53,16 +164,15 @@ export default function SettingsPage() {
     address: "",
     dob: "",
     occupation: "",
-    email_verified_at: null as Date | null,
-    last_login_at: null as Date | null,
-    created_at: null as Date | null,
+    email_verified_at: null,
+    last_login_at: null,
+    created_at: null,
   });
 
-  // Loading and error states
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [activeTab, setActiveTab] = useState<"profile" | "funds" | "logout">("profile");
+  const [activeTab, setActiveTab] = useState<TabId>("profile");
 
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
@@ -72,43 +182,43 @@ export default function SettingsPage() {
   const [dob, setDob] = useState("");
   const [occupation, setOccupation] = useState("");
 
-  const [topUpAmount, setTopUpAmount] = useState<number | string>(10000000);
-  const [selectedPreset, setSelectedPreset] = useState(10000000);
+  const [topUpAmount, setTopUpAmount] = useState<number | string>(10_000_000);
+  const [selectedPreset, setSelectedPreset] = useState(10_000_000);
   const [successMessage, setSuccessMessage] = useState("");
 
-  // Fetch user data on component mount
   useEffect(() => {
     const fetchUserData = async () => {
       try {
         setLoading(true);
         setError(null);
-        
-        // Fetch both user detail and balance in parallel
+
         const [userDetail, userBalance] = await Promise.all([
           getUserDetail(),
-          getUserBalance()
+          getUserBalance(),
         ]);
 
-        // Update state with real data
-        const userDataObj = {
+        const userDataObj: UserData = {
           id: userDetail.id,
           email: userDetail.email,
           first_name: userDetail.first_name,
           last_name: userDetail.last_name,
-          phone: userDetail.phone,
+          phone: userDetail.phone ?? "",
           balance: userBalance.balance.availableBalance,
           is_active: userDetail.is_active,
-          address: "", // Not provided in API
-          dob: "", // Not provided in API
-          occupation: "", // Not provided in API
-          email_verified_at: userDetail.email_verified_at ? new Date(userDetail.email_verified_at) : null,
-          last_login_at: userDetail.last_login_at ? new Date(userDetail.last_login_at) : null,
+          address: "",
+          dob: "",
+          occupation: "",
+          email_verified_at: userDetail.email_verified_at
+            ? new Date(userDetail.email_verified_at)
+            : null,
+          last_login_at: userDetail.last_login_at
+            ? new Date(userDetail.last_login_at)
+            : null,
           created_at: userDetail.created_at ? new Date(userDetail.created_at) : null,
         };
 
         setUserData(userDataObj);
-        
-        // Initialize form fields
+
         setFirstName(userDetail.first_name);
         setLastName(userDetail.last_name);
         setEmail(userDetail.email);
@@ -124,11 +234,9 @@ export default function SettingsPage() {
       }
     };
 
-    // Only fetch if we have an access token
-    const token = localStorage.getItem('access_token');
-    if (token) {
-      fetchUserData();
-    } else {
+    const token = localStorage.getItem("access_token");
+    if (token) fetchUserData();
+    else {
       setLoading(false);
       setError("Not authenticated. Please log in.");
     }
@@ -153,8 +261,14 @@ export default function SettingsPage() {
       maximumFractionDigits: 0,
     }).format(amount);
 
+  const showSuccess = (msg: string) => {
+    setSuccessMessage(msg);
+    setTimeout(() => setSuccessMessage(""), 3000);
+  };
+
   const handleProfileSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+
     setUserData((prev) => ({
       ...prev,
       first_name: firstName,
@@ -165,44 +279,44 @@ export default function SettingsPage() {
       dob,
       occupation,
     }));
+
     showSuccess("Profile updated successfully");
   };
 
   const handleMoneyRequest = () => {
     const amount = Number(topUpAmount);
     if (!amount || amount <= 0) return;
+
     setUserData((prev) => ({ ...prev, balance: prev.balance + amount }));
     showSuccess(`Deposited ${formatCurrency(amount)}`);
   };
 
-  const showSuccess = (msg: string) => {
-    setSuccessMessage(msg);
-    setTimeout(() => setSuccessMessage(""), 3000);
-  };
-
   const handleLogout = () => {
-    // Clear access token and redirect to login
-    localStorage.removeItem('access_token');
-    localStorage.removeItem('sessionId');
+    localStorage.removeItem("access_token");
+    localStorage.removeItem("sessionId");
     router.push("/login");
   };
 
-  // Show loading state
+  // Loading state
   if (loading) {
     return (
-      <div className="min-h-screen bg-[#181c24] text-gray-200 font-sans selection:bg-blue-500/30 flex items-center justify-center">
+      <div
+        className={`${styles.scope} min-h-screen flex items-center justify-center selection:bg-blue-500/30`}
+      >
         <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto mb-4"></div>
-          <p>Loading user data...</p>
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto mb-4" />
+          <p className="text-gray-200">Loading user data...</p>
         </div>
       </div>
     );
   }
 
-  // Show error state
+  // Error state
   if (error) {
     return (
-      <div className="min-h-screen bg-[#181c24] text-gray-200 font-sans selection:bg-blue-500/30 flex items-center justify-center">
+      <div
+        className={`${styles.scope} min-h-screen flex items-center justify-center selection:bg-blue-500/30`}
+      >
         <div className="text-center max-w-md p-6 bg-[#222736] rounded-2xl border border-[#343b4d]">
           <div className="text-red-500 text-2xl mb-4">⚠️</div>
           <h2 className="text-xl font-bold text-white mb-2">Error</h2>
@@ -219,21 +333,21 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="min-h-screen bg-[#181c24] text-gray-200 font-sans selection:bg-blue-500/30 flex flex-col items-center">
-      
+    <div
+      className={`${styles.scope} min-h-screen flex flex-col items-center selection:bg-blue-500/30`}
+    >
       {/* HEADER */}
-      {/* FIX: Thêm w-full để background trải dài, nhưng nội dung bên trong sẽ dùng max-w-6xl để căn giữa */}
       <header className="sticky top-0 z-50 bg-[#181c24]/95 backdrop-blur-md border-b border-[#343b4d] w-full flex justify-center shadow-sm">
-        {/* FIX: Sử dụng max-w-6xl giống hệt phần Main để thẳng hàng */}
         <div className="w-full max-w-6xl px-6 h-20 flex items-center justify-between">
           <div className="flex items-center gap-5">
             <button
               onClick={() => router.back()}
               className="p-2.5 rounded-xl text-gray-400 hover:text-white hover:bg-[#222736] transition-all"
+              aria-label="Back"
             >
               <Icons.Back />
             </button>
-            <div className="h-8 w-[1px] bg-[#343b4d]"></div>
+            <div className="h-8 w-[1px] bg-[#343b4d]" />
             <div>
               <h1 className="text-base font-bold text-white tracking-wide">
                 SETTINGS
@@ -246,10 +360,9 @@ export default function SettingsPage() {
               <div className="text-sm font-medium text-gray-200">
                 {firstName} {lastName}
               </div>
-              <div className="text-xs text-gray-500 font-mono">
-                ID: {userData.id}
-              </div>
+              <div className="text-xs text-gray-500 font-mono">ID: {userData.id}</div>
             </div>
+
             <div className="h-10 w-10 rounded-xl bg-gradient-to-tr from-blue-600 to-cyan-500 p-[1px] shadow-lg shadow-blue-500/20">
               <div className="h-full w-full rounded-xl bg-[#222736] flex items-center justify-center text-sm font-bold text-blue-400">
                 {initials}
@@ -276,45 +389,46 @@ export default function SettingsPage() {
       </div>
 
       {/* MAIN CONTENT */}
-      {/* FIX: Thêm mt-8 để đẩy nội dung xuống xa header hơn */}
       <main className="w-full max-w-6xl px-6 pb-12 mt-8">
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-10">
-          
           {/* LEFT SIDEBAR NAVIGATION */}
           <aside className="lg:col-span-3">
             <div className="bg-[#222736] rounded-3xl border border-[#343b4d] p-3 sticky top-28">
               <nav className="space-y-2">
-                {[
-                  { id: "profile", label: "Profile Settings", icon: Icons.User, color: "blue" },
-                  { id: "funds", label: "Wallet & Funds", icon: Icons.Wallet, color: "emerald" },
-                  { id: "logout", label: "Log Out", icon: Icons.Logout, color: "red" },
-                ].map((item) => (
-                  <button
-                    key={item.id}
-                    onClick={() => setActiveTab(item.id as "profile" | "funds" | "logout")}
-                    className={`group w-full flex items-center gap-4 px-5 py-4 rounded-2xl text-base font-medium transition-all duration-200 ${
-                      activeTab === item.id
-                        ? `bg-[#181c24] text-white shadow-inner`
-                        : "text-gray-400 hover:bg-[#181c24]/60 hover:text-gray-200"
-                    }`}
-                  >
-                    <span
-                      className={`${
-                        activeTab === item.id
-                          ? `text-${item.color}-400`
-                          : "text-gray-500 group-hover:text-gray-400"
+                {NAV_ITEMS.map((item) => {
+                  const palette = colorMap[item.color];
+                  const isActive = activeTab === item.id;
+
+                  return (
+                    <button
+                      key={item.id}
+                      onClick={() => setActiveTab(item.id)}
+                      className={`group w-full flex items-center gap-4 px-5 py-4 rounded-2xl text-base font-medium transition-all duration-200 ${
+                        isActive
+                          ? "bg-[#181c24] text-white shadow-inner"
+                          : "text-gray-400 hover:bg-[#181c24]/60 hover:text-gray-200"
                       }`}
                     >
-                      <item.icon />
-                    </span>
-                    {item.label}
-                    {activeTab === item.id && (
-                      <div
-                        className={`ml-auto w-2 h-2 rounded-full bg-${item.color}-500 shadow-[0_0_8px_currentColor]`}
-                      ></div>
-                    )}
-                  </button>
-                ))}
+                      <span
+                        className={`${
+                          isActive
+                            ? palette.iconActive
+                            : "text-gray-500 group-hover:text-gray-400"
+                        }`}
+                      >
+                        <item.icon />
+                      </span>
+
+                      {item.label}
+
+                      {isActive && (
+                        <div
+                          className={`ml-auto w-2 h-2 rounded-full ${palette.dot} shadow-[0_0_8px_currentColor]`}
+                        />
+                      )}
+                    </button>
+                  );
+                })}
               </nav>
 
               <div className="mt-6 mx-3 p-5 rounded-2xl bg-gradient-to-b from-[#181c24] to-[#222736] border border-[#343b4d]">
@@ -326,8 +440,8 @@ export default function SettingsPage() {
                 </p>
                 <div className="mt-3 flex items-center gap-2">
                   <span className="flex h-2.5 w-2.5 relative">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                    <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                    <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500" />
                   </span>
                   <span className="text-xs text-emerald-500 font-medium">
                     System Online
@@ -340,7 +454,6 @@ export default function SettingsPage() {
           {/* RIGHT CONTENT AREA */}
           <section className="lg:col-span-9">
             <div className="bg-[#222736] rounded-3xl border border-[#343b4d] min-h-[600px] overflow-hidden relative flex flex-col">
-              
               {/* --- TAB: PROFILE --- */}
               {activeTab === "profile" && (
                 <div className="flex-1 flex flex-col animate-in fade-in slide-in-from-bottom-4 duration-300">
@@ -359,10 +472,7 @@ export default function SettingsPage() {
                   </div>
 
                   <div className="p-10">
-                    <form
-                      onSubmit={handleProfileSubmit}
-                      className="flex flex-col gap-12"
-                    >
+                    <form onSubmit={handleProfileSubmit} className="flex flex-col gap-12">
                       <div className="space-y-10">
                         {/* Identity Section */}
                         <div>
@@ -370,17 +480,8 @@ export default function SettingsPage() {
                             Identity
                           </h3>
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-8">
-                            <InputGroup
-                              label="First Name"
-                              value={firstName}
-                              onChange={setFirstName}
-                            />
-                            <InputGroup
-                              label="Last Name"
-                              value={lastName}
-                              onChange={setLastName}
-                            />
-                            {/* Remove fields not provided by API */}
+                            <InputGroup label="First Name" value={firstName} onChange={setFirstName} />
+                            <InputGroup label="Last Name" value={lastName} onChange={setLastName} />
                           </div>
                         </div>
 
@@ -390,19 +491,8 @@ export default function SettingsPage() {
                             Contact
                           </h3>
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-8">
-                            <InputGroup
-                              label="Email Address"
-                              value={email}
-                              onChange={setEmail}
-                              type="email"
-                            />
-                            <InputGroup
-                              label="Phone Number"
-                              value={phone}
-                              onChange={setPhone}
-                              type="tel"
-                            />
-                            {/* Remove address field as it's not provided by API */}
+                            <InputGroup label="Email Address" value={email} onChange={setEmail} type="email" />
+                            <InputGroup label="Phone Number" value={phone} onChange={setPhone} type="tel" />
                           </div>
                         </div>
                       </div>
@@ -434,7 +524,7 @@ export default function SettingsPage() {
 
                   <div className="p-10 flex-1 flex flex-col gap-9">
                     <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-[#1e293b] via-[#2d3748] to-[#1e293b] border border-[#475569] p-10 mb-10 group shadow-2xl">
-                      <div className="absolute top-0 right-0 -mt-10 -mr-10 w-48 h-48 bg-emerald-500/20 rounded-full blur-3xl group-hover:bg-emerald-500/30 transition-all duration-700"></div>
+                      <div className="absolute top-0 right-0 -mt-10 -mr-10 w-48 h-48 bg-emerald-500/20 rounded-full blur-3xl group-hover:bg-emerald-500/30 transition-all duration-700" />
                       <div className="relative z-10 flex justify-between items-start">
                         <div>
                           <p className="text-sm text-emerald-400 font-medium tracking-widest uppercase mb-3">
@@ -453,7 +543,7 @@ export default function SettingsPage() {
                           **** **** **** 8888
                         </div>
                         <div className="flex items-center gap-3">
-                          <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></div>
+                          <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
                           <span className="text-sm text-gray-200 font-medium">
                             Sandbox Mode
                           </span>
@@ -464,25 +554,24 @@ export default function SettingsPage() {
                     <h3 className="text-base font-medium text-white mb-6 pl-1">
                       Quick Deposit
                     </h3>
+
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-10 gap-y-6 gap-x-6">
-                      {[10_000_000, 50_000_000, 100_000_000, 500_000_000].map(
-                        (amount) => (
-                          <button
-                            key={amount}
-                            onClick={() => {
-                              setSelectedPreset(amount);
-                              setTopUpAmount(amount);
-                            }}
-                            className={`py-5 px-4 rounded-2xl text-sm font-mono font-medium transition-all border h-14 ${
-                              selectedPreset === amount
-                                ? "bg-emerald-500/10 border-emerald-500/50 text-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.1)]"
-                                : "bg-[#181c24] border-[#343b4d] text-gray-400 hover:border-gray-500 hover:text-white"
-                            }`}
-                          >
-                            {formatCurrency(amount)}
-                          </button>
-                        )
-                      )}
+                      {[10_000_000, 50_000_000, 100_000_000, 500_000_000].map((amount) => (
+                        <button
+                          key={amount}
+                          onClick={() => {
+                            setSelectedPreset(amount);
+                            setTopUpAmount(amount);
+                          }}
+                          className={`py-5 px-4 rounded-2xl text-sm font-mono font-medium transition-all border h-14 ${
+                            selectedPreset === amount
+                              ? "bg-emerald-500/10 border-emerald-500/50 text-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.1)]"
+                              : "bg-[#181c24] border-[#343b4d] text-gray-400 hover:border-gray-500 hover:text-white"
+                          }`}
+                        >
+                          {formatCurrency(amount)}
+                        </button>
+                      ))}
                     </div>
 
                     <div className="bg-[#181c24] rounded-3xl p-8 border border-[#343b4d]">
@@ -501,7 +590,7 @@ export default function SettingsPage() {
                     <div className="mt-18 flex justify-center h-14">
                       <button
                         onClick={handleMoneyRequest}
-                        className="px-12 py-4 bg-emerald-600 hover:bg-emerald-500 text-white text-lg font-bold rounded-2xl shadow-[0_4px_14px_0_rgba(16,185,129,0.39)] hover:shadow-[0_6px_20px_rgba(16,185,129,0.23)] transition-all transform hover:-translate-y-0.5 active:scale-95 min-w-[260px] "
+                        className="px-12 py-4 bg-emerald-600 hover:bg-emerald-500 text-white text-lg font-bold rounded-2xl shadow-[0_4px_14px_0_rgba(16,185,129,0.39)] hover:shadow-[0_6px_20px_rgba(16,185,129,0.23)] transition-all transform hover:-translate-y-0.5 active:scale-95 min-w-[260px]"
                       >
                         Confirm Deposit
                       </button>
@@ -514,25 +603,29 @@ export default function SettingsPage() {
               {activeTab === "logout" && (
                 <div className="flex-1 h-full flex items-center justify-center p-10 animate-in zoom-in-95 duration-300">
                   <div className="w-full max-w-lg flex flex-col items-center text-center animate-in fade-in slide-in-from-bottom-4 duration-300 gap-9">
-                    <div className="w-24 h-24 bg-red-500/10 rounded-full flex items-center justify-center mb-8 border border-red-500/20 shadow-[0_0_30px_rgba(239,68,68,0.1)] animate-in fade-in slide-in-from-bottom-4 duration-300">
-                      <div className="text-red-500 scale-150 animate-in fade-in slide-in-from-bottom-4 duration-300">
+                    <div className="w-24 h-24 bg-red-500/10 rounded-full flex items-center justify-center mb-8 border border-red-500/20 shadow-[0_0_30px_rgba(239,68,68,0.1)]">
+                      <div className="text-red-500 scale-150">
                         <Icons.Logout />
                       </div>
                     </div>
-                    <h2 className=" text-2xl font-bold text-white mb-12">
+
+                    <h2 className="text-2xl font-bold text-white mb-2">
                       Sign Out
                     </h2>
-                    <p className="text-gray-400 max-w-sm mb-10 text-base leading-relaxed">
+
+                    <p className="text-gray-400 max-w-sm text-base leading-relaxed">
                       Are you sure you want to log out? Your active simulation
                       sessions will be paused until you return.
                     </p>
-                    <div className="flex gap-6 justify-center w-full">
+
+                    <div className="flex gap-6 justify-center w-full mt-4">
                       <button
                         onClick={() => setActiveTab("profile")}
                         className="flex-1 py-4 rounded-2xl bg-[#343b4d] hover:bg-[#40485c] text-white font-medium text-lg transition-colors"
                       >
                         Cancel
                       </button>
+
                       <button
                         onClick={handleLogout}
                         className="flex-1 py-4 rounded-2xl bg-red-600 hover:bg-red-500 text-white font-medium text-lg shadow-lg shadow-red-900/20 transition-transform active:scale-95"
@@ -557,24 +650,32 @@ export default function SettingsPage() {
   );
 }
 
-// --- Input Component (FIXED: pl-12) ---
-const InputGroup = ({ label, value, onChange, type = "text" }: {
+// --- Input Component ---
+function InputGroup({
+  label,
+  value,
+  onChange,
+  type = "text",
+}: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   type?: string;
-}) => (
-  <div className="group w-full">
-    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-3 group-focus-within:text-blue-400 transition-colors ml-1">
-      {label}
-    </label>
-    <div className="relative">
-      <input
-        type={type}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-full bg-[#181c24] border border-[#343b4d] text-gray-100 text-lg rounded-2xl py-4 pl-12 pr-6 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/50 transition-all placeholder:text-gray-600 shadow-inner"
-      />
+}) {
+  return (
+    <div className="group w-full">
+      <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-3 group-focus-within:text-blue-400 transition-colors ml-1">
+        {label}
+      </label>
+
+      <div className="relative">
+        <input
+          type={type}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="w-full bg-[#181c24] border border-[#343b4d] text-gray-100 text-lg rounded-2xl py-4 pl-6 pr-6 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/50 transition-all placeholder:text-gray-600 shadow-inner"
+        />
+      </div>
     </div>
-  </div>
-);
+  );
+}

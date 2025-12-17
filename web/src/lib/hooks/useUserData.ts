@@ -1,5 +1,10 @@
-import { useState, useEffect } from 'react';
-import { getUserBalance, getUserDetail, UserBalance, UserDetail } from '../services/userService';
+import { useState, useEffect } from "react";
+import {
+  getUserBalance,
+  getUserDetail,
+  UserBalance,
+  UserDetail,
+} from "../services/userService";
 
 interface UserData {
   userDetail: UserDetail | null;
@@ -13,42 +18,43 @@ export function useUserData() {
     userDetail: null,
     userBalance: null,
     loading: true,
-    error: null
+    error: null,
   });
 
   const fetchUserData = async () => {
     try {
-      setUserData(prev => ({ ...prev, loading: true, error: null }));
-      
+      setUserData((prev) => ({ ...prev, loading: true, error: null }));
+
       // Fetch both user detail and balance in parallel
       const [userDetail, userBalance] = await Promise.all([
         getUserDetail(),
-        getUserBalance()
+        getUserBalance(),
       ]);
-      
+
       setUserData({
         userDetail,
         userBalance,
         loading: false,
-        error: null
+        error: null,
       });
     } catch (error) {
-      console.error('Error fetching user data:', error);
-      setUserData(prev => ({
+      // Error fetching user data handling
+      setUserData((prev) => ({
         ...prev,
         loading: false,
-        error: error instanceof Error ? error.message : 'Failed to fetch user data'
+        error:
+          error instanceof Error ? error.message : "Failed to fetch user data",
       }));
     }
   };
 
   useEffect(() => {
     // Only fetch if we have an access token
-    const token = localStorage.getItem('access_token');
+    const token = localStorage.getItem("access_token");
     if (token) {
       fetchUserData();
     } else {
-      setUserData(prev => ({ ...prev, loading: false }));
+      setUserData((prev) => ({ ...prev, loading: false }));
     }
   }, []);
 

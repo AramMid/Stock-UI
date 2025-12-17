@@ -278,7 +278,6 @@ export default function ChartLayoutSelector({
               <button
                 onClick={() => {
                   // TODO: Implement custom layout creator
-                  console.log("Custom layout creator not implemented yet");
                   setIsOpen(false);
                 }}
                 className={`

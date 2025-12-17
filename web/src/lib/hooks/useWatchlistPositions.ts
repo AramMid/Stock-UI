@@ -46,8 +46,9 @@ function buildPositionsMapFromResponse(
     const key = String(sym).trim();
     if (!key) continue;
 
-    const val =
-      byRows.has(key) ? byRows.get(key)! : safeNumber(sharesObj?.[key] ?? 0);
+    const val = byRows.has(key)
+      ? byRows.get(key)!
+      : safeNumber(sharesObj?.[key] ?? 0);
 
     next.set(key, val);
   }
@@ -63,13 +64,20 @@ export function useWatchlistPositions(symbols: string[]) {
 
   // Stable key to avoid callback changing every render
   const symbolsKey = useMemo(
-    () => (symbols || []).map((s) => s.trim()).filter(Boolean).join(","),
+    () =>
+      (symbols || [])
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .join(","),
     [symbols]
   );
 
   const refreshWatchlistPositions = useCallback(async () => {
     const list = symbolsKey
-      ? symbolsKey.split(",").map((s) => s.trim()).filter(Boolean)
+      ? symbolsKey
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
       : [];
 
     if (!list.length) {
@@ -87,7 +95,7 @@ export function useWatchlistPositions(symbols: string[]) {
 
       setPositions(next);
     } catch (error) {
-      console.error("[useWatchlistPositions] Error fetching shares:", error);
+      // Error fetching shares handling
       // Optional: reset to 0 to avoid stale UI
       const fallback = new Map<string, number>();
       for (const s of list) fallback.set(s, 0);

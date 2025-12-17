@@ -35,8 +35,8 @@ export interface UserDetail {
 
 // Helper function to get authorization header
 function getAuthHeader(): HeadersInit {
-  const token = localStorage.getItem('access_token');
-  return token ? { 'Authorization': `Bearer ${token}` } : {};
+  const token = localStorage.getItem("access_token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
 /**
@@ -49,7 +49,7 @@ export async function getUserBalance(): Promise<UserBalance> {
       method: "GET",
       headers: {
         "Content-Type": "application/json",
-        ...getAuthHeader()
+        ...getAuthHeader(),
       },
     });
 
@@ -60,7 +60,7 @@ export async function getUserBalance(): Promise<UserBalance> {
     const result = await response.json();
     return result.data;
   } catch (error) {
-    console.error("Error fetching user balance:", error);
+    // Error fetching user balance handling
     throw error;
   }
 }
@@ -75,7 +75,7 @@ export async function getUserDetail(): Promise<UserDetail> {
       method: "GET",
       headers: {
         "Content-Type": "application/json",
-        ...getAuthHeader()
+        ...getAuthHeader(),
       },
     });
 
@@ -86,7 +86,7 @@ export async function getUserDetail(): Promise<UserDetail> {
     const result = await response.json();
     return result.data;
   } catch (error) {
-    console.error("Error fetching user detail:", error);
+    // Error fetching user detail handling
     throw error;
   }
 }

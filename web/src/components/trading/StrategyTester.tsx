@@ -1,12 +1,6 @@
 "use client";
 
-import {
-  useState,
-  useRef,
-  ReactNode,
-  useMemo,
-  useEffect,
-} from "react";
+import { useState, useRef, ReactNode, useMemo, useEffect } from "react";
 import { formatVND, formatVNDCurrency } from "@/lib/order-management";
 import { MarketSimulationService } from "@/lib/services/marketSimulationService";
 import { TradingPosition } from "@/lib/types";
@@ -131,7 +125,9 @@ export default function StrategyTester({
   selectedSymbol,
   marketSimulation,
 }: StrategyTesterProps) {
-  const [activeView, setActiveView] = useState<"builder" | "results">("builder");
+  const [activeView, setActiveView] = useState<"builder" | "results">(
+    "builder"
+  );
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>("toolbox");
 
   const [blocks, setBlocks] = useState<Block[]>([
@@ -152,7 +148,9 @@ export default function StrategyTester({
     stopLoss: 0.05,
     takeProfit: 0.1,
   });
-  const [backtestResult, setBacktestResult] = useState<BacktestResult | null>(null);
+  const [backtestResult, setBacktestResult] = useState<BacktestResult | null>(
+    null
+  );
 
   // isRunning: dành cho POST tạo job
   const [isRunning, setIsRunning] = useState(false);
@@ -169,81 +167,97 @@ export default function StrategyTester({
   const canvasRef = useRef<HTMLDivElement | null>(null);
 
   // Toolbox items (memo hóa để tránh re-create nhiều lần)
-  const toolboxItems: { type: BlockType; label: string; icon: ReactNode }[] = useMemo(
-    () => [
-      // Indicators
-      { type: "rsi", label: "RSI", icon: <FiActivity /> },
-      { type: "macd", label: "MACD", icon: <FiBarChart2 /> },
-      { type: "ema", label: "EMA", icon: <FiTrendingUp /> },
-      { type: "sma", label: "SMA", icon: <FiTrendingDown /> },
-      { type: "bollinger", label: "Bollinger Bands", icon: <FiLayers /> },
+  const toolboxItems: { type: BlockType; label: string; icon: ReactNode }[] =
+    useMemo(
+      () => [
+        // Indicators
+        { type: "rsi", label: "RSI", icon: <FiActivity /> },
+        { type: "macd", label: "MACD", icon: <FiBarChart2 /> },
+        { type: "ema", label: "EMA", icon: <FiTrendingUp /> },
+        { type: "sma", label: "SMA", icon: <FiTrendingDown /> },
+        { type: "bollinger", label: "Bollinger Bands", icon: <FiLayers /> },
 
-      // Price
-      { type: "price_open", label: "Open Price", icon: <FiArrowUpRight /> },
-      { type: "price_close", label: "Close Price", icon: <FiArrowDownRight /> },
-      { type: "price_high", label: "High Price", icon: <FiArrowUp /> },
-      { type: "price_low", label: "Low Price", icon: <FiArrowDown /> },
-      { type: "volume", label: "Volume", icon: <FiZap /> },
+        // Price
+        { type: "price_open", label: "Open Price", icon: <FiArrowUpRight /> },
+        {
+          type: "price_close",
+          label: "Close Price",
+          icon: <FiArrowDownRight />,
+        },
+        { type: "price_high", label: "High Price", icon: <FiArrowUp /> },
+        { type: "price_low", label: "Low Price", icon: <FiArrowDown /> },
+        { type: "volume", label: "Volume", icon: <FiZap /> },
 
-      // Logic
-      { type: "cross_over", label: "Cross Over", icon: <FiArrowUpRight /> },
-      { type: "cross_under", label: "Cross Under", icon: <FiArrowDownRight /> },
-      { type: "greater_than", label: "Greater Than", icon: <FiArrowUp /> },
-      { type: "less_than", label: "Less Than", icon: <FiArrowDown /> },
+        // Logic
+        { type: "cross_over", label: "Cross Over", icon: <FiArrowUpRight /> },
+        {
+          type: "cross_under",
+          label: "Cross Under",
+          icon: <FiArrowDownRight />,
+        },
+        { type: "greater_than", label: "Greater Than", icon: <FiArrowUp /> },
+        { type: "less_than", label: "Less Than", icon: <FiArrowDown /> },
 
-      // Actions
-      { type: "buy", label: "Buy", icon: <FiArrowUpRight /> },
-      { type: "sell", label: "Sell", icon: <FiArrowDownRight /> },
-      { type: "close_position", label: "Close Position", icon: <FiXCircle /> },
+        // Actions
+        { type: "buy", label: "Buy", icon: <FiArrowUpRight /> },
+        { type: "sell", label: "Sell", icon: <FiArrowDownRight /> },
+        {
+          type: "close_position",
+          label: "Close Position",
+          icon: <FiXCircle />,
+        },
 
-      // Values
-      { type: "number", label: "Number", icon: <FiHash /> },
-    ],
-    []
-  );
+        // Values
+        { type: "number", label: "Number", icon: <FiHash /> },
+      ],
+      []
+    );
 
   // ====== API LOAD DANH SÁCH BACKTEST ======
-const fetchBacktestJobs = async () => {
-  try {
-    setIsLoadingJobs(true);
+  const fetchBacktestJobs = async () => {
+    try {
+      setIsLoadingJobs(true);
 
-    // 1️⃣ Lấy token từ localStorage
-    const token = localStorage.getItem("access_token");
+      // 1️⃣ Lấy token từ localStorage
+      const token = localStorage.getItem("access_token");
 
-    if (!token) {
-      throw new Error("Không tìm thấy access token. Vui lòng đăng nhập lại.");
+      if (!token) {
+        throw new Error("Không tìm thấy access token. Vui lòng đăng nhập lại.");
+      }
+
+      // 2️⃣ Gọi BE kèm Authorization header
+      const res = await fetch("http://localhost:3001/api/backtests", {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      // 3️⃣ Handle 401 rõ ràng
+      if (res.status === 401) {
+        throw new Error(
+          "401 Unauthorized – token không hợp lệ hoặc đã hết hạn"
+        );
+      }
+
+      if (!res.ok) {
+        throw new Error(
+          `Failed to fetch backtests: ${res.status} ${res.statusText}`
+        );
+      }
+
+      // 4️⃣ Parse response
+      const json = await res.json();
+      const list = (json.data ?? json) as BacktestJobSummary[];
+
+      setJobList(list);
+    } catch (error) {
+      console.error("Error fetching backtest list:", error);
+      alert("Không tải được danh sách backtest: " + (error as Error).message);
+    } finally {
+      setIsLoadingJobs(false);
     }
-
-    // 2️⃣ Gọi BE kèm Authorization header
-    const res = await fetch("http://localhost:3001/api/backtests", {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    });
-
-    // 3️⃣ Handle 401 rõ ràng
-    if (res.status === 401) {
-      throw new Error("401 Unauthorized – token không hợp lệ hoặc đã hết hạn");
-    }
-
-    if (!res.ok) {
-      throw new Error(`Failed to fetch backtests: ${res.status} ${res.statusText}`);
-    }
-
-    // 4️⃣ Parse response
-    const json = await res.json();
-    const list = (json.data ?? json) as BacktestJobSummary[];
-
-    setJobList(list);
-  } catch (error) {
-    console.error("Error fetching backtest list:", error);
-    alert("Không tải được danh sách backtest: " + (error as Error).message);
-  } finally {
-    setIsLoadingJobs(false);
-  }
-};
-
+  };
 
   // Khi chuyển sang tab Results thì tự load danh sách backtest
   useEffect(() => {
@@ -269,12 +283,13 @@ const fetchBacktestJobs = async () => {
       }
 
       const json = await res.json();
-      console.log("Raw detail result:", json);
       const dataLevel = json.data ?? json;
       const status = dataLevel.status ?? dataLevel.jobStatus;
 
       if (status !== "COMPLETED") {
-        alert(`Backtest #${jobId} hiện đang ở trạng thái ${status}, kết quả chưa sẵn sàng.`);
+        alert(
+          `Backtest #${jobId} hiện đang ở trạng thái ${status}, kết quả chưa sẵn sàng.`
+        );
         return;
       }
 
@@ -298,7 +313,9 @@ const fetchBacktestJobs = async () => {
         initialCapital: dataLevel.initialCapital
           ? Number(dataLevel.initialCapital)
           : prev.initialCapital,
-        startDate: dataLevel.dataFrom ? new Date(dataLevel.dataFrom) : prev.startDate,
+        startDate: dataLevel.dataFrom
+          ? new Date(dataLevel.dataFrom)
+          : prev.startDate,
         endDate: dataLevel.dataTo ? new Date(dataLevel.dataTo) : prev.endDate,
       }));
     } catch (error) {
@@ -317,7 +334,9 @@ const fetchBacktestJobs = async () => {
       x,
       y,
       value: type === "number" ? 0 : undefined,
-      period: ["rsi", "ema", "sma", "bollinger"].includes(type) ? 14 : undefined,
+      period: ["rsi", "ema", "sma", "bollinger"].includes(type)
+        ? 14
+        : undefined,
     };
     setBlocks((prev) => [...prev, newBlock]);
   };
@@ -360,7 +379,9 @@ const fetchBacktestJobs = async () => {
     const errors: string[] = [];
 
     // Check if there's at least one buy or sell action
-    const hasAction = blocks.some((block) => ["buy", "sell"].includes(block.type));
+    const hasAction = blocks.some((block) =>
+      ["buy", "sell"].includes(block.type)
+    );
     if (!hasAction) {
       errors.push("Strategy must include at least one buy or sell action");
     }
@@ -371,11 +392,17 @@ const fetchBacktestJobs = async () => {
     }
 
     // Check if actions are connected to other blocks
-    const actionBlocks = blocks.filter((block) => ["buy", "sell"].includes(block.type));
+    const actionBlocks = blocks.filter((block) =>
+      ["buy", "sell"].includes(block.type)
+    );
     for (const actionBlock of actionBlocks) {
-      const isConnected = connections.some((conn) => conn.to === actionBlock.id);
+      const isConnected = connections.some(
+        (conn) => conn.to === actionBlock.id
+      );
       if (!isConnected) {
-        errors.push(`Action block '${actionBlock.type}' must be connected to other blocks`);
+        errors.push(
+          `Action block '${actionBlock.type}' must be connected to other blocks`
+        );
       }
     }
 
@@ -429,11 +456,15 @@ const fetchBacktestJobs = async () => {
 
     // Check for complex strategies
     if (blocks.length > 10) {
-      warnings.push("Complex strategy detected - consider simplifying for better performance");
+      warnings.push(
+        "Complex strategy detected - consider simplifying for better performance"
+      );
     }
 
     // Check for multiple actions
-    const actionBlocks = blocks.filter((block) => ["buy", "sell"].includes(block.type));
+    const actionBlocks = blocks.filter((block) =>
+      ["buy", "sell"].includes(block.type)
+    );
     if (actionBlocks.length > 2) {
       warnings.push(
         `Multiple action blocks detected (${actionBlocks.length}) - ensure logic is correct`
@@ -465,7 +496,9 @@ const fetchBacktestJobs = async () => {
   const actionStats = useMemo(() => {
     const buyBlocks = blocks.filter((b) => b.type === "buy").length;
     const sellBlocks = blocks.filter((b) => b.type === "sell").length;
-    const closeBlocks = blocks.filter((b) => b.type === "close_position").length;
+    const closeBlocks = blocks.filter(
+      (b) => b.type === "close_position"
+    ).length;
     return { buyBlocks, sellBlocks, closeBlocks };
   }, [blocks]);
 
@@ -494,13 +527,12 @@ const fetchBacktestJobs = async () => {
     try {
       // 2) Convert strategy sang JSON để gửi lên Nest
       const strategyData = convertToJSONStrategy();
-      console.log("Sending strategy data:", strategyData);
-          const token = localStorage.getItem("access_token");
+      // Sending strategy data to backend
+      const token = localStorage.getItem("access_token");
 
-    if (!token) {
-      throw new Error("Không tìm thấy access token. Vui lòng đăng nhập lại.");
-    }
-
+      if (!token) {
+        throw new Error("Không tìm thấy access token. Vui lòng đăng nhập lại.");
+      }
 
       // 3) Gọi POST /api/backtests
       const response = await fetch("http://localhost:3001/api/backtests", {
@@ -516,11 +548,13 @@ const fetchBacktestJobs = async () => {
       });
 
       if (!response.ok) {
-        throw new Error(`Failed to start backtest: ${response.status} ${response.statusText}`);
+        throw new Error(
+          `Failed to start backtest: ${response.status} ${response.statusText}`
+        );
       }
 
       const startResult = await response.json();
-      console.log("Start backtest response:", startResult);
+      // Start backtest response received
 
       const startData = startResult.data ?? startResult;
       const jobId = startData.jobId ?? startData.job_id ?? startData.id;
@@ -529,7 +563,9 @@ const fetchBacktestJobs = async () => {
         throw new Error("Cannot find jobId from backtest start response");
       }
 
-      alert(`Backtest job #${jobId} đã được tạo, hãy mở tab Results để xem danh sách.`);
+      alert(
+        `Backtest job #${jobId} đã được tạo, hãy mở tab Results để xem danh sách.`
+      );
       setActiveView("results");
       // load lại list
       fetchBacktestJobs();
@@ -544,13 +580,29 @@ const fetchBacktestJobs = async () => {
   // Get block color class based on type
   const getBlockColorClass = (type: BlockType, isDarkMode: boolean): string => {
     if (["rsi", "macd", "ema", "sma", "bollinger"].includes(type)) {
-      return isDarkMode ? "bg-purple-600/90 text-white" : "bg-purple-500 text-white";
+      return isDarkMode
+        ? "bg-purple-600/90 text-white"
+        : "bg-purple-500 text-white";
     }
-    if (["price_open", "price_close", "price_high", "price_low", "volume"].includes(type)) {
-      return isDarkMode ? "bg-green-600/90 text-white" : "bg-green-500 text-white";
+    if (
+      [
+        "price_open",
+        "price_close",
+        "price_high",
+        "price_low",
+        "volume",
+      ].includes(type)
+    ) {
+      return isDarkMode
+        ? "bg-green-600/90 text-white"
+        : "bg-green-500 text-white";
     }
-    if (["cross_over", "cross_under", "greater_than", "less_than"].includes(type)) {
-      return isDarkMode ? "bg-yellow-600/90 text-white" : "bg-yellow-500 text-white";
+    if (
+      ["cross_over", "cross_under", "greater_than", "less_than"].includes(type)
+    ) {
+      return isDarkMode
+        ? "bg-yellow-600/90 text-white"
+        : "bg-yellow-500 text-white";
     }
     if (["buy", "sell", "close_position"].includes(type)) {
       return type === "buy"
@@ -566,7 +618,9 @@ const fetchBacktestJobs = async () => {
         : "bg-gray-500 text-white";
     }
     if (type === "number") {
-      return isDarkMode ? "bg-blue-600/90 text-white" : "bg-blue-500 text-white";
+      return isDarkMode
+        ? "bg-blue-600/90 text-white"
+        : "bg-blue-500 text-white";
     }
     return isDarkMode ? "bg-blue-600/90 text-white" : "bg-blue-500 text-white";
   };
@@ -578,7 +632,8 @@ const fetchBacktestJobs = async () => {
       macd: "Moving Average Convergence Divergence - Trend following momentum indicator",
       ema: "Exponential Moving Average - Smooths price data",
       sma: "Simple Moving Average - Average price over a period",
-      bollinger: "Bollinger Bands - Volatility bands above and below a moving average",
+      bollinger:
+        "Bollinger Bands - Volatility bands above and below a moving average",
       price_open: "Opening price of the current bar",
       price_close: "Closing price of the current bar",
       price_high: "Highest price of the current bar",
@@ -671,7 +726,11 @@ const fetchBacktestJobs = async () => {
         };
       }
 
-      if (["price_open", "price_close", "price_high", "price_low"].includes(block.type)) {
+      if (
+        ["price_open", "price_close", "price_high", "price_low"].includes(
+          block.type
+        )
+      ) {
         return {
           indicator: block.type.replace("price_", "").toUpperCase(),
           params: {},
@@ -715,7 +774,8 @@ const fetchBacktestJobs = async () => {
               };
 
               if (conditionBlock.type === "less_than") condition.operator = "<";
-              else if (conditionBlock.type === "greater_than") condition.operator = ">";
+              else if (conditionBlock.type === "greater_than")
+                condition.operator = ">";
               else if (conditionBlock.type === "cross_over")
                 condition.operator = "cross_over";
               else if (conditionBlock.type === "cross_under")
@@ -770,7 +830,7 @@ const fetchBacktestJobs = async () => {
       },
     };
 
-    console.log("Generated strategy data:", strategyData);
+    // Generated strategy data for backend
     return strategyData;
   };
 
@@ -795,10 +855,7 @@ const fetchBacktestJobs = async () => {
       }
 
       const result = await response.json();
-      console.log("Strategy sent successfully:", result);
-
       alert("Strategy sent to backend successfully!");
-      console.log("Backend response:", result);
 
       return result;
     } catch (error) {
@@ -920,7 +977,9 @@ const fetchBacktestJobs = async () => {
             {/* View switch */}
             <div
               className={`inline-flex p-1 rounded-full text-xs ${
-                isDarkMode ? "bg-gray-900 border border-gray-800" : "bg-slate-100"
+                isDarkMode
+                  ? "bg-gray-900 border border-gray-800"
+                  : "bg-slate-100"
               }`}
             >
               <button
@@ -979,7 +1038,9 @@ const fetchBacktestJobs = async () => {
           {/* SIDEBAR với TAB */}
           <div
             className={`w-80 border-r flex flex-col ${
-              isDarkMode ? "border-gray-800 bg-gray-950" : "border-slate-200 bg-white"
+              isDarkMode
+                ? "border-gray-800 bg-gray-950"
+                : "border-slate-200 bg-white"
             }`}
           >
             {/* Tabs hàng ngang */}
@@ -1080,7 +1141,9 @@ const fetchBacktestJobs = async () => {
                   <ToolboxGroup
                     title="Indicators"
                     items={toolboxItems.filter((item) =>
-                      ["rsi", "macd", "ema", "sma", "bollinger"].includes(item.type)
+                      ["rsi", "macd", "ema", "sma", "bollinger"].includes(
+                        item.type
+                      )
                     )}
                     isDarkMode={isDarkMode}
                   />
@@ -1100,9 +1163,12 @@ const fetchBacktestJobs = async () => {
                   <ToolboxGroup
                     title="Logic"
                     items={toolboxItems.filter((item) =>
-                      ["cross_over", "cross_under", "greater_than", "less_than"].includes(
-                        item.type
-                      )
+                      [
+                        "cross_over",
+                        "cross_under",
+                        "greater_than",
+                        "less_than",
+                      ].includes(item.type)
                     )}
                     isDarkMode={isDarkMode}
                   />
@@ -1115,7 +1181,9 @@ const fetchBacktestJobs = async () => {
                   />
                   <ToolboxGroup
                     title="Values"
-                    items={toolboxItems.filter((item) => item.type === "number")}
+                    items={toolboxItems.filter(
+                      (item) => item.type === "number"
+                    )}
                     isDarkMode={isDarkMode}
                   />
                 </>
@@ -1184,7 +1252,9 @@ const fetchBacktestJobs = async () => {
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <FiCheckCircle className="w-4 h-4 text-emerald-400" />
-                        <h4 className="text-xs font-semibold">Strategy Validation</h4>
+                        <h4 className="text-xs font-semibold">
+                          Strategy Validation
+                        </h4>
                       </div>
                       <div className="flex gap-1.5">
                         <button
@@ -1192,7 +1262,11 @@ const fetchBacktestJobs = async () => {
                             const validation = validateStrategy();
                             if (validation.isValid) {
                               const strategyData = convertToJSONStrategy();
-                              const jsonData = JSON.stringify(strategyData, null, 2);
+                              const jsonData = JSON.stringify(
+                                strategyData,
+                                null,
+                                2
+                              );
                               alert(
                                 `✅ Strategy is valid!\n\nJSON Strategy Data:\n${jsonData}`
                               );
@@ -1314,7 +1388,11 @@ const fetchBacktestJobs = async () => {
                           </label>
                           <input
                             type="date"
-                            value={backtestParams.startDate.toISOString().split("T")[0]}
+                            value={
+                              backtestParams.startDate
+                                .toISOString()
+                                .split("T")[0]
+                            }
                             onChange={(e) =>
                               setBacktestParams((prev) => ({
                                 ...prev,
@@ -1334,7 +1412,9 @@ const fetchBacktestJobs = async () => {
                           </label>
                           <input
                             type="date"
-                            value={backtestParams.endDate.toISOString().split("T")[0]}
+                            value={
+                              backtestParams.endDate.toISOString().split("T")[0]
+                            }
                             onChange={(e) =>
                               setBacktestParams((prev) => ({
                                 ...prev,
@@ -1352,7 +1432,9 @@ const fetchBacktestJobs = async () => {
 
                       {/* Symbol */}
                       <div className="space-y-1.5">
-                        <label className="block text-[11px] text-gray-300">Symbol</label>
+                        <label className="block text-[11px] text-gray-300">
+                          Symbol
+                        </label>
                         <div className="flex items-center gap-1.5">
                           <div
                             className={`px-2 py-1 rounded-lg text-[11px] inline-flex items-center gap-1 ${
@@ -1393,7 +1475,8 @@ const fetchBacktestJobs = async () => {
                           onChange={(e) =>
                             setBacktestParams((prev) => ({
                               ...prev,
-                              priceSource: e.target.value as BacktestParams["priceSource"],
+                              priceSource: e.target
+                                .value as BacktestParams["priceSource"],
                             }))
                           }
                           className={`w-full px-2 py-1.5 rounded-lg border text-xs ${
@@ -1480,7 +1563,9 @@ const fetchBacktestJobs = async () => {
                             <span className="text-[11px] text-gray-400">%</span>
                           </div>
                           <div className="flex items-center gap-1.5">
-                            <span className="text-[11px] w-16">Take Profit</span>
+                            <span className="text-[11px] w-16">
+                              Take Profit
+                            </span>
                             <input
                               type="number"
                               step="0.1"
@@ -1510,7 +1595,9 @@ const fetchBacktestJobs = async () => {
             {/* BOTTOM BUTTONS: Clear / Reset RSI / Run Backtest */}
             <div
               className={`px-4 py-3 border-t ${
-                isDarkMode ? "border-gray-800 bg-gray-950/95" : "border-slate-200 bg-white"
+                isDarkMode
+                  ? "border-gray-800 bg-gray-950/95"
+                  : "border-slate-200 bg-white"
               }`}
             >
               <div className="flex gap-1.5 mb-2">
@@ -1533,7 +1620,13 @@ const fetchBacktestJobs = async () => {
                   onClick={() => {
                     setBlocks([
                       { id: "block-1", type: "rsi", x: 80, y: 80, period: 14 },
-                      { id: "block-2", type: "number", x: 260, y: 80, value: 30 },
+                      {
+                        id: "block-2",
+                        type: "number",
+                        x: 260,
+                        y: 80,
+                        value: 30,
+                      },
                       { id: "block-3", type: "less_than", x: 440, y: 80 },
                       { id: "block-4", type: "buy", x: 620, y: 80 },
                     ]);
@@ -1597,7 +1690,11 @@ const fetchBacktestJobs = async () => {
 
           {/* Canvas */}
           <div className="flex-1 relative overflow-hidden">
-            <div className={`absolute inset-0 ${isDarkMode ? "bg-gray-950" : "bg-slate-100"}`}>
+            <div
+              className={`absolute inset-0 ${
+                isDarkMode ? "bg-gray-950" : "bg-slate-100"
+              }`}
+            >
               {/* Grid */}
               <div
                 className="absolute inset-3 rounded-xl opacity-30 pointer-events-none"
@@ -1614,7 +1711,9 @@ const fetchBacktestJobs = async () => {
                 className="absolute inset-3 rounded-xl"
                 onDrop={(e) => {
                   e.preventDefault();
-                  const blockType = e.dataTransfer.getData("blockType") as BlockType;
+                  const blockType = e.dataTransfer.getData(
+                    "blockType"
+                  ) as BlockType;
                   const moveBlockId = e.dataTransfer.getData("moveBlockId");
                   const rect = canvasRef.current?.getBoundingClientRect();
                   if (!rect) return;
@@ -1623,7 +1722,11 @@ const fetchBacktestJobs = async () => {
                   const dropY = e.clientY - rect.top;
 
                   if (blockType) {
-                    addBlock(blockType, dropX - BLOCK_WIDTH / 2, dropY - BLOCK_HEIGHT / 2);
+                    addBlock(
+                      blockType,
+                      dropX - BLOCK_WIDTH / 2,
+                      dropY - BLOCK_HEIGHT / 2
+                    );
                   } else if (moveBlockId) {
                     setBlocks((prev) =>
                       prev.map((b) =>
@@ -1642,8 +1745,10 @@ const fetchBacktestJobs = async () => {
                 onDragOver={(e) => {
                   e.preventDefault();
                   const types = Array.from(e.dataTransfer.types);
-                  if (types.includes("blockType")) e.dataTransfer.dropEffect = "copy";
-                  else if (types.includes("moveBlockId")) e.dataTransfer.dropEffect = "move";
+                  if (types.includes("blockType"))
+                    e.dataTransfer.dropEffect = "copy";
+                  else if (types.includes("moveBlockId"))
+                    e.dataTransfer.dropEffect = "move";
                 }}
                 onClick={() => setSelectedBlock(null)}
               >
@@ -1654,7 +1759,13 @@ const fetchBacktestJobs = async () => {
                   height="100%"
                 >
                   <defs>
-                    <filter id="lineGlow" x="-50%" y="-50%" width="200%" height="200%">
+                    <filter
+                      id="lineGlow"
+                      x="-50%"
+                      y="-50%"
+                      width="200%"
+                      height="200%"
+                    >
                       <feGaussianBlur stdDeviation="2" result="coloredBlur" />
                       <feMerge>
                         <feMergeNode in="coloredBlur" />
@@ -1715,7 +1826,9 @@ const fetchBacktestJobs = async () => {
                         ? "border-white/10"
                         : "border-black/5"
                     } ${
-                      connectingFrom === block.id ? "scale-105 ring-2 ring-cyan-400" : ""
+                      connectingFrom === block.id
+                        ? "scale-105 ring-2 ring-cyan-400"
+                        : ""
                     } ${getBlockColorClass(block.type, isDarkMode)}`}
                     style={{ left: block.x, top: block.y }}
                     draggable
@@ -1749,11 +1862,8 @@ const fetchBacktestJobs = async () => {
                     <div className="text-center w-full px-1">
                       <div className="text-[11px] font-semibold truncate leading-tight flex items-center justify-center gap-1">
                         <span className="inline-flex items-center">
-                          {
-                            toolboxItems.find((i) => i.type === block.type)?.icon ?? (
-                              <FiBox className="w-3 h-3" />
-                            )
-                          }
+                          {toolboxItems.find((i) => i.type === block.type)
+                            ?.icon ?? <FiBox className="w-3 h-3" />}
                         </span>
                         <span>
                           {block.type === "number"
@@ -1762,7 +1872,9 @@ const fetchBacktestJobs = async () => {
                         </span>
                       </div>
                       {block.period && (
-                        <div className="text-[9px] opacity-80">Period: {block.period}</div>
+                        <div className="text-[9px] opacity-80">
+                          Period: {block.period}
+                        </div>
                       )}
                     </div>
 
@@ -1782,14 +1894,18 @@ const fetchBacktestJobs = async () => {
                       <input
                         type="number"
                         value={block.value ?? 0}
-                        onChange={(e) => updateBlockValue(block.id, Number(e.target.value))}
+                        onChange={(e) =>
+                          updateBlockValue(block.id, Number(e.target.value))
+                        }
                         onClick={(e) => e.stopPropagation()}
                         className="absolute -bottom-6 left-1/2 -translate-x-1/2 w-20 p-1 text-[10px] rounded-md border bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100 shadow-sm"
                       />
                     )}
 
                     {/* Period input */}
-                    {["rsi", "ema", "sma", "bollinger"].includes(block.type) && (
+                    {["rsi", "ema", "sma", "bollinger"].includes(
+                      block.type
+                    ) && (
                       <input
                         type="number"
                         value={block.period ?? 14}
@@ -1814,8 +1930,8 @@ const fetchBacktestJobs = async () => {
               >
                 <span>🖱️</span>
                 <span>
-                  Drag block từ Toolbox vào canvas • Kéo block để di chuyển • Kéo block này
-                  thả lên block khác để nối
+                  Drag block từ Toolbox vào canvas • Kéo block để di chuyển •
+                  Kéo block này thả lên block khác để nối
                 </span>
               </div>
 
@@ -1829,7 +1945,9 @@ const fetchBacktestJobs = async () => {
                   } shadow-sm flex items-center gap-2`}
                 >
                   <FiAlertTriangle className="w-4 h-4" />
-                  <span>Hint: Kéo block này thả lên block khác để tạo connection</span>
+                  <span>
+                    Hint: Kéo block này thả lên block khác để tạo connection
+                  </span>
                 </div>
               )}
             </div>
@@ -1882,7 +2000,9 @@ function SidebarTabButton({
           : "text-slate-600 hover:text-slate-900"
       }`}
     >
-      <span className="w-3.5 h-3.5 flex items-center justify-center">{icon}</span>
+      <span className="w-3.5 h-3.5 flex items-center justify-center">
+        {icon}
+      </span>
       <span className="truncate">{label}</span>
     </button>
   );
@@ -1949,7 +2069,9 @@ function StatCard({
   return (
     <div
       className={`${
-        isDarkMode ? "bg-gray-900/80 border-gray-800" : "bg-slate-100 border-slate-200"
+        isDarkMode
+          ? "bg-gray-900/80 border-gray-800"
+          : "bg-slate-100 border-slate-200"
       } p-2.5 rounded-lg border`}
     >
       <div className="text-[10px] text-gray-400 mb-1">{label}</div>
@@ -1963,10 +2085,16 @@ function ValidationRow({ ok, label }: { ok: boolean; label: string }) {
     <div className="flex items-center gap-2">
       <div
         className={`w-4 h-4 rounded-full flex items-center justify-center ${
-          ok ? "bg-emerald-500/20 text-emerald-400" : "bg-red-500/20 text-red-400"
+          ok
+            ? "bg-emerald-500/20 text-emerald-400"
+            : "bg-red-500/20 text-red-400"
         }`}
       >
-        {ok ? <FiCheckCircle className="w-3 h-3" /> : <FiXCircle className="w-3 h-3" />}
+        {ok ? (
+          <FiCheckCircle className="w-3 h-3" />
+        ) : (
+          <FiXCircle className="w-3 h-3" />
+        )}
       </div>
       <span>{label}</span>
     </div>
@@ -2005,7 +2133,11 @@ function ResultsView({
   // Sparkline helper
   const renderSparkline = (
     data: { value: number }[],
-    options?: { positiveColor?: string; negativeColor?: string; isUnderwater?: boolean }
+    options?: {
+      positiveColor?: string;
+      negativeColor?: string;
+      isUnderwater?: boolean;
+    }
   ) => {
     if (!data.length) return null;
 
@@ -2025,12 +2157,11 @@ function ResultsView({
       .join(" ");
 
     const isUp = data[data.length - 1].value >= data[0].value;
-    const strokeColor =
-      options?.isUnderwater
-        ? "#f97316"
-        : isUp
-        ? options?.positiveColor || "#22c55e"
-        : options?.negativeColor || "#ef4444";
+    const strokeColor = options?.isUnderwater
+      ? "#f97316"
+      : isUp
+      ? options?.positiveColor || "#22c55e"
+      : options?.negativeColor || "#ef4444";
 
     return (
       <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-20">
@@ -2040,7 +2171,12 @@ function ResultsView({
             <stop offset="100%" stopColor={strokeColor} stopOpacity={0.02} />
           </linearGradient>
         </defs>
-        <polyline fill="none" stroke={strokeColor} strokeWidth="2" points={points} />
+        <polyline
+          fill="none"
+          stroke={strokeColor}
+          strokeWidth="2"
+          points={points}
+        />
         <polygon
           points={`${points} ${width},${height} 0,${height}`}
           fill="url(#sparklineFill)"
@@ -2078,7 +2214,8 @@ function ResultsView({
   // Nếu đã có kết quả, tính thêm các metric
   let summaryContent: ReactNode = null;
   if (hasResult && backtestResult) {
-    const { netProfit, totalTrades, winRate, maxDrawdown, profitFactor } = backtestResult;
+    const { netProfit, totalTrades, winRate, maxDrawdown, profitFactor } =
+      backtestResult;
 
     const totalProfit = backtestResult.trades
       .filter((t) => t.profit > 0)
@@ -2144,7 +2281,9 @@ function ResultsView({
               {formatVNDCurrency(netProfit)}
             </div>
             <div className="text-[11px] text-gray-300 mt-1 flex flex-col gap-0.5">
-              <span>Initial capital: {formatVND(backtestParams.initialCapital)}</span>
+              <span>
+                Initial capital: {formatVND(backtestParams.initialCapital)}
+              </span>
               <span>
                 ROI:{" "}
                 <span className="font-semibold">
@@ -2158,11 +2297,15 @@ function ResultsView({
           {/* Win Rate / Avg trade */}
           <div
             className={`rounded-xl p-3 border ${
-              isDarkMode ? "border-gray-800 bg-gray-900/80" : "border-slate-200 bg-white"
+              isDarkMode
+                ? "border-gray-800 bg-gray-900/80"
+                : "border-slate-200 bg-white"
             }`}
           >
             <div className="flex items-center justify-between mb-1">
-              <span className="text-[11px] font-medium text-blue-400">Win Rate</span>
+              <span className="text-[11px] font-medium text-blue-400">
+                Win Rate
+              </span>
               <span className="text-[10px] text-gray-500">
                 {backtestResult.trades.length} trades
               </span>
@@ -2178,7 +2321,9 @@ function ResultsView({
           {/* Risk / DD / PF */}
           <div
             className={`rounded-xl p-3 border ${
-              isDarkMode ? "border-gray-800 bg-gray-900/80" : "border-slate-200 bg-white"
+              isDarkMode
+                ? "border-gray-800 bg-gray-900/80"
+                : "border-slate-200 bg-white"
             }`}
           >
             <div className="flex items-center justify-between mb-1">
@@ -2198,7 +2343,9 @@ function ResultsView({
           {/* BUY / SELL action focus */}
           <div
             className={`rounded-xl p-3 border ${
-              isDarkMode ? "border-gray-800 bg-gray-900/80" : "border-slate-200 bg-white"
+              isDarkMode
+                ? "border-gray-800 bg-gray-900/80"
+                : "border-slate-200 bg-white"
             }`}
           >
             <div className="flex items-center justify-between mb-1">
@@ -2255,12 +2402,18 @@ function ResultsView({
         {/* Profit/Loss Summary */}
         <div
           className={`rounded-xl p-3 border ${
-            isDarkMode ? "border-gray-800 bg-gray-900/80" : "border-slate-200 bg-white"
+            isDarkMode
+              ? "border-gray-800 bg-gray-900/80"
+              : "border-slate-200 bg-white"
           }`}
         >
           <div className="flex items-center justify-between mb-1">
-            <span className="text-[11px] font-medium text-blue-400">Profit/Loss Summary</span>
-            <span className="text-[10px] text-gray-500">Total gains/losses</span>
+            <span className="text-[11px] font-medium text-blue-400">
+              Profit/Loss Summary
+            </span>
+            <span className="text-[10px] text-gray-500">
+              Total gains/losses
+            </span>
           </div>
           <div className="flex items-end gap-3 mt-1 text-[11px]">
             <div className="flex-1">
@@ -2270,7 +2423,7 @@ function ResultsView({
                 </span>
               </div>
               <div className="mt-0.5 text-gray-300">
-                Amount: 
+                Amount:
                 <span className="font-semibold text-emerald-300">
                   {formatVNDCurrency(totalProfit)}
                 </span>
@@ -2283,7 +2436,7 @@ function ResultsView({
                 </span>
               </div>
               <div className="mt-0.5 text-gray-300">
-                Amount: 
+                Amount:
                 <span className="font-semibold text-red-300">
                   {formatVNDCurrency(totalLoss)}
                 </span>
@@ -2297,7 +2450,9 @@ function ResultsView({
           {/* Equity curve */}
           <div
             className={`rounded-xl p-3 border ${
-              isDarkMode ? "border-gray-800 bg-gray-900/90" : "border-slate-200 bg-white"
+              isDarkMode
+                ? "border-gray-800 bg-gray-900/90"
+                : "border-slate-200 bg-white"
             }`}
           >
             <div className="flex items-center justify-between mb-2">
@@ -2324,14 +2479,18 @@ function ResultsView({
           {/* Drawdown / underwater */}
           <div
             className={`rounded-xl p-3 border ${
-              isDarkMode ? "border-gray-800 bg-gray-900/90" : "border-slate-200 bg-white"
+              isDarkMode
+                ? "border-gray-800 bg-gray-900/90"
+                : "border-slate-200 bg-white"
             }`}
           >
             <div className="flex items-center justify-between mb-2">
               <div className="flex items-center gap-2">
                 <FiActivity className="w-4 h-4 text-amber-400" />
                 <div>
-                  <div className="text-xs font-semibold">Drawdown (Underwater)</div>
+                  <div className="text-xs font-semibold">
+                    Drawdown (Underwater)
+                  </div>
                   <div className="text-[11px] text-gray-500">
                     Peak-to-trough equity declines
                   </div>
@@ -2347,7 +2506,9 @@ function ResultsView({
         {/* Trades table */}
         <div
           className={`rounded-xl border ${
-            isDarkMode ? "border-gray-800 bg-gray-900/90" : "border-slate-200 bg-white"
+            isDarkMode
+              ? "border-gray-800 bg-gray-900/90"
+              : "border-slate-200 bg-white"
           }`}
         >
           <div className="px-3 py-2 border-b border-gray-800/60 flex items-center justify-between">
@@ -2356,7 +2517,8 @@ function ResultsView({
               <div>
                 <div className="text-xs font-semibold">Trade History</div>
                 <div className="text-[11px] text-gray-500">
-                  {backtestResult.trades.length} closed trades • BUY / SELL detail
+                  {backtestResult.trades.length} closed trades • BUY / SELL
+                  detail
                 </div>
               </div>
             </div>
@@ -2529,7 +2691,9 @@ function ResultsView({
         {/* DANH SÁCH BACKTEST */}
         <div
           className={`rounded-xl border ${
-            isDarkMode ? "border-gray-800 bg-gray-900/90" : "border-slate-200 bg-white"
+            isDarkMode
+              ? "border-gray-800 bg-gray-900/90"
+              : "border-slate-200 bg-white"
           }`}
         >
           <div className="px-3 py-2 border-b border-gray-800/60 flex items-center justify-between">
@@ -2607,7 +2771,8 @@ function ResultsView({
                           {job.symbol}
                         </td>
                         <td className="px-3 py-1.5 border-b border-gray-800/20 text-left">
-                          {job.data_from?.slice(0, 10)} → {job.data_to?.slice(0, 10)}
+                          {job.data_from?.slice(0, 10)} →{" "}
+                          {job.data_to?.slice(0, 10)}
                         </td>
                         <td className="px-3 py-1.5 border-b border-gray-800/20 text-right">
                           {formatVND(Number(job.initial_capital))}
@@ -2638,7 +2803,9 @@ function ResultsView({
         {!hasResult ? (
           <div
             className={`rounded-xl border text-center py-10 text-xs ${
-              isDarkMode ? "border-gray-800 bg-gray-900/70" : "border-dashed border-slate-300 bg-white"
+              isDarkMode
+                ? "border-gray-800 bg-gray-900/70"
+                : "border-dashed border-slate-300 bg-white"
             }`}
           >
             <div className="text-4xl mb-3">📊</div>
@@ -2646,7 +2813,8 @@ function ResultsView({
               Chưa có kết quả để hiển thị
             </div>
             <div className="text-gray-400">
-              Hãy chọn 1 backtest ở bảng phía trên (trạng thái COMPLETED) để xem chi tiết.
+              Hãy chọn 1 backtest ở bảng phía trên (trạng thái COMPLETED) để xem
+              chi tiết.
             </div>
           </div>
         ) : (

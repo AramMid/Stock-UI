@@ -14,7 +14,10 @@ import {
   CreateOrderDto,
 } from "@/lib/services/orderApiService";
 import { WebSocketService } from "@/lib/services/webSocketService";
-import { OrderUpdate, OrderUpdateCallback } from "@/lib/services/webSocketService";
+import {
+  OrderUpdate,
+  OrderUpdateCallback,
+} from "@/lib/services/webSocketService";
 
 // Suggestion data type
 interface SuggestionData {
@@ -89,8 +92,9 @@ export default function AccountManagerSection({
 }: AccountManagerSectionProps) {
   const [activeTab, setActiveTab] = useState("Order Book");
   const [orderBook, setOrderBook] = useState<OrderBook | null>(null);
-  const [marketAnalysis, setMarketAnalysis] =
-    useState<MarketAnalysis | null>(null);
+  const [marketAnalysis, setMarketAnalysis] = useState<MarketAnalysis | null>(
+    null
+  );
 
   // Suggestion state
   const [suggestedOrders, setSuggestedOrders] = useState<{
@@ -116,35 +120,34 @@ export default function AccountManagerSection({
     null
   );
   const getStatusBadge = (status: string) => {
-  const s = String(status).toUpperCase();
+    const s = String(status).toUpperCase();
 
-  // ✅ FILLED xanh lá
-  if (s === "FILLED") {
+    // ✅ FILLED xanh lá
+    if (s === "FILLED") {
+      return isDarkMode
+        ? "bg-emerald-900/30 text-emerald-400 border border-emerald-500/20"
+        : "bg-emerald-100 text-emerald-700 border border-emerald-200";
+    }
+
+    // ✅ CANCELLED / CANCELED / REJECTED đỏ
+    if (s === "CANCELLED" || s === "CANCELED" || s === "REJECTED") {
+      return isDarkMode
+        ? "bg-rose-900/30 text-rose-400 border border-rose-500/20"
+        : "bg-rose-100 text-rose-700 border border-rose-200";
+    }
+
+    // ⏳ các trạng thái đang chạy
+    if (s === "NEW" || s === "PENDING" || s === "PARTIALLY_FILLED") {
+      return isDarkMode
+        ? "bg-amber-900/30 text-amber-400 border border-amber-500/20"
+        : "bg-amber-100 text-amber-700 border border-amber-200";
+    }
+
+    // mặc định
     return isDarkMode
-      ? "bg-emerald-900/30 text-emerald-400 border border-emerald-500/20"
-      : "bg-emerald-100 text-emerald-700 border border-emerald-200";
-  }
-
-  // ✅ CANCELLED / CANCELED / REJECTED đỏ
-  if (s === "CANCELLED" || s === "CANCELED" || s === "REJECTED") {
-    return isDarkMode
-      ? "bg-rose-900/30 text-rose-400 border border-rose-500/20"
-      : "bg-rose-100 text-rose-700 border border-rose-200";
-  }
-
-  // ⏳ các trạng thái đang chạy
-  if (s === "NEW" || s === "PENDING" || s === "PARTIALLY_FILLED") {
-    return isDarkMode
-      ? "bg-amber-900/30 text-amber-400 border border-amber-500/20"
-      : "bg-amber-100 text-amber-700 border border-amber-200";
-  }
-
-  // mặc định
-  return isDarkMode
-    ? "bg-gray-800 text-gray-300 border border-gray-700"
-    : "bg-gray-100 text-gray-700 border border-gray-200";
-};
-
+      ? "bg-gray-800 text-gray-300 border border-gray-700"
+      : "bg-gray-100 text-gray-700 border border-gray-200";
+  };
 
   // ========================
   // ORDER SYNC STATE
@@ -209,18 +212,18 @@ export default function AccountManagerSection({
     const webSocketService = WebSocketService.getInstance();
 
     // Track active subscriptions to clean up later
-    const subscriptions: { orderId: string; callback: OrderUpdateCallback }[] = [];
+    const subscriptions: { orderId: string; callback: OrderUpdateCallback }[] =
+      [];
 
     // Callback function to handle order updates
     const handleOrderUpdate = (update: OrderUpdate) => {
       // Since orders is a prop, we can't directly update it
       // The parent component should handle order updates
       // We'll just log the update for now
-      console.log("Received order update via WebSocket:", update);
     };
 
     // Subscribe to all existing orders
-    orders.forEach(order => {
+    orders.forEach((order) => {
       webSocketService.subscribe(order.id, handleOrderUpdate);
       subscriptions.push({ orderId: order.id, callback: handleOrderUpdate });
     });
@@ -245,7 +248,7 @@ export default function AccountManagerSection({
         return "filled";
       case "CANCELLED":
         return "cancelled";
-      case "REJECTED":         // ⬅️ gom về cancelled
+      case "REJECTED": // ⬅️ gom về cancelled
         return "cancelled";
       // Any other status should not be saved to database
       default:
@@ -256,7 +259,10 @@ export default function AccountManagerSection({
   // =========================================================================
   // HELPER: POST ORDER LÊN BACKEND (CHỈ KHI ĐÃ ĐỔI STATUS)
   // =========================================================================
-  const syncOrderToBackend = async (order: Order, backendStatus: "filled" | "cancelled") => {
+  const syncOrderToBackend = async (
+    order: Order,
+    backendStatus: "filled" | "cancelled"
+  ) => {
     // Create payload matching the NestJS DTO
     const payload: CreateOrderDto = {
       stockSymbol: order.symbol,
@@ -269,28 +275,19 @@ export default function AccountManagerSection({
       filledQuantity: order.filledQuantity ?? undefined, // Use undefined for optional fields
       filledPrice: order.filledPrice ?? order.price ?? undefined, // Use undefined for optional fields
       commission: 0,
-      filledAt: 
+      filledAt:
         (order as unknown as { filledAt?: Date }).filledAt?.toISOString?.() ??
         order.timestamp?.toISOString?.() ??
         new Date().toISOString(),
     };
-    
-    try {
-      // Log the payload for debugging
-      console.log("[OrderSync] Sending payload to backend:", JSON.stringify(payload, null, 2));
 
+    try {
       // Import the createOrder function
       const orderApiService = await import("@/lib/services/orderApiService");
-      
+
       // Call the createOrder function which handles the correct API endpoint
       await orderApiService.createOrder(payload);
-
-      console.log("[OrderSync] Synced order to backend:", {
-        id: order.id,
-        status: backendStatus,
-      });
     } catch (error) {
-      console.error("[OrderSync] Error syncing order:", order.id, error);
       // Không cập nhật ref ở đây để lần sau có thể retry nếu cần
       throw error;
     }
@@ -306,7 +303,7 @@ export default function AccountManagerSection({
   //   // Các trạng thái được coi là "cuối" / đáng để sync
   //   // Theo yêu cầu: chỉ sync khi order có trạng thái FILLED hoặc REJECTED/CANCELLED
   //   const finalStatuses = new Set(["FILLED", "REJECTED", "CANCELLED"]);
-  //   
+  //
   //   // Store timeout IDs for cleanup
   //   const timeouts: NodeJS.Timeout[] = [];
   //
@@ -351,7 +348,7 @@ export default function AccountManagerSection({
   //           );
   //         }
   //       }, 1000); // 1 giây delay theo yêu cầu
-  //       
+  //
   //       // Store timeout ID for cleanup
   //       timeouts.push(timeoutId);
   //     } catch (err) {
@@ -364,7 +361,7 @@ export default function AccountManagerSection({
   //       }
   //     }
   //   });
-  //   
+  //
   //   // Cleanup all timeouts when component unmounts or orders change
   //   return () => {
   //     timeouts.forEach(timeoutId => clearTimeout(timeoutId));
@@ -418,11 +415,11 @@ export default function AccountManagerSection({
     ): { buy: SuggestionData | null; sell: SuggestionData | null } => {
       const currentPrice = marketData.price;
       if (!Number.isFinite(currentPrice) || currentPrice <= 0) {
-    setDebugInfo(
-      `Invalid current price from simulation (${currentPrice}), skip signals`
-    );
-    return { buy: null, sell: null };
-  }
+        setDebugInfo(
+          `Invalid current price from simulation (${currentPrice}), skip signals`
+        );
+        return { buy: null, sell: null };
+      }
       const bestAsk = asks.length > 0 ? asks[0] : null;
       const bestBid = bids.length > 0 ? bids[0] : null;
 
@@ -627,12 +624,12 @@ export default function AccountManagerSection({
       if (marketSimulation) {
         const marketData = marketSimulation.getMarketData(selectedSymbol);
         if (marketData) {
-            const cleanBidDepth = marketData.bidDepth.filter(
-    (l) => Number.isFinite(l.price) && l.price > 0
-  );
-  const cleanAskDepth = marketData.askDepth.filter(
-    (l) => Number.isFinite(l.price) && l.price > 0
-  );
+          const cleanBidDepth = marketData.bidDepth.filter(
+            (l) => Number.isFinite(l.price) && l.price > 0
+          );
+          const cleanAskDepth = marketData.askDepth.filter(
+            (l) => Number.isFinite(l.price) && l.price > 0
+          );
           const aggregateLevels = (depth: MarketDepthLevel[]) => {
             const priceMap: {
               [price: number]: { totalQuantity: number; orderCount: number };
@@ -658,9 +655,12 @@ export default function AccountManagerSection({
               .slice(0, 20);
           };
 
-          
-  const bids = aggregateLevels(cleanBidDepth).sort((a, b) => b.price - a.price);
-  const asks = aggregateLevels(cleanAskDepth).sort((a, b) => a.price - b.price);
+          const bids = aggregateLevels(cleanBidDepth).sort(
+            (a, b) => b.price - a.price
+          );
+          const asks = aggregateLevels(cleanAskDepth).sort(
+            (a, b) => a.price - b.price
+          );
 
           setOrderBook({
             bids: bids.map((bid) => ({
@@ -727,32 +727,27 @@ export default function AccountManagerSection({
   };
 
   const calculateVolatility = (prices: number[]): number => {
-  const cleaned = prices.filter(
-    (p) => Number.isFinite(p) && p > 0
-  );
-  if (cleaned.length < 2) return 0;
+    const cleaned = prices.filter((p) => Number.isFinite(p) && p > 0);
+    if (cleaned.length < 2) return 0;
 
-  const returns: number[] = [];
-  for (let i = 1; i < cleaned.length; i++) {
-    const r = Math.log(cleaned[i] / cleaned[i - 1]);
-    if (Number.isFinite(r)) returns.push(r);
-  }
-  if (returns.length === 0) return 0;
+    const returns: number[] = [];
+    for (let i = 1; i < cleaned.length; i++) {
+      const r = Math.log(cleaned[i] / cleaned[i - 1]);
+      if (Number.isFinite(r)) returns.push(r);
+    }
+    if (returns.length === 0) return 0;
 
-  const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
-  const variance =
-    returns.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / returns.length;
-  return Math.sqrt(variance * 252);
-};
-
+    const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
+    const variance =
+      returns.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / returns.length;
+    return Math.sqrt(variance * 252);
+  };
 
   const identifySupportLevels = (bids: OrderBookLevel[]): number[] => {
     if (bids.length < 3) return [];
     const levels: number[] = [];
 
-    const topBids = [...bids]
-      .sort((a, b) => b.price - a.price)
-      .slice(0, 3);
+    const topBids = [...bids].sort((a, b) => b.price - a.price).slice(0, 3);
     topBids.forEach((bid) => {
       if (bid.totalQuantity > 1000) {
         levels.push(bid.price);
@@ -766,9 +761,7 @@ export default function AccountManagerSection({
     if (asks.length < 3) return [];
     const levels: number[] = [];
 
-    const topAsks = [...asks]
-      .sort((a, b) => a.price - b.price)
-      .slice(0, 3);
+    const topAsks = [...asks].sort((a, b) => a.price - b.price).slice(0, 3);
     topAsks.forEach((ask) => {
       if (ask.totalQuantity > 1000) {
         levels.push(ask.price);
@@ -778,9 +771,7 @@ export default function AccountManagerSection({
     return levels;
   };
 
-  const analyzeVolume = (
-    totalVolume: number
-  ): "HIGH" | "NORMAL" | "LOW" => {
+  const analyzeVolume = (totalVolume: number): "HIGH" | "NORMAL" | "LOW" => {
     if (totalVolume > 20000) return "HIGH";
     if (totalVolume > 5000) return "NORMAL";
     return "LOW";
@@ -951,9 +942,7 @@ export default function AccountManagerSection({
     return colors[riskLevel];
   };
 
-  const getTimeFrameColor = (
-    timeFrame: "IMMEDIATE" | "SHORT" | "MEDIUM"
-  ) => {
+  const getTimeFrameColor = (timeFrame: "IMMEDIATE" | "SHORT" | "MEDIUM") => {
     const colors = {
       IMMEDIATE: isDarkMode
         ? "text-sky-400 bg-sky-400/10 border-sky-400/20"
@@ -988,33 +977,32 @@ export default function AccountManagerSection({
   const tabs = ["Orders", "Order Book", "Order History", "AI Insights"];
 
   // Use userBalance if provided, otherwise fallback to tradingPosition.cash
- const toNumber = (v: unknown, fallback = 0) => {
-  const n = typeof v === "number" ? v : Number(v);
-  return Number.isFinite(n) ? n : fallback;
-};
+  const toNumber = (v: unknown, fallback = 0) => {
+    const n = typeof v === "number" ? v : Number(v);
+    return Number.isFinite(n) ? n : fallback;
+  };
 
-// Balance: ưu tiên userBalance (từ backend), fallback tradingPosition.cash
-// Use userBalance if provided, otherwise fallback to tradingPosition.cash
-const balance = toNumber(userBalance, toNumber(tradingPosition.cash, 0));
+  // Balance: ưu tiên userBalance (từ backend), fallback tradingPosition.cash
+  // Use userBalance if provided, otherwise fallback to tradingPosition.cash
+  const balance = toNumber(userBalance, toNumber(tradingPosition.cash, 0));
 
-// ✅ IMPORTANT: use props from Home (FIFO ledger)
-const realized = toNumber(realizedPnl, 0);
-const unrealized = toNumber(
-  unrealizedPnl,
-  toNumber((tradingPosition as any)?.pnl, 0) // fallback nếu bạn có pnl trong tradingPosition
-);
+  // ✅ IMPORTANT: use props from Home (FIFO ledger)
+  const realized = toNumber(realizedPnl, 0);
+  const unrealized = toNumber(
+    unrealizedPnl,
+    toNumber((tradingPosition as any)?.pnl, 0) // fallback nếu bạn có pnl trong tradingPosition
+  );
 
-// ✅ Equity đúng nghĩa: cash + realized + unrealized
-const equity = balance + realized + unrealized;
+  // ✅ Equity đúng nghĩa: cash + realized + unrealized
+  const equity = balance + realized + unrealized;
 
-const metrics = [
-  { label: "Account Balance", value: formatVNDCurrency(balance) },
-  { label: "Equity", value: formatVNDCurrency(equity) },
-  { label: "Realized P&L", value: formatVNDCurrency(realized) },
-  { label: "Unrealized P&L", value: formatVNDCurrency(unrealized) },
-  { label: "Available Funds", value: formatVNDCurrency(balance), info: true },
-];
-
+  const metrics = [
+    { label: "Account Balance", value: formatVNDCurrency(balance) },
+    { label: "Equity", value: formatVNDCurrency(equity) },
+    { label: "Realized P&L", value: formatVNDCurrency(realized) },
+    { label: "Unrealized P&L", value: formatVNDCurrency(unrealized) },
+    { label: "Available Funds", value: formatVNDCurrency(balance), info: true },
+  ];
 
   return (
     <div
@@ -1043,7 +1031,7 @@ const metrics = [
               AI TRADING ASSISTANT
             </span>
             <span className="text-gray-500">•</span>
-            <span>{userName || 'User'}</span>
+            <span>{userName || "User"}</span>
           </div>
         </div>
 
@@ -1303,11 +1291,13 @@ const metrics = [
                               {formatVNDCurrency(order.price || 0)}
                             </td>
                             <td className="py-3 px-4">
-                            <span
-                              className={`px-2 py-1 rounded text-[10px] inline-flex items-center ${getStatusBadge(order.status)}`}
-                            >
-                              {order.status}
-                            </span>
+                              <span
+                                className={`px-2 py-1 rounded text-[10px] inline-flex items-center ${getStatusBadge(
+                                  order.status
+                                )}`}
+                              >
+                                {order.status}
+                              </span>
                             </td>
                           </tr>
                         ))}
@@ -1580,16 +1570,12 @@ const metrics = [
                             <div className="flex items-baseline gap-2">
                               <span
                                 className={`text-3xl font-bold ${
-                                  isDarkMode
-                                    ? "text-gray-200"
-                                    : "text-gray-900"
+                                  isDarkMode ? "text-gray-200" : "text-gray-900"
                                 }`}
                               >
                                 {formatVNDCurrency(suggestedOrders.buy.price)}
                               </span>
-                              <span className="text-sm text-gray-400">
-                                VND
-                              </span>
+                              <span className="text-sm text-gray-400">VND</span>
                             </div>
                           </div>
 
@@ -1640,9 +1626,7 @@ const metrics = [
                                   Take profit
                                 </div>
                                 <div className="text-sm font-bold text-emerald-500">
-                                  {formatVND(
-                                    suggestedOrders.buy.takeProfit!
-                                  )}
+                                  {formatVND(suggestedOrders.buy.takeProfit!)}
                                 </div>
                                 <div className="text-xs text-emerald-400">
                                   +
@@ -1684,8 +1668,7 @@ const metrics = [
                           </div>
 
                           <button className="w-full py-3 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white font-bold rounded-lg transition-all duration-300 transform hover:scale-[1.02] shadow-lg">
-                            Open BUY order • Qty:{" "}
-                            {suggestedOrders.buy.quantity}
+                            Open BUY order • Qty: {suggestedOrders.buy.quantity}
                           </button>
                         </div>
                       </div>
@@ -1844,16 +1827,12 @@ const metrics = [
                             <div className="flex items-baseline gap-2">
                               <span
                                 className={`text-3xl font-bold ${
-                                  isDarkMode
-                                    ? "text-gray-200"
-                                    : "text-gray-900"
+                                  isDarkMode ? "text-gray-200" : "text-gray-900"
                                 }`}
                               >
                                 {formatVNDCurrency(suggestedOrders.sell.price)}
                               </span>
-                              <span className="text-sm text-gray-400">
-                                VND
-                              </span>
+                              <span className="text-sm text-gray-400">VND</span>
                             </div>
                           </div>
 
@@ -1904,9 +1883,7 @@ const metrics = [
                                   Take profit
                                 </div>
                                 <div className="text-sm font-bold text-rose-500">
-                                  {formatVND(
-                                    suggestedOrders.sell.takeProfit!
-                                  )}
+                                  {formatVND(suggestedOrders.sell.takeProfit!)}
                                 </div>
                                 <div className="text-xs text-rose-400">
                                   +
@@ -2237,8 +2214,8 @@ const metrics = [
                               colSpan={5}
                               className="py-8 text-center text-gray-500"
                             >
-                              No order history found. Place some orders to
-                              see them here.
+                              No order history found. Place some orders to see
+                              them here.
                             </td>
                           </tr>
                         )}
@@ -2276,11 +2253,12 @@ const metrics = [
                             </td>
                             <td className="py-3 px-4">
                               <span
-                                className={`px-2 py-0.5 rounded text-[10px] inline-flex items-center ${getStatusBadge(order.status)}`}
+                                className={`px-2 py-0.5 rounded text-[10px] inline-flex items-center ${getStatusBadge(
+                                  order.status
+                                )}`}
                               >
                                 {order.status}
                               </span>
-
                             </td>
                           </tr>
                         ))}
@@ -2319,11 +2297,12 @@ const metrics = [
                             </td>
                             <td className="py-3 px-4">
                               <span
-  className={`px-2 py-0.5 rounded text-[10px] inline-flex items-center ${getStatusBadge(order.status)}`}
->
-  {order.status}
-</span>
-
+                                className={`px-2 py-0.5 rounded text-[10px] inline-flex items-center ${getStatusBadge(
+                                  order.status
+                                )}`}
+                              >
+                                {order.status}
+                              </span>
                             </td>
                           </tr>
                         ))}
@@ -2615,9 +2594,7 @@ const metrics = [
                             <div className="text-xs">
                               <span
                                 className={
-                                  isDarkMode
-                                    ? "text-gray-400"
-                                    : "text-gray-600"
+                                  isDarkMode ? "text-gray-400" : "text-gray-600"
                                 }
                               >
                                 Win rate:{" "}
@@ -2637,9 +2614,7 @@ const metrics = [
                             <div className="text-xs">
                               <span
                                 className={
-                                  isDarkMode
-                                    ? "text-gray-400"
-                                    : "text-gray-600"
+                                  isDarkMode ? "text-gray-400" : "text-gray-600"
                                 }
                               >
                                 Confidence:{" "}

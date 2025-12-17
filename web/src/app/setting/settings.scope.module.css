@@ -1,0 +1,54 @@
+/* settings.scope.module.css */
+
+/* 1) Scope root: tự set lại typography + nền + màu */
+.scope {
+  /* chặn theme/light background từ global */
+  background: #181c24;
+  color: #e5e7eb;
+
+  /* không dùng font-mono global nữa */
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+}
+
+/* 2) Chặn toàn bộ transition/global animation “đè” bằng !important */
+.scope,
+.scope * {
+  transition: none !important;
+}
+
+/* 3) Fix các element bị global reset quá mạnh */
+.scope a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.scope button {
+  /* giữ button ổn định trong scope, không phụ thuộc global */
+  font: inherit;
+}
+
+/* 4) Nếu global scrollbars làm xấu trang này, override lại trong scope */
+.scope ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.scope ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scope ::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.22);
+  border-radius: 999px;
+}
+
+.scope ::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.35);
+}
+
+/* Firefox */
+.scope {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.22) transparent;
+}

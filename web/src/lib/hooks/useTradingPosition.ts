@@ -1,6 +1,11 @@
 import { useState, useEffect } from "react";
 import { TradingPosition } from "../types";
-import { AccountState, executeBuyOrder, executeSellOrder, calculatePnL } from "../order-management";
+import {
+  AccountState,
+  executeBuyOrder,
+  executeSellOrder,
+  calculatePnL,
+} from "../order-management";
 
 interface SymbolPosition extends AccountState {
   symbol: string;
@@ -13,7 +18,9 @@ interface SymbolPosition extends AccountState {
  */
 export function useTradingPosition(initialCash = 200000000) {
   const [cash, setCash] = useState<number>(initialCash);
-  const [positions, setPositions] = useState<Map<string, SymbolPosition>>(new Map());
+  const [positions, setPositions] = useState<Map<string, SymbolPosition>>(
+    new Map()
+  );
 
   const handleBuy = (symbol: string, quantity: number, price: number) => {
     // Get current position for this symbol
@@ -23,7 +30,7 @@ export function useTradingPosition(initialCash = 200000000) {
       position: 0,
       avgPrice: 0,
       lastPrice: 0,
-      pnl: 0
+      pnl: 0,
     };
 
     const result = executeBuyOrder(currentPosition, cash, quantity, price);
@@ -31,57 +38,56 @@ export function useTradingPosition(initialCash = 200000000) {
       // Update symbol position
       const updatedPosition: SymbolPosition = {
         ...result.updatedAccount,
-        symbol
+        symbol,
       };
-      
-      setPositions(prev => {
+
+      setPositions((prev) => {
         const newPositions = new Map(prev);
         newPositions.set(symbol, updatedPosition);
         return newPositions;
       });
-      
+
       // Update cash
-      setCash(prev => prev - (quantity * price));
+      setCash((prev) => prev - quantity * price);
     } else {
       alert(result.errorMessage);
     }
     return result.success;
   };
 
-const handleSell = (symbol: string, quantity: number, price: number) => {
-  const currentPosition = positions.get(symbol);
+  const handleSell = (symbol: string, quantity: number, price: number) => {
+    const currentPosition = positions.get(symbol);
 
-  // ⚠️ QUAN TRỌNG: KHÔNG alert trong WS flow
-  if (!currentPosition || currentPosition.position <= 0) {
-    console.warn(`[SELL] Skip – no position yet for ${symbol}`);
-    return true; // ✅ coi như handled
-  }
-
-  // nếu chunk > số còn lại → bán phần còn lại
-  const sellQty = Math.min(quantity, currentPosition.position);
-
-  const result = executeSellOrder(currentPosition, cash, sellQty, price);
-  if (result.success) {
-    if (result.updatedAccount.position <= 0) {
-      setPositions(prev => {
-        const m = new Map(prev);
-        m.delete(symbol);
-        return m;
-      });
-    } else {
-      setPositions(prev => {
-        const m = new Map(prev);
-        m.set(symbol, { ...result.updatedAccount, symbol });
-        return m;
-      });
+    // ⚠️ QUAN TRỌNG: KHÔNG alert trong WS flow
+    if (!currentPosition || currentPosition.position <= 0) {
+      // Sell skip handling
+      return true; // ✅ coi như handled
     }
 
-    setCash(prev => prev + sellQty * price);
-  }
+    // nếu chunk > số còn lại → bán phần còn lại
+    const sellQty = Math.min(quantity, currentPosition.position);
 
-  return result.success;
-};
+    const result = executeSellOrder(currentPosition, cash, sellQty, price);
+    if (result.success) {
+      if (result.updatedAccount.position <= 0) {
+        setPositions((prev) => {
+          const m = new Map(prev);
+          m.delete(symbol);
+          return m;
+        });
+      } else {
+        setPositions((prev) => {
+          const m = new Map(prev);
+          m.set(symbol, { ...result.updatedAccount, symbol });
+          return m;
+        });
+      }
 
+      setCash((prev) => prev + sellQty * price);
+    }
+
+    return result.success;
+  };
 
   const getPosition = (symbol: string): SymbolPosition | undefined => {
     return positions.get(symbol);
@@ -93,7 +99,7 @@ const handleSell = (symbol: string, quantity: number, price: number) => {
 
   const getTotalPositionValue = (): number => {
     let total = 0;
-    positions.forEach(position => {
+    positions.forEach((position) => {
       total += position.position * position.lastPrice;
     });
     return total;
@@ -101,7 +107,7 @@ const handleSell = (symbol: string, quantity: number, price: number) => {
 
   const getTotalPnL = (): number => {
     let total = 0;
-    positions.forEach(position => {
+    positions.forEach((position) => {
       total += position.pnl;
     });
     return total;
@@ -113,10 +119,14 @@ const handleSell = (symbol: string, quantity: number, price: number) => {
       const updatedPosition: SymbolPosition = {
         ...currentPosition,
         lastPrice: price,
-        pnl: calculatePnL(currentPosition.position, currentPosition.avgPrice, price)
+        pnl: calculatePnL(
+          currentPosition.position,
+          currentPosition.avgPrice,
+          price
+        ),
       };
-      
-      setPositions(prev => {
+
+      setPositions((prev) => {
         const newPositions = new Map(prev);
         newPositions.set(symbol, updatedPosition);
         return newPositions;

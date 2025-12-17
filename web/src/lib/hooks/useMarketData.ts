@@ -26,7 +26,7 @@ export function useMarketData(
   const getterRef = useRef<typeof marketSimulationGetter>(undefined);
 
   // Create a stable string representation of symbols for useEffect dependencies
-  const symbolsKey = useMemo(() => symbols.join(','), [symbols]);
+  const symbolsKey = useMemo(() => symbols.join(","), [symbols]);
 
   // luôn giữ getter mới nhất
   useEffect(() => {
@@ -66,7 +66,7 @@ export function useMarketData(
             const price = await fetchCurrentPrice(symbol);
             return { symbol, price };
           } catch (error) {
-            console.error(`Failed to fetch price for ${symbol}:`, error);
+            // Failed to fetch price handling
             // No fallback price if API fails
             return { symbol, price: 0 };
           }
@@ -98,7 +98,7 @@ export function useMarketData(
       } catch (err) {
         if (isMounted) {
           setError("Failed to fetch market data");
-          console.error("Market data fetch error:", err);
+          // Market data fetch error handling
         }
       }
     };

@@ -2,13 +2,12 @@
  * Service to handle REST API calls for orders
  */
 
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
 
 // Helper function to get authorization header
 function getAuthHeader(): HeadersInit {
-  const token = localStorage.getItem('access_token');
-  return token ? { 'Authorization': `Bearer ${token}` } : {};
+  const token = localStorage.getItem("access_token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
 // Define the CreateOrderDto interface based on the sample JSON
@@ -100,7 +99,7 @@ export async function createOrder(order: CreateOrderDto): Promise<ApiOrder> {
     const result: ApiEnvelope<ApiOrder> = await response.json();
     return result.data;
   } catch (error) {
-    console.error("Error creating order:", error);
+    // Error creating order handling
     throw error;
   }
 }
@@ -110,7 +109,9 @@ export async function createOrder(order: CreateOrderDto): Promise<ApiOrder> {
  * @param query Optional query parameters
  * @returns Promise resolving to array of orders
  */
-export async function getOrders(query?: GetOrdersQuery): Promise<OrderResponse[]> {
+export async function getOrders(
+  query?: GetOrdersQuery
+): Promise<OrderResponse[]> {
   try {
     const params = new URLSearchParams();
     if (query) {
@@ -121,9 +122,12 @@ export async function getOrders(query?: GetOrdersQuery): Promise<OrderResponse[]
       });
     }
 
-    const response = await fetch(`${API_BASE_URL}/api/orders?${params.toString()}`, {
-      headers: getAuthHeader(),
-    });
+    const response = await fetch(
+      `${API_BASE_URL}/api/orders?${params.toString()}`,
+      {
+        headers: getAuthHeader(),
+      }
+    );
 
     if (!response.ok) {
       throw new Error(`Failed to fetch orders: ${response.statusText}`);
@@ -141,7 +145,7 @@ export async function getOrders(query?: GetOrdersQuery): Promise<OrderResponse[]
       createdAt: order.created_at,
     }));
   } catch (error) {
-    console.error("Error fetching orders:", error);
+    // Error fetching orders handling
     return [];
   }
 }
@@ -151,43 +155,48 @@ export async function getOrders(query?: GetOrdersQuery): Promise<OrderResponse[]
  * @param stocks Array of stock symbols to fetch positions for
  * @returns Promise resolving to a map of symbol -> quantity
  */
-export async function fetchSharePositions(stocks: string[]): Promise<Map<string, number>> {
+export async function fetchSharePositions(
+  stocks: string[]
+): Promise<Map<string, number>> {
   try {
     // Filter to only include Vietnamese stocks (ending with .VN)
-    const vnStocks = stocks.filter(symbol => symbol.endsWith('.VN'));
-    
-    console.log('Fetching share positions for stocks:', vnStocks);
-    
+    const vnStocks = stocks.filter((symbol) => symbol.endsWith(".VN"));
+
+    // Fetching share positions for stocks
+
     const response = await fetch(`${API_BASE_URL}/api/orders/shares`, {
-      method: 'POST',
+      method: "POST",
       headers: {
-        'Content-Type': 'application/json',
-        ...getAuthHeader()
+        "Content-Type": "application/json",
+        ...getAuthHeader(),
       },
       body: JSON.stringify({
-        stocks: vnStocks
-      })
+        stocks: vnStocks,
+      }),
     });
 
     if (!response.ok) {
-      throw new Error(`Failed to fetch share positions: ${response.statusText}`);
+      throw new Error(
+        `Failed to fetch share positions: ${response.statusText}`
+      );
     }
 
     const result = await response.json();
-    console.log('Share positions API response:', result);
-    
+
     // Convert the shares object to a Map
     const positions = new Map<string, number>();
-    if (result.data && result.data.shares && typeof result.data.shares === 'object') {
+    if (
+      result.data &&
+      result.data.shares &&
+      typeof result.data.shares === "object"
+    ) {
       Object.entries(result.data.shares).forEach(([symbol, quantity]) => {
         positions.set(symbol, Number(quantity) || 0);
       });
     }
-    
-    console.log('Processed positions map:', positions);
+
     return positions;
   } catch (error) {
-    console.error('Error fetching share positions:', error);
     return new Map(); // Return empty map on error
   }
 }
