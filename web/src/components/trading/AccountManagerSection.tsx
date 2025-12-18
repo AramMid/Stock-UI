@@ -119,6 +119,7 @@ export default function AccountManagerSection({
   const [orderHistoryError, setOrderHistoryError] = useState<string | null>(
     null
   );
+
   const getStatusBadge = (status: string) => {
     const s = String(status).toUpperCase();
 
@@ -369,6 +370,17 @@ export default function AccountManagerSection({
   // }, [orders]); // ⬅️ chỉ phụ thuộc vào orders
 
   // ========================
+  // HELPERS (ANTI-NaN)
+  // ========================
+  const toNumber = (v: unknown, fallback = 0) => {
+    const n = typeof v === "number" ? v : Number(v);
+    return Number.isFinite(n) ? n : fallback;
+  };
+
+  const clamp = (v: number, min: number, max: number) =>
+    Math.max(min, Math.min(max, v));
+
+  // ========================
   // MARKET SIMULATION EFFECT
   // ========================
   useEffect(() => {
@@ -377,23 +389,34 @@ export default function AccountManagerSection({
       bids: OrderBookLevel[],
       asks: OrderBookLevel[]
     ) => {
-      const priceHistory = bids.concat(asks).map((l) => l.price);
+      const priceHistory = bids
+        .concat(asks)
+        .map((l) => toNumber((l as any)?.price, 0))
+        .filter((p) => p > 0);
+
       const trendStrength = calculateTrendStrength(priceHistory);
       const volatility = calculateVolatility(priceHistory);
 
       const totalBidVol = bids.reduce(
-        (acc, level) => acc + level.totalQuantity,
+        (acc, level) => acc + toNumber((level as any)?.totalQuantity, 0),
         0
       );
       const totalAskVol = asks.reduce(
-        (acc, level) => acc + level.totalQuantity,
+        (acc, level) => acc + toNumber((level as any)?.totalQuantity, 0),
         0
       );
-      const liquidityScore = Math.min(100, (totalBidVol + totalAskVol) / 100);
+      const liquidityScore = clamp(
+        ((totalBidVol + totalAskVol) / 100) || 0,
+        0,
+        100
+      );
 
       const supportLevels = identifySupportLevels(bids);
       const resistanceLevels = identifyResistanceLevels(asks);
       const volumeAnalysis = analyzeVolume(totalBidVol + totalAskVol);
+
+      const rsiVal = toNumber((marketData as any)?.rsi, NaN);
+      const vwapVal = toNumber((marketData as any)?.vwap, NaN);
 
       return {
         trendStrength,
@@ -402,8 +425,8 @@ export default function AccountManagerSection({
         supportLevels,
         resistanceLevels,
         volumeAnalysis,
-        rsi: marketData.rsi || null,
-        vwap: marketData.vwap || null,
+        rsi: Number.isFinite(rsiVal) ? rsiVal : null,
+        vwap: Number.isFinite(vwapVal) ? vwapVal : null,
       };
     };
 
@@ -413,13 +436,16 @@ export default function AccountManagerSection({
       bids: OrderBookLevel[],
       asks: OrderBookLevel[]
     ): { buy: SuggestionData | null; sell: SuggestionData | null } => {
-      const currentPrice = marketData.price;
+      const currentPrice = toNumber((marketData as any)?.price, NaN);
       if (!Number.isFinite(currentPrice) || currentPrice <= 0) {
         setDebugInfo(
-          `Invalid current price from simulation (${currentPrice}), skip signals`
+          `Invalid current price from simulation (${String(
+            (marketData as any)?.price
+          )}), skip signals`
         );
         return { buy: null, sell: null };
       }
+
       const bestAsk = asks.length > 0 ? asks[0] : null;
       const bestBid = bids.length > 0 ? bids[0] : null;
 
@@ -430,11 +456,13 @@ export default function AccountManagerSection({
 
       const marketCondition = determineMarketCondition(analysis, currentPrice);
 
-      const rsi = analysis.rsi || 50;
+      const rsi = analysis.rsi ?? 50;
       const isOversold = rsi < 35;
       const isOverbought = rsi > 65;
-      const vwap = analysis.vwap || currentPrice;
-      const vwapDiff = ((currentPrice - vwap) / vwap) * 100;
+
+      const vwapBase = analysis.vwap ?? currentPrice;
+      const vwap = vwapBase > 0 ? vwapBase : currentPrice;
+      const vwapDiff = vwap > 0 ? ((currentPrice - vwap) / vwap) * 100 : 0;
 
       let buySuggestion: SuggestionData | null = null;
       let sellSuggestion: SuggestionData | null = null;
@@ -447,7 +475,7 @@ export default function AccountManagerSection({
         const supportLevel =
           analysis.supportLevels.length > 0
             ? Math.max(...analysis.supportLevels)
-            : bestBid.price * 0.995;
+            : toNumber((bestBid as any)?.price, currentPrice) * 0.995;
 
         const entryPrice = calculateOptimalEntryPrice(
           "buy",
@@ -472,39 +500,41 @@ export default function AccountManagerSection({
 
         const expectedProfit = (takeProfit - entryPrice) * 100;
         const expectedLoss = (entryPrice - stopLoss) * 100;
-        const riskRewardRatio = expectedProfit / expectedLoss;
+        const safeExpectedLoss = toNumber(expectedLoss, 0);
+        const riskRewardRatio =
+          safeExpectedLoss > 0 ? expectedProfit / safeExpectedLoss : 0;
 
         if (riskRewardRatio > 1.2 && winProbability > 45) {
           buySuggestion = {
             price: Math.round(entryPrice / 100) * 100,
             quantity: calculatePositionSize(
               entryPrice,
-              tradingPosition.cash,
+              toNumber((tradingPosition as any)?.cash, 0),
               riskLevel
             ),
             reason: generateBuyReason(analysis, rsi, vwapDiff),
-            winRate: Math.round(winProbability),
-            confidence: Math.round(confidence),
+            winRate: Math.round(toNumber(winProbability, 0)),
+            confidence: Math.round(toNumber(confidence, 0)),
             riskLevel,
             type: determineTradeType(analysis.trendStrength),
             stopLoss: Math.round(stopLoss / 100) * 100,
             takeProfit: Math.round(takeProfit / 100) * 100,
-            expectedProfit: Math.round(expectedProfit),
-            expectedLoss: Math.round(expectedLoss),
+            expectedProfit: Math.round(toNumber(expectedProfit, 0)),
+            expectedLoss: Math.round(toNumber(expectedLoss, 0)),
             timeFrame: determineTimeFrame(analysis.trendStrength),
             marketCondition,
           };
 
           setDebugInfo(
-            `Created BUY signal: RRR=${riskRewardRatio
+            `Created BUY signal: RRR=${toNumber(riskRewardRatio, 0)
               .toFixed(2)
-              .toString()}, Win=${winProbability}%`
+              .toString()}, Win=${toNumber(winProbability, 0)}%`
           );
         } else {
           setDebugInfo(
-            `BUY rejected: RRR=${riskRewardRatio
+            `BUY rejected: RRR=${toNumber(riskRewardRatio, 0)
               .toFixed(2)
-              .toString()}, Win=${winProbability}%`
+              .toString()}, Win=${toNumber(winProbability, 0)}%`
           );
         }
       }
@@ -517,7 +547,7 @@ export default function AccountManagerSection({
         const resistanceLevel =
           analysis.resistanceLevels.length > 0
             ? Math.min(...analysis.resistanceLevels)
-            : bestAsk.price * 1.005;
+            : toNumber((bestAsk as any)?.price, currentPrice) * 1.005;
 
         const entryPrice = Math.max(resistanceLevel, currentPrice * 1.002);
         const stopLoss = entryPrice * 1.015; // +1.5%
@@ -537,39 +567,41 @@ export default function AccountManagerSection({
 
         const expectedProfit = (entryPrice - takeProfit) * 100;
         const expectedLoss = (stopLoss - entryPrice) * 100;
-        const riskRewardRatio = expectedProfit / expectedLoss;
+        const safeExpectedLoss = toNumber(expectedLoss, 0);
+        const riskRewardRatio =
+          safeExpectedLoss > 0 ? expectedProfit / safeExpectedLoss : 0;
 
         if (riskRewardRatio > 1.1 && winProbability > 40) {
           sellSuggestion = {
             price: Math.round(entryPrice / 100) * 100,
             quantity: calculatePositionSize(
               entryPrice,
-              tradingPosition.cash,
+              toNumber((tradingPosition as any)?.cash, 0),
               riskLevel
             ),
             reason: generateSellReason(analysis, rsi, vwapDiff),
-            winRate: Math.round(winProbability),
-            confidence: Math.round(confidence),
+            winRate: Math.round(toNumber(winProbability, 0)),
+            confidence: Math.round(toNumber(confidence, 0)),
             riskLevel,
             type: determineTradeType(analysis.trendStrength),
             stopLoss: Math.round(stopLoss / 100) * 100,
             takeProfit: Math.round(takeProfit / 100) * 100,
-            expectedProfit: Math.round(expectedProfit),
-            expectedLoss: Math.round(expectedLoss),
+            expectedProfit: Math.round(toNumber(expectedProfit, 0)),
+            expectedLoss: Math.round(toNumber(expectedLoss, 0)),
             timeFrame: determineTimeFrame(analysis.trendStrength),
             marketCondition,
           };
 
           setDebugInfo(
-            `Created SELL signal: RRR=${riskRewardRatio
+            `Created SELL signal: RRR=${toNumber(riskRewardRatio, 0)
               .toFixed(2)
-              .toString()}, Win=${winProbability}%`
+              .toString()}, Win=${toNumber(winProbability, 0)}%`
           );
         } else {
           setDebugInfo(
-            `SELL rejected: RRR=${riskRewardRatio
+            `SELL rejected: RRR=${toNumber(riskRewardRatio, 0)
               .toFixed(2)
-              .toString()}, Win=${winProbability}%`
+              .toString()}, Win=${toNumber(winProbability, 0)}%`
           );
         }
       }
@@ -578,7 +610,7 @@ export default function AccountManagerSection({
       if (
         !buySuggestion &&
         !sellSuggestion &&
-        Math.abs(analysis.trendStrength) > 0.1
+        Math.abs(toNumber(analysis.trendStrength, 0)) > 0.1
       ) {
         if (analysis.trendStrength > 0.1) {
           buySuggestion = {
@@ -624,23 +656,30 @@ export default function AccountManagerSection({
       if (marketSimulation) {
         const marketData = marketSimulation.getMarketData(selectedSymbol);
         if (marketData) {
-          const cleanBidDepth = marketData.bidDepth.filter(
-            (l) => Number.isFinite(l.price) && l.price > 0
+          const cleanBidDepth = (marketData.bidDepth ?? []).filter(
+            (l) => Number.isFinite(toNumber((l as any)?.price, NaN)) && toNumber((l as any)?.price, 0) > 0
           );
-          const cleanAskDepth = marketData.askDepth.filter(
-            (l) => Number.isFinite(l.price) && l.price > 0
+          const cleanAskDepth = (marketData.askDepth ?? []).filter(
+            (l) => Number.isFinite(toNumber((l as any)?.price, NaN)) && toNumber((l as any)?.price, 0) > 0
           );
+
           const aggregateLevels = (depth: MarketDepthLevel[]) => {
             const priceMap: {
               [price: number]: { totalQuantity: number; orderCount: number };
             } = {};
+
             depth.forEach((level) => {
-              if (priceMap[level.price]) {
-                priceMap[level.price].totalQuantity += level.quantity;
-                priceMap[level.price].orderCount += 1;
+              const p = toNumber((level as any)?.price, NaN);
+              const q = toNumber((level as any)?.quantity, 0);
+
+              if (!Number.isFinite(p) || p <= 0) return;
+
+              if (priceMap[p]) {
+                priceMap[p].totalQuantity += q;
+                priceMap[p].orderCount += 1;
               } else {
-                priceMap[level.price] = {
-                  totalQuantity: level.quantity,
+                priceMap[p] = {
+                  totalQuantity: q,
                   orderCount: 1,
                 };
               }
@@ -648,43 +687,43 @@ export default function AccountManagerSection({
 
             return Object.entries(priceMap)
               .map(([price, data]) => ({
-                price: parseFloat(price),
-                totalQuantity: data.totalQuantity,
-                orderCount: data.orderCount,
+                price: toNumber(price, 0),
+                totalQuantity: toNumber(data.totalQuantity, 0),
+                orderCount: toNumber(data.orderCount, 0),
               }))
               .slice(0, 20);
           };
 
           const bids = aggregateLevels(cleanBidDepth).sort(
-            (a, b) => b.price - a.price
+            (a, b) => toNumber(b.price, 0) - toNumber(a.price, 0)
           );
           const asks = aggregateLevels(cleanAskDepth).sort(
-            (a, b) => a.price - b.price
+            (a, b) => toNumber(a.price, 0) - toNumber(b.price, 0)
           );
 
           setOrderBook({
             bids: bids.map((bid) => ({
-              price: bid.price,
-              totalQuantity: bid.totalQuantity,
-              orderCount: bid.orderCount,
+              price: toNumber(bid.price, 0),
+              totalQuantity: toNumber(bid.totalQuantity, 0),
+              orderCount: toNumber(bid.orderCount, 0),
             })),
             asks: asks.map((ask) => ({
-              price: ask.price,
-              totalQuantity: ask.totalQuantity,
-              orderCount: ask.orderCount,
+              price: toNumber(ask.price, 0),
+              totalQuantity: toNumber(ask.totalQuantity, 0),
+              orderCount: toNumber(ask.orderCount, 0),
             })),
-            lastTradedPrice: marketData.price,
+            lastTradedPrice: toNumber((marketData as any)?.price, 0),
             timestamp: new Date(),
           });
 
-          const analysis = analyzeMarket(marketData, bids, asks);
+          const analysis = analyzeMarket(marketData, bids as any, asks as any);
           setMarketAnalysis(analysis);
 
           const suggestions = generateSmartSuggestion(
             analysis,
             marketData,
-            bids,
-            asks
+            bids as any,
+            asks as any
           );
           setSuggestedOrders(suggestions);
 
@@ -718,21 +757,32 @@ export default function AccountManagerSection({
   // =========================================================================
 
   const calculateTrendStrength = (prices: number[]): number => {
-    if (prices.length < 5) return 0;
-    const recentPrices = prices.slice(-5);
+    const cleaned = (prices ?? []).filter((p) => Number.isFinite(p) && p > 0);
+    if (cleaned.length < 5) return 0;
+
+    const recentPrices = cleaned.slice(-5);
+    const base = toNumber(recentPrices[0], 0);
+    if (base <= 0) return 0;
+
     const slope =
-      (recentPrices[recentPrices.length - 1] - recentPrices[0]) /
-      recentPrices[0];
-    return Math.max(-1, Math.min(1, slope * 20));
+      (toNumber(recentPrices[recentPrices.length - 1], base) - base) / base;
+
+    const v = slope * 20;
+    return clamp(v, -1, 1);
   };
 
   const calculateVolatility = (prices: number[]): number => {
-    const cleaned = prices.filter((p) => Number.isFinite(p) && p > 0);
+    const cleaned = (prices ?? []).filter((p) => Number.isFinite(p) && p > 0);
     if (cleaned.length < 2) return 0;
 
     const returns: number[] = [];
     for (let i = 1; i < cleaned.length; i++) {
-      const r = Math.log(cleaned[i] / cleaned[i - 1]);
+      const prev = cleaned[i - 1];
+      const curr = cleaned[i];
+      if (!Number.isFinite(prev) || !Number.isFinite(curr) || prev <= 0 || curr <= 0)
+        continue;
+
+      const r = Math.log(curr / prev);
       if (Number.isFinite(r)) returns.push(r);
     }
     if (returns.length === 0) return 0;
@@ -740,40 +790,43 @@ export default function AccountManagerSection({
     const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
     const variance =
       returns.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / returns.length;
-    return Math.sqrt(variance * 252);
+
+    const vol = Math.sqrt(variance * 252);
+    return Number.isFinite(vol) ? vol : 0;
   };
 
   const identifySupportLevels = (bids: OrderBookLevel[]): number[] => {
-    if (bids.length < 3) return [];
+    if (!bids || bids.length < 3) return [];
     const levels: number[] = [];
 
-    const topBids = [...bids].sort((a, b) => b.price - a.price).slice(0, 3);
+    const topBids = [...bids].sort((a, b) => toNumber((b as any)?.price, 0) - toNumber((a as any)?.price, 0)).slice(0, 3);
     topBids.forEach((bid) => {
-      if (bid.totalQuantity > 1000) {
-        levels.push(bid.price);
+      if (toNumber((bid as any)?.totalQuantity, 0) > 1000) {
+        levels.push(toNumber((bid as any)?.price, 0));
       }
     });
 
-    return levels;
+    return levels.filter((x) => Number.isFinite(x) && x > 0);
   };
 
   const identifyResistanceLevels = (asks: OrderBookLevel[]): number[] => {
-    if (asks.length < 3) return [];
+    if (!asks || asks.length < 3) return [];
     const levels: number[] = [];
 
-    const topAsks = [...asks].sort((a, b) => a.price - b.price).slice(0, 3);
+    const topAsks = [...asks].sort((a, b) => toNumber((a as any)?.price, 0) - toNumber((b as any)?.price, 0)).slice(0, 3);
     topAsks.forEach((ask) => {
-      if (ask.totalQuantity > 1000) {
-        levels.push(ask.price);
+      if (toNumber((ask as any)?.totalQuantity, 0) > 1000) {
+        levels.push(toNumber((ask as any)?.price, 0));
       }
     });
 
-    return levels;
+    return levels.filter((x) => Number.isFinite(x) && x > 0);
   };
 
   const analyzeVolume = (totalVolume: number): "HIGH" | "NORMAL" | "LOW" => {
-    if (totalVolume > 20000) return "HIGH";
-    if (totalVolume > 5000) return "NORMAL";
+    const v = toNumber(totalVolume, 0);
+    if (v > 20000) return "HIGH";
+    if (v > 5000) return "NORMAL";
     return "LOW";
   };
 
@@ -781,8 +834,9 @@ export default function AccountManagerSection({
     analysis: MarketAnalysis,
     currentPrice: number
   ): "BULLISH" | "BEARISH" | "SIDEWAYS" => {
-    if (analysis.trendStrength > 0.1) return "BULLISH";
-    if (analysis.trendStrength < -0.1) return "BEARISH";
+    const t = toNumber(analysis?.trendStrength, 0);
+    if (t > 0.1) return "BULLISH";
+    if (t < -0.1) return "BEARISH";
     return "SIDEWAYS";
   };
 
@@ -792,10 +846,13 @@ export default function AccountManagerSection({
     currentPrice: number,
     analysis: MarketAnalysis
   ): number => {
+    const lvl = toNumber(level, currentPrice);
+    const cp = toNumber(currentPrice, 0);
+
     if (type === "buy") {
-      return Math.min(level, currentPrice * 0.999);
+      return Math.min(lvl, cp * 0.999);
     } else {
-      return Math.max(level, currentPrice * 1.001);
+      return Math.max(lvl, cp * 1.001);
     }
   };
 
@@ -809,8 +866,8 @@ export default function AccountManagerSection({
 
     baseProbability +=
       type === "buy"
-        ? analysis.trendStrength * 20
-        : -analysis.trendStrength * 20;
+        ? toNumber(analysis?.trendStrength, 0) * 20
+        : -toNumber(analysis?.trendStrength, 0) * 20;
 
     if (type === "buy" && rsi < 35) baseProbability += 10;
     if (type === "sell" && rsi > 65) baseProbability += 10;
@@ -818,30 +875,30 @@ export default function AccountManagerSection({
     if (type === "buy" && vwapDiff < -0.3) baseProbability += 8;
     if (type === "sell" && vwapDiff > 0.3) baseProbability += 8;
 
-    if (analysis.liquidityScore > 30) baseProbability += 5;
+    if (toNumber(analysis?.liquidityScore, 0) > 30) baseProbability += 5;
 
-    return Math.max(30, Math.min(90, baseProbability));
+    return clamp(baseProbability, 30, 90);
   };
 
   const calculateConfidence = (
     analysis: MarketAnalysis,
     winProbability: number
   ): number => {
-    let confidence = winProbability;
+    let confidence = toNumber(winProbability, 0);
 
-    if (analysis.trendStrength > 0.3 || analysis.trendStrength < -0.3)
-      confidence += 10;
-    if (analysis.volatility < 0.03) confidence += 5;
-    if (analysis.liquidityScore > 20) confidence += 5;
+    const t = toNumber(analysis?.trendStrength, 0);
+    if (t > 0.3 || t < -0.3) confidence += 10;
+    if (toNumber(analysis?.volatility, 0) < 0.03) confidence += 5;
+    if (toNumber(analysis?.liquidityScore, 0) > 20) confidence += 5;
 
-    return Math.min(95, confidence);
+    return clamp(confidence, 0, 95);
   };
 
   const determineRiskLevel = (
     volatility: number,
     winProbability: number
   ): "LOW" | "MEDIUM" | "HIGH" => {
-    const riskScore = volatility * 100 + (100 - winProbability) * 0.3;
+    const riskScore = toNumber(volatility, 0) * 100 + (100 - toNumber(winProbability, 0)) * 0.3;
 
     if (riskScore < 40) return "LOW";
     if (riskScore < 70) return "MEDIUM";
@@ -859,10 +916,15 @@ export default function AccountManagerSection({
       HIGH: 0.02,
     };
 
-    const maxInvestment = availableCash * riskMultiplier[riskLevel];
-    const positionSize = Math.floor(maxInvestment / price / 100) * 100;
+    const p = toNumber(price, 0);
+    const cash = toNumber(availableCash, 0);
 
-    return Math.max(100, Math.min(1000, positionSize));
+    if (p <= 0 || cash <= 0) return 100;
+
+    const maxInvestment = cash * riskMultiplier[riskLevel];
+    const positionSize = Math.floor(maxInvestment / p / 100) * 100;
+
+    return clamp(Math.max(100, positionSize), 100, 1000);
   };
 
   const generateBuyReason = (
@@ -872,12 +934,12 @@ export default function AccountManagerSection({
   ): string => {
     const reasons: string[] = [];
 
-    if (analysis.trendStrength > 0.2) reasons.push("Uptrend momentum");
+    if (toNumber(analysis?.trendStrength, 0) > 0.2) reasons.push("Uptrend momentum");
     if (rsi < 35) reasons.push("RSI in oversold zone");
     if (vwapDiff < -0.5) reasons.push("Price trading below VWAP");
-    if (analysis.supportLevels.length > 0)
+    if ((analysis?.supportLevels?.length ?? 0) > 0)
       reasons.push("Strong support level nearby");
-    if (analysis.volumeAnalysis === "HIGH")
+    if (analysis?.volumeAnalysis === "HIGH")
       reasons.push("High volume confirming demand");
 
     if (reasons.length === 0)
@@ -892,14 +954,14 @@ export default function AccountManagerSection({
   ): string => {
     const reasons: string[] = [];
 
-    if (analysis.trendStrength < -0.1) reasons.push("Downtrend momentum");
+    if (toNumber(analysis?.trendStrength, 0) < -0.1) reasons.push("Downtrend momentum");
     if (rsi > 60) reasons.push("RSI in overbought zone");
     if (vwapDiff > 0.2) reasons.push("Price trading above VWAP");
-    if (analysis.resistanceLevels.length > 0)
+    if ((analysis?.resistanceLevels?.length ?? 0) > 0)
       reasons.push("Key resistance zone overhead");
-    if (analysis.volumeAnalysis === "HIGH")
+    if (analysis?.volumeAnalysis === "HIGH")
       reasons.push("High volume confirming selling pressure");
-    if (analysis.volatility > 0.02)
+    if (toNumber(analysis?.volatility, 0) > 0.02)
       reasons.push("Elevated volatility – good short environment");
 
     if (reasons.length === 0)
@@ -910,7 +972,7 @@ export default function AccountManagerSection({
   const determineTradeType = (
     trendStrength: number
   ): "SCALPING" | "DAY_TRADING" | "SWING" => {
-    const absStrength = Math.abs(trendStrength);
+    const absStrength = Math.abs(toNumber(trendStrength, 0));
 
     if (absStrength > 0.3) return "SWING";
     if (absStrength > 0.15) return "DAY_TRADING";
@@ -920,7 +982,7 @@ export default function AccountManagerSection({
   const determineTimeFrame = (
     trendStrength: number
   ): "IMMEDIATE" | "SHORT" | "MEDIUM" => {
-    const absStrength = Math.abs(trendStrength);
+    const absStrength = Math.abs(toNumber(trendStrength, 0));
 
     if (absStrength > 0.2) return "MEDIUM";
     if (absStrength > 0.08) return "SHORT";
@@ -976,14 +1038,7 @@ export default function AccountManagerSection({
 
   const tabs = ["Orders", "Order Book", "Order History", "AI Insights"];
 
-  // Use userBalance if provided, otherwise fallback to tradingPosition.cash
-  const toNumber = (v: unknown, fallback = 0) => {
-    const n = typeof v === "number" ? v : Number(v);
-    return Number.isFinite(n) ? n : fallback;
-  };
-
   // Balance: ưu tiên userBalance (từ backend), fallback tradingPosition.cash
-  // Use userBalance if provided, otherwise fallback to tradingPosition.cash
   const balance = toNumber(userBalance, toNumber(tradingPosition.cash, 0));
 
   // ✅ IMPORTANT: use props from Home (FIFO ledger)
@@ -1007,9 +1062,7 @@ export default function AccountManagerSection({
   return (
     <div
       className={`border rounded overflow-hidden relative flex flex-col transition-colors duration-200 ${
-        isDarkMode
-          ? "bg-[#0f1219] border-[#1e222d]"
-          : "bg-white border-gray-200"
+        isDarkMode ? "bg-[#0f1219] border-[#1e222d]" : "bg-white border-gray-200"
       }`}
       style={{
         willChange: isDragging ? "height" : "auto",
@@ -1173,9 +1226,12 @@ export default function AccountManagerSection({
                 <div>Debug: {debugInfo}</div>
                 {marketAnalysis && (
                   <div className="mt-1">
-                    Trend: {marketAnalysis.trendStrength.toFixed(3)} | RSI:{" "}
-                    {marketAnalysis.rsi?.toFixed(1) || "--"} | Vol:{" "}
-                    {(marketAnalysis.volatility * 100).toFixed(2)}%
+                    Trend: {toNumber(marketAnalysis.trendStrength, 0).toFixed(3)}{" "}
+                    | RSI:{" "}
+                    {marketAnalysis.rsi === null
+                      ? "--"
+                      : toNumber(marketAnalysis.rsi, 0).toFixed(1)}{" "}
+                    | Vol: {(toNumber(marketAnalysis.volatility, 0) * 100).toFixed(2)}%
                   </div>
                 )}
               </div>
@@ -1285,10 +1341,10 @@ export default function AccountManagerSection({
                               {order.type.toUpperCase()}
                             </td>
                             <td className="py-3 px-4 text-right font-mono text-gray-300">
-                              {order.quantity}
+                              {toNumber(order.quantity, 0)}
                             </td>
                             <td className="py-3 px-4 text-right font-mono text-gray-300">
-                              {formatVNDCurrency(order.price || 0)}
+                              {formatVNDCurrency(toNumber(order.price, 0))}
                             </td>
                             <td className="py-3 px-4">
                               <span
@@ -1383,20 +1439,22 @@ export default function AccountManagerSection({
                           <div className="flex items-baseline gap-1 mt-1">
                             <span
                               className={`font-semibold text-sm ${
-                                marketAnalysis.trendStrength > 0
+                                toNumber(marketAnalysis.trendStrength, 0) > 0
                                   ? "text-emerald-400"
-                                  : marketAnalysis.trendStrength < 0
+                                  : toNumber(marketAnalysis.trendStrength, 0) < 0
                                   ? "text-rose-400"
                                   : "text-gray-400"
                               }`}
                             >
-                              {marketAnalysis.trendStrength > 0 ? "+" : ""}
-                              {marketAnalysis.trendStrength.toFixed(2)}
+                              {toNumber(marketAnalysis.trendStrength, 0) > 0
+                                ? "+"
+                                : ""}
+                              {toNumber(marketAnalysis.trendStrength, 0).toFixed(2)}
                             </span>
                             <span className="text-[10px] text-gray-500">
-                              {marketAnalysis.trendStrength > 0.2
+                              {toNumber(marketAnalysis.trendStrength, 0) > 0.2
                                 ? "Strong uptrend"
-                                : marketAnalysis.trendStrength < -0.2
+                                : toNumber(marketAnalysis.trendStrength, 0) < -0.2
                                 ? "Strong downtrend"
                                 : "Sideways"}
                             </span>
@@ -1418,12 +1476,12 @@ export default function AccountManagerSection({
                           </div>
                           <div className="flex items-baseline gap-1 mt-1">
                             <span className="font-semibold text-sm text-sky-400">
-                              {(marketAnalysis.volatility * 100).toFixed(1)}%
+                              {(toNumber(marketAnalysis.volatility, 0) * 100).toFixed(1)}%
                             </span>
                             <span className="text-[10px] text-gray-500">
-                              {marketAnalysis.volatility > 0.03
+                              {toNumber(marketAnalysis.volatility, 0) > 0.03
                                 ? "High"
-                                : marketAnalysis.volatility > 0.01
+                                : toNumber(marketAnalysis.volatility, 0) > 0.01
                                 ? "Medium"
                                 : "Low"}
                             </span>
@@ -1445,7 +1503,7 @@ export default function AccountManagerSection({
                           </div>
                           <div className="flex items-baseline gap-1 mt-1">
                             <span className="font-semibold text-sm text-violet-400">
-                              {Math.round(marketAnalysis.liquidityScore)}
+                              {Math.round(toNumber(marketAnalysis.liquidityScore, 0))}
                             </span>
                             <span className="text-[10px] text-gray-500">
                               {marketAnalysis.volumeAnalysis === "HIGH"
@@ -1551,12 +1609,21 @@ export default function AccountManagerSection({
                                     fill="none"
                                     stroke="#10b981"
                                     strokeWidth="3"
-                                    strokeDasharray={`${suggestedOrders.buy.confidence}, 100`}
+                                    strokeDasharray={`${clamp(
+                                      toNumber(suggestedOrders.buy.confidence, 0),
+                                      0,
+                                      100
+                                    )}, 100`}
                                   />
                                 </svg>
                                 <div className="absolute inset-0 flex items-center justify-center">
                                   <span className="text-sm font-bold text-emerald-500">
-                                    {suggestedOrders.buy.confidence}%
+                                    {clamp(
+                                      toNumber(suggestedOrders.buy.confidence, 0),
+                                      0,
+                                      100
+                                    )}
+                                    %
                                   </span>
                                 </div>
                               </div>
@@ -1573,7 +1640,7 @@ export default function AccountManagerSection({
                                   isDarkMode ? "text-gray-200" : "text-gray-900"
                                 }`}
                               >
-                                {formatVNDCurrency(suggestedOrders.buy.price)}
+                                {formatVNDCurrency(toNumber(suggestedOrders.buy.price, 0))}
                               </span>
                               <span className="text-sm text-gray-400">VND</span>
                             </div>
@@ -1591,7 +1658,7 @@ export default function AccountManagerSection({
                                 Win rate
                               </div>
                               <div className="text-lg font-bold text-emerald-500">
-                                {suggestedOrders.buy.winRate}%
+                                {toNumber(suggestedOrders.buy.winRate, 0)}%
                               </div>
                             </div>
                             <div
@@ -1605,7 +1672,7 @@ export default function AccountManagerSection({
                                 Position size
                               </div>
                               <div className="text-lg font-bold text-blue-500">
-                                {suggestedOrders.buy.quantity}
+                                {toNumber(suggestedOrders.buy.quantity, 0)}
                               </div>
                             </div>
                           </div>
@@ -1626,11 +1693,10 @@ export default function AccountManagerSection({
                                   Take profit
                                 </div>
                                 <div className="text-sm font-bold text-emerald-500">
-                                  {formatVND(suggestedOrders.buy.takeProfit!)}
+                                  {formatVND(toNumber(suggestedOrders.buy.takeProfit, 0))}
                                 </div>
                                 <div className="text-xs text-emerald-400">
-                                  +
-                                  {suggestedOrders.buy.expectedProfit?.toLocaleString()}{" "}
+                                  +{toNumber(suggestedOrders.buy.expectedProfit, 0).toLocaleString()}{" "}
                                   VND
                                 </div>
                               </div>
@@ -1646,12 +1712,11 @@ export default function AccountManagerSection({
                                 </div>
                                 <div className="text-sm font-bold text-rose-500">
                                   {formatVNDCurrency(
-                                    suggestedOrders.buy.stopLoss!
+                                    toNumber(suggestedOrders.buy.stopLoss, 0)
                                   )}
                                 </div>
                                 <div className="text-xs text-rose-400">
-                                  -
-                                  {suggestedOrders.buy.expectedLoss?.toLocaleString()}{" "}
+                                  -{toNumber(suggestedOrders.buy.expectedLoss, 0).toLocaleString()}{" "}
                                   VND
                                 </div>
                               </div>
@@ -1668,7 +1733,8 @@ export default function AccountManagerSection({
                           </div>
 
                           <button className="w-full py-3 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white font-bold rounded-lg transition-all duration-300 transform hover:scale-[1.02] shadow-lg">
-                            Open BUY order • Qty: {suggestedOrders.buy.quantity}
+                            Open BUY order • Qty:{" "}
+                            {toNumber(suggestedOrders.buy.quantity, 0)}
                           </button>
                         </div>
                       </div>
@@ -1808,12 +1874,21 @@ export default function AccountManagerSection({
                                     fill="none"
                                     stroke="#ef4444"
                                     strokeWidth="3"
-                                    strokeDasharray={`${suggestedOrders.sell.confidence}, 100`}
+                                    strokeDasharray={`${clamp(
+                                      toNumber(suggestedOrders.sell.confidence, 0),
+                                      0,
+                                      100
+                                    )}, 100`}
                                   />
                                 </svg>
                                 <div className="absolute inset-0 flex items-center justify-center">
                                   <span className="text-sm font-bold text-rose-500">
-                                    {suggestedOrders.sell.confidence}%
+                                    {clamp(
+                                      toNumber(suggestedOrders.sell.confidence, 0),
+                                      0,
+                                      100
+                                    )}
+                                    %
                                   </span>
                                 </div>
                               </div>
@@ -1830,7 +1905,7 @@ export default function AccountManagerSection({
                                   isDarkMode ? "text-gray-200" : "text-gray-900"
                                 }`}
                               >
-                                {formatVNDCurrency(suggestedOrders.sell.price)}
+                                {formatVNDCurrency(toNumber(suggestedOrders.sell.price, 0))}
                               </span>
                               <span className="text-sm text-gray-400">VND</span>
                             </div>
@@ -1848,7 +1923,7 @@ export default function AccountManagerSection({
                                 Win rate
                               </div>
                               <div className="text-lg font-bold text-rose-500">
-                                {suggestedOrders.sell.winRate}%
+                                {toNumber(suggestedOrders.sell.winRate, 0)}%
                               </div>
                             </div>
                             <div
@@ -1862,7 +1937,7 @@ export default function AccountManagerSection({
                                 Position size
                               </div>
                               <div className="text-lg font-bold text-blue-500">
-                                {suggestedOrders.sell.quantity}
+                                {toNumber(suggestedOrders.sell.quantity, 0)}
                               </div>
                             </div>
                           </div>
@@ -1883,11 +1958,10 @@ export default function AccountManagerSection({
                                   Take profit
                                 </div>
                                 <div className="text-sm font-bold text-rose-500">
-                                  {formatVND(suggestedOrders.sell.takeProfit!)}
+                                  {formatVND(toNumber(suggestedOrders.sell.takeProfit, 0))}
                                 </div>
                                 <div className="text-xs text-rose-400">
-                                  +
-                                  {suggestedOrders.sell.expectedProfit?.toLocaleString()}{" "}
+                                  +{toNumber(suggestedOrders.sell.expectedProfit, 0).toLocaleString()}{" "}
                                   VND
                                 </div>
                               </div>
@@ -1903,12 +1977,11 @@ export default function AccountManagerSection({
                                 </div>
                                 <div className="text-sm font-bold text-emerald-500">
                                   {formatVNDCurrency(
-                                    suggestedOrders.sell.stopLoss!
+                                    toNumber(suggestedOrders.sell.stopLoss, 0)
                                   )}
                                 </div>
                                 <div className="text-xs text-emerald-400">
-                                  -
-                                  {suggestedOrders.sell.expectedLoss?.toLocaleString()}{" "}
+                                  -{toNumber(suggestedOrders.sell.expectedLoss, 0).toLocaleString()}{" "}
                                   VND
                                 </div>
                               </div>
@@ -1926,7 +1999,7 @@ export default function AccountManagerSection({
 
                           <button className="w-full py-3 bg-gradient-to-r from-rose-500 to-rose-600 hover:from-rose-600 hover:to-rose-700 text-white font-bold rounded-lg transition-all duration-300 transform hover:scale-[1.02] shadow-lg">
                             Open SELL order • Qty:{" "}
-                            {suggestedOrders.sell.quantity}
+                            {toNumber(suggestedOrders.sell.quantity, 0)}
                           </button>
                         </div>
                       </div>
@@ -2020,19 +2093,24 @@ export default function AccountManagerSection({
                         </thead>
                         <tbody>
                           {orderBook?.bids.map((level, i) => {
-                            const maxVol = Math.max(
-                              ...(orderBook?.bids.map(
-                                (b) => b.totalQuantity
-                              ) || [1])
+                            const vols =
+                              orderBook?.bids?.map((b) =>
+                                toNumber((b as any)?.totalQuantity, 0)
+                              ) || [];
+                            const maxVol = Math.max(...vols, 1);
+
+                            const widthPercent = clamp(
+                              (toNumber((level as any)?.totalQuantity, 0) / maxVol) * 100,
+                              0,
+                              100
                             );
-                            const widthPercent =
-                              (level.totalQuantity / maxVol) * 100;
+
                             return (
                               <tr
                                 key={i}
                                 onClick={() =>
                                   onOpenOrderPanel &&
-                                  onOpenOrderPanel("buy", level.price)
+                                  onOpenOrderPanel("buy", toNumber((level as any)?.price, 0))
                                 }
                                 className="cursor-pointer relative hover:opacity-90 transition-all group"
                               >
@@ -2041,13 +2119,13 @@ export default function AccountManagerSection({
                                   style={{ width: `${widthPercent}%` }}
                                 ></td>
                                 <td className="relative z-10 py-1.5 px-3 font-mono text-emerald-400 font-medium">
-                                  {formatVNDCurrency(level.price)}
+                                  {formatVNDCurrency(toNumber((level as any)?.price, 0))}
                                 </td>
                                 <td className="relative z-10 py-1.5 px-3 text-right font-mono text-gray-300">
-                                  {level.totalQuantity.toLocaleString()}
+                                  {toNumber((level as any)?.totalQuantity, 0).toLocaleString()}
                                 </td>
                                 <td className="relative z-10 py-1.5 px-3 text-right font-mono text-gray-300">
-                                  {level.orderCount}
+                                  {toNumber((level as any)?.orderCount, 0)}
                                 </td>
                               </tr>
                             );
@@ -2104,19 +2182,24 @@ export default function AccountManagerSection({
                         </thead>
                         <tbody>
                           {orderBook?.asks.map((level, i) => {
-                            const maxVol = Math.max(
-                              ...(orderBook?.asks.map(
-                                (b) => b.totalQuantity
-                              ) || [1])
+                            const vols =
+                              orderBook?.asks?.map((b) =>
+                                toNumber((b as any)?.totalQuantity, 0)
+                              ) || [];
+                            const maxVol = Math.max(...vols, 1);
+
+                            const widthPercent = clamp(
+                              (toNumber((level as any)?.totalQuantity, 0) / maxVol) * 100,
+                              0,
+                              100
                             );
-                            const widthPercent =
-                              (level.totalQuantity / maxVol) * 100;
+
                             return (
                               <tr
                                 key={i}
                                 onClick={() =>
                                   onOpenOrderPanel &&
-                                  onOpenOrderPanel("sell", level.price)
+                                  onOpenOrderPanel("sell", toNumber((level as any)?.price, 0))
                                 }
                                 className="cursor-pointer relative hover:opacity-90 transition-all group"
                               >
@@ -2125,13 +2208,13 @@ export default function AccountManagerSection({
                                   style={{ width: `${widthPercent}%` }}
                                 ></td>
                                 <td className="relative z-10 py-1.5 px-3 font-mono text-rose-400 font-medium">
-                                  {formatVNDCurrency(level.price)}
+                                  {formatVNDCurrency(toNumber((level as any)?.price, 0))}
                                 </td>
                                 <td className="relative z-10 py-1.5 px-3 text-right font-mono text-gray-300">
-                                  {level.totalQuantity.toLocaleString()}
+                                  {toNumber((level as any)?.totalQuantity, 0).toLocaleString()}
                                 </td>
                                 <td className="relative z-10 py-1.5 px-3 text-right font-mono text-gray-300">
-                                  {level.orderCount}
+                                  {toNumber((level as any)?.orderCount, 0)}
                                 </td>
                               </tr>
                             );
@@ -2249,7 +2332,7 @@ export default function AccountManagerSection({
                               {order.type.toUpperCase()}
                             </td>
                             <td className="py-3 px-4 text-right font-mono text-gray-300">
-                              {formatVNDCurrency(order.price || 0)}
+                              {formatVNDCurrency(toNumber(order.price, 0))}
                             </td>
                             <td className="py-3 px-4">
                               <span
@@ -2292,7 +2375,7 @@ export default function AccountManagerSection({
                             </td>
                             <td className="py-3 px-4 text-right font-mono text-gray-300">
                               {order.price
-                                ? formatVNDCurrency(order.price)
+                                ? formatVNDCurrency(toNumber(order.price, 0))
                                 : "Market"}
                             </td>
                             <td className="py-3 px-4">
@@ -2345,18 +2428,18 @@ export default function AccountManagerSection({
                         </div>
                         <div
                           className={`text-lg font-bold ${
-                            marketAnalysis.trendStrength > 0
+                            toNumber(marketAnalysis.trendStrength, 0) > 0
                               ? "text-emerald-500"
                               : "text-rose-500"
                           }`}
                         >
-                          {marketAnalysis.trendStrength > 0 ? "+" : ""}
-                          {marketAnalysis.trendStrength.toFixed(2)}
+                          {toNumber(marketAnalysis.trendStrength, 0) > 0 ? "+" : ""}
+                          {toNumber(marketAnalysis.trendStrength, 0).toFixed(2)}
                         </div>
                         <div className="text-xs mt-1">
-                          {marketAnalysis.trendStrength > 0.2
+                          {toNumber(marketAnalysis.trendStrength, 0) > 0.2
                             ? "Strong uptrend"
-                            : marketAnalysis.trendStrength < -0.2
+                            : toNumber(marketAnalysis.trendStrength, 0) < -0.2
                             ? "Strong downtrend"
                             : "Sideways / range"}
                         </div>
@@ -2373,12 +2456,12 @@ export default function AccountManagerSection({
                           Volatility
                         </div>
                         <div className="text-lg font-bold text-sky-500">
-                          {(marketAnalysis.volatility * 100).toFixed(1)}%
+                          {(toNumber(marketAnalysis.volatility, 0) * 100).toFixed(1)}%
                         </div>
                         <div className="text-xs mt-1">
-                          {marketAnalysis.volatility > 0.03
+                          {toNumber(marketAnalysis.volatility, 0) > 0.03
                             ? "High"
-                            : marketAnalysis.volatility > 0.01
+                            : toNumber(marketAnalysis.volatility, 0) > 0.01
                             ? "Medium"
                             : "Low"}
                         </div>
@@ -2395,7 +2478,7 @@ export default function AccountManagerSection({
                           Liquidity
                         </div>
                         <div className="text-lg font-bold text-violet-500">
-                          {Math.round(marketAnalysis.liquidityScore)}
+                          {Math.round(toNumber(marketAnalysis.liquidityScore, 0))}
                         </div>
                         <div className="text-xs mt-1">
                           {marketAnalysis.volumeAnalysis === "HIGH"
@@ -2425,7 +2508,9 @@ export default function AccountManagerSection({
                               : "text-sky-500"
                           }`}
                         >
-                          {marketAnalysis.rsi?.toFixed(1) || "--"}
+                          {marketAnalysis.rsi === null
+                            ? "--"
+                            : toNumber(marketAnalysis.rsi, 0).toFixed(1)}
                         </div>
                         <div className="text-xs mt-1">
                           {marketAnalysis.rsi === null
@@ -2467,7 +2552,7 @@ export default function AccountManagerSection({
                                   Level {idx + 1}
                                 </span>
                                 <span className="font-mono font-bold text-emerald-500">
-                                  {formatVNDCurrency(level)}
+                                  {formatVNDCurrency(toNumber(level, 0))}
                                 </span>
                               </div>
                             ))}
@@ -2505,7 +2590,7 @@ export default function AccountManagerSection({
                                   Level {idx + 1}
                                 </span>
                                 <span className="font-mono font-bold text-rose-500">
-                                  {formatVNDCurrency(level)}
+                                  {formatVNDCurrency(toNumber(level, 0))}
                                 </span>
                               </div>
                             ))}
@@ -2542,7 +2627,7 @@ export default function AccountManagerSection({
                         <div
                           key={idx}
                           className={`p-3 rounded-lg cursor-pointer transition-all hover:scale-[1.02] border ${
-                            suggestion.winRate > 50
+                            toNumber(suggestion.winRate, 0) > 50
                               ? isDarkMode
                                 ? "bg-emerald-900/20 border-emerald-800/50"
                                 : "bg-emerald-50 border-emerald-200"
@@ -2553,8 +2638,8 @@ export default function AccountManagerSection({
                           onClick={() =>
                             onOpenOrderPanel &&
                             onOpenOrderPanel(
-                              suggestion.winRate > 50 ? "buy" : "sell",
-                              suggestion.price
+                              toNumber(suggestion.winRate, 0) > 50 ? "buy" : "sell",
+                              toNumber(suggestion.price, 0)
                             )
                           }
                         >
@@ -2562,7 +2647,7 @@ export default function AccountManagerSection({
                             <div className="flex items-center gap-2">
                               <span
                                 className={`text-xs px-2 py-0.5 rounded-full border ${
-                                  suggestion.winRate > 50
+                                  toNumber(suggestion.winRate, 0) > 50
                                     ? isDarkMode
                                       ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30"
                                       : "bg-emerald-100 text-emerald-700 border-emerald-200"
@@ -2571,7 +2656,7 @@ export default function AccountManagerSection({
                                     : "bg-rose-100 text-rose-700 border-rose-200"
                                 }`}
                               >
-                                {suggestion.winRate > 50 ? "BUY" : "SELL"}
+                                {toNumber(suggestion.winRate, 0) > 50 ? "BUY" : "SELL"}
                               </span>
                               <span
                                 className={`text-xs px-2 py-0.5 rounded-full border ${getRiskColor(
@@ -2582,7 +2667,7 @@ export default function AccountManagerSection({
                               </span>
                             </div>
                             <span className="text-sm font-bold">
-                              {formatVNDCurrency(suggestion.price)}
+                              {formatVNDCurrency(toNumber(suggestion.price, 0))}
                             </span>
                           </div>
 
@@ -2601,14 +2686,14 @@ export default function AccountManagerSection({
                               </span>
                               <span
                                 className={`font-bold ${
-                                  suggestion.winRate > 60
+                                  toNumber(suggestion.winRate, 0) > 60
                                     ? "text-emerald-500"
-                                    : suggestion.winRate > 40
+                                    : toNumber(suggestion.winRate, 0) > 40
                                     ? "text-amber-500"
                                     : "text-rose-500"
                                 }`}
                               >
-                                {suggestion.winRate}%
+                                {toNumber(suggestion.winRate, 0)}%
                               </span>
                             </div>
                             <div className="text-xs">
@@ -2620,7 +2705,7 @@ export default function AccountManagerSection({
                                 Confidence:{" "}
                               </span>
                               <span className="font-bold">
-                                {suggestion.confidence}%
+                                {clamp(toNumber(suggestion.confidence, 0), 0, 100)}%
                               </span>
                             </div>
                           </div>

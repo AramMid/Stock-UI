@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { JSX, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getUserBalance, getUserDetail } from "@/lib/services/userService";
 
@@ -81,11 +81,7 @@ const Icons = {
       stroke="currentColor"
       strokeWidth={3}
     >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        d="M5 13l4 4L19 7"
-      />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
     </svg>
   ),
   Shield: () => (
@@ -125,18 +121,9 @@ type UserData = {
 };
 
 const colorMap = {
-  blue: {
-    iconActive: "text-blue-400",
-    dot: "bg-blue-500",
-  },
-  emerald: {
-    iconActive: "text-emerald-400",
-    dot: "bg-emerald-500",
-  },
-  red: {
-    iconActive: "text-red-400",
-    dot: "bg-red-500",
-  },
+  blue: { iconActive: "text-blue-400", dot: "bg-blue-500" },
+  emerald: { iconActive: "text-emerald-400", dot: "bg-emerald-500" },
+  red: { iconActive: "text-red-400", dot: "bg-red-500" },
 } as const;
 
 const NAV_ITEMS: Array<{
@@ -186,6 +173,74 @@ export default function SettingsPage() {
   const [selectedPreset, setSelectedPreset] = useState(10_000_000);
   const [successMessage, setSuccessMessage] = useState("");
 
+  // =========================
+  // WAITING / DEPOSIT FLOW
+  // =========================
+  const [isDepositing, setIsDepositing] = useState(false);
+  const [depositCountdown, setDepositCountdown] = useState(0); // seconds remaining
+  const [depositError, setDepositError] = useState<string | null>(null);
+  const apiCalledRef = useRef(false);
+
+  const intervalRef = useRef<number | null>(null);
+  const timeout30Ref = useRef<number | null>(null);
+  const timeout32Ref = useRef<number | null>(null);
+
+  const safeParseAmount = (v: number | string): number => {
+    const n = typeof v === "number" ? v : Number(String(v).replaceAll(",", ""));
+    if (!Number.isFinite(n)) return 0;
+    return Math.floor(n);
+  };
+
+  const clearDepositTimers = () => {
+    if (intervalRef.current) {
+      window.clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+    if (timeout30Ref.current) {
+      window.clearTimeout(timeout30Ref.current);
+      timeout30Ref.current = null;
+    }
+    if (timeout32Ref.current) {
+      window.clearTimeout(timeout32Ref.current);
+      timeout32Ref.current = null;
+    }
+  };
+
+  const patchBalanceUpdate = async (available_balance: number) => {
+    const token = localStorage.getItem("access_token");
+    if (!token) throw new Error("Not authenticated. Please log in.");
+
+    const res = await fetch("http://localhost:3001/api/user/balance-update", {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ available_balance }),
+    });
+
+    if (!res.ok) {
+      let msg = `Balance update failed (${res.status})`;
+      try {
+        const data = await res.json();
+        msg =
+          data?.message ||
+          data?.error ||
+          (typeof data === "string" ? data : msg);
+      } catch {
+        // ignore
+      }
+      throw new Error(msg);
+    }
+
+    // Optional: read response
+    try {
+      return await res.json();
+    } catch {
+      return null;
+    }
+  };
+
   useEffect(() => {
     const fetchUserData = async () => {
       try {
@@ -203,7 +258,7 @@ export default function SettingsPage() {
           first_name: userDetail.first_name,
           last_name: userDetail.last_name,
           phone: userDetail.phone ?? "",
-          balance: userBalance.balance.availableBalance,
+          balance: Number(userBalance?.balance?.availableBalance ?? 0) || 0,
           is_active: userDetail.is_active,
           address: "",
           dob: "",
@@ -252,6 +307,13 @@ export default function SettingsPage() {
     setOccupation(userData.occupation ?? "");
   }, [userData]);
 
+  // Cleanup timers on unmount
+  useEffect(() => {
+    return () => {
+      clearDepositTimers();
+    };
+  }, []);
+
   const initials = `${userData.first_name?.[0] || ""}${userData.last_name?.[0] || ""}`.toUpperCase();
 
   const formatCurrency = (amount: number) =>
@@ -259,7 +321,7 @@ export default function SettingsPage() {
       style: "currency",
       currency: "VND",
       maximumFractionDigits: 0,
-    }).format(amount);
+    }).format(Number.isFinite(amount) ? amount : 0);
 
   const showSuccess = (msg: string) => {
     setSuccessMessage(msg);
@@ -283,12 +345,63 @@ export default function SettingsPage() {
     showSuccess("Profile updated successfully");
   };
 
+  // ✅ NEW: Confirm Deposit -> wait 32s, call API at second 30
   const handleMoneyRequest = () => {
-    const amount = Number(topUpAmount);
-    if (!amount || amount <= 0) return;
+    if (isDepositing) return;
 
-    setUserData((prev) => ({ ...prev, balance: prev.balance + amount }));
-    showSuccess(`Deposited ${formatCurrency(amount)}`);
+    setDepositError(null);
+
+    const amount = safeParseAmount(topUpAmount);
+    if (!amount || amount <= 0) {
+      setDepositError("Invalid amount. Please enter a positive number.");
+      return;
+    }
+
+    // Start waiting UI
+    setIsDepositing(true);
+    apiCalledRef.current = false;
+    setDepositCountdown(32);
+
+    clearDepositTimers();
+
+    // Tick countdown every second
+    intervalRef.current = window.setInterval(() => {
+      setDepositCountdown((prev) => {
+        const next = Math.max(0, prev - 1);
+        return next;
+      });
+    }, 1000);
+
+    // At 30 seconds (elapsed), i.e. after 30000ms -> call API once
+    timeout30Ref.current = window.setTimeout(async () => {
+      if (apiCalledRef.current) return;
+      apiCalledRef.current = true;
+
+      try {
+        await patchBalanceUpdate(amount);
+
+        // Refresh balance from backend (source of truth)
+        const latest = await getUserBalance();
+        const newBalance = Number(latest?.balance?.availableBalance ?? 0) || 0;
+        setUserData((prev) => ({ ...prev, balance: newBalance }));
+      } catch (err: any) {
+        console.error("Deposit API error:", err);
+        setDepositError(err?.message || "Deposit failed. Please try again.");
+      }
+    }, 30_000);
+
+    // Finish after 32 seconds
+    timeout32Ref.current = window.setTimeout(() => {
+      clearDepositTimers();
+      setIsDepositing(false);
+
+      // If API failed, keep error visible
+      if (!depositError) {
+        showSuccess(`Deposit request submitted: ${formatCurrency(amount)}`);
+      }
+      // Reset countdown
+      setDepositCountdown(0);
+    }, 32_000);
   };
 
   const handleLogout = () => {
@@ -336,6 +449,60 @@ export default function SettingsPage() {
     <div
       className={`${styles.scope} min-h-screen flex flex-col items-center selection:bg-blue-500/30`}
     >
+      {/* WAITING OVERLAY (32s) */}
+      {isDepositing && (
+        <div className="fixed inset-0 z-[999] bg-black/60 backdrop-blur-sm flex items-center justify-center p-6">
+          <div className="w-full max-w-lg bg-[#222736] border border-[#343b4d] rounded-3xl p-8 shadow-2xl">
+            <div className="flex items-center gap-4 mb-5">
+              <div className="h-12 w-12 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center">
+                <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-emerald-400" />
+              </div>
+              <div>
+                <h3 className="text-xl font-bold text-white">Processing deposit</h3>
+                <p className="text-sm text-gray-400">
+                  Please wait… system is simulating settlement.
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-[#181c24] border border-[#343b4d] rounded-2xl p-5">
+              <div className="flex items-center justify-between text-sm text-gray-300">
+                <span>Time remaining</span>
+                <span className="font-mono text-emerald-400">{depositCountdown}s</span>
+              </div>
+
+              <div className="mt-3 h-2 w-full rounded-full bg-[#0f1219] overflow-hidden border border-[#343b4d]">
+                <div
+                  className="h-full bg-emerald-500"
+                  style={{
+                    width: `${Math.min(
+                      100,
+                      Math.max(0, ((32 - depositCountdown) / 32) * 100)
+                    )}%`,
+                    transition: "width 250ms linear",
+                  }}
+                />
+              </div>
+
+              <div className="mt-4 text-xs text-gray-400 leading-relaxed">
+                • Waiting for admin acceptable: <span className="text-gray-200 font-mono">...is loading</span>
+                <br />
+                • Amount:{" "}
+                <span className="text-emerald-400 font-mono">
+                  {formatCurrency(safeParseAmount(topUpAmount))}
+                </span>
+              </div>
+
+              {depositError && (
+                <div className="mt-4 text-sm text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded-xl px-4 py-3">
+                  {depositError}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* HEADER */}
       <header className="sticky top-0 z-50 bg-[#181c24]/95 backdrop-blur-md border-b border-[#343b4d] w-full flex justify-center shadow-sm">
         <div className="w-full max-w-6xl px-6 h-20 flex items-center justify-between">
@@ -472,7 +639,10 @@ export default function SettingsPage() {
                   </div>
 
                   <div className="p-10">
-                    <form onSubmit={handleProfileSubmit} className="flex flex-col gap-12">
+                    <form
+                      onSubmit={handleProfileSubmit}
+                      className="flex flex-col gap-12"
+                    >
                       <div className="space-y-10">
                         {/* Identity Section */}
                         <div>
@@ -480,8 +650,16 @@ export default function SettingsPage() {
                             Identity
                           </h3>
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-8">
-                            <InputGroup label="First Name" value={firstName} onChange={setFirstName} />
-                            <InputGroup label="Last Name" value={lastName} onChange={setLastName} />
+                            <InputGroup
+                              label="First Name"
+                              value={firstName}
+                              onChange={setFirstName}
+                            />
+                            <InputGroup
+                              label="Last Name"
+                              value={lastName}
+                              onChange={setLastName}
+                            />
                           </div>
                         </div>
 
@@ -491,8 +669,18 @@ export default function SettingsPage() {
                             Contact
                           </h3>
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-8">
-                            <InputGroup label="Email Address" value={email} onChange={setEmail} type="email" />
-                            <InputGroup label="Phone Number" value={phone} onChange={setPhone} type="tel" />
+                            <InputGroup
+                              label="Email Address"
+                              value={email}
+                              onChange={setEmail}
+                              type="email"
+                            />
+                            <InputGroup
+                              label="Phone Number"
+                              value={phone}
+                              onChange={setPhone}
+                              type="tel"
+                            />
                           </div>
                         </div>
                       </div>
@@ -556,22 +744,25 @@ export default function SettingsPage() {
                     </h3>
 
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-10 gap-y-6 gap-x-6">
-                      {[10_000_000, 50_000_000, 100_000_000, 500_000_000].map((amount) => (
-                        <button
-                          key={amount}
-                          onClick={() => {
-                            setSelectedPreset(amount);
-                            setTopUpAmount(amount);
-                          }}
-                          className={`py-5 px-4 rounded-2xl text-sm font-mono font-medium transition-all border h-14 ${
-                            selectedPreset === amount
-                              ? "bg-emerald-500/10 border-emerald-500/50 text-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.1)]"
-                              : "bg-[#181c24] border-[#343b4d] text-gray-400 hover:border-gray-500 hover:text-white"
-                          }`}
-                        >
-                          {formatCurrency(amount)}
-                        </button>
-                      ))}
+                      {[10_000_000, 50_000_000, 100_000_000, 500_000_000].map(
+                        (amount) => (
+                          <button
+                            key={amount}
+                            disabled={isDepositing}
+                            onClick={() => {
+                              setSelectedPreset(amount);
+                              setTopUpAmount(amount);
+                            }}
+                            className={`py-5 px-4 rounded-2xl text-sm font-mono font-medium transition-all border h-14 ${
+                              selectedPreset === amount
+                                ? "bg-emerald-500/10 border-emerald-500/50 text-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.1)]"
+                                : "bg-[#181c24] border-[#343b4d] text-gray-400 hover:border-gray-500 hover:text-white"
+                            } ${isDepositing ? "opacity-60 cursor-not-allowed" : ""}`}
+                          >
+                            {formatCurrency(amount)}
+                          </button>
+                        )
+                      )}
                     </div>
 
                     <div className="bg-[#181c24] rounded-3xl p-8 border border-[#343b4d]">
@@ -581,18 +772,31 @@ export default function SettingsPage() {
                       <input
                         type="number"
                         value={topUpAmount}
+                        disabled={isDepositing}
                         onChange={(e) => setTopUpAmount(e.target.value)}
                         placeholder="Enter amount..."
-                        className="w-full bg-[#222736] border border-[#343b4d] rounded-2xl py-5 text-center text-white text-2xl font-mono focus:outline-none focus:border-emerald-500 transition-colors placeholder:text-gray-600 shadow-inner"
+                        className={`w-full bg-[#222736] border border-[#343b4d] rounded-2xl py-5 text-center text-white text-2xl font-mono focus:outline-none focus:border-emerald-500 transition-colors placeholder:text-gray-600 shadow-inner ${
+                          isDepositing ? "opacity-60 cursor-not-allowed" : ""
+                        }`}
                       />
+                      {depositError && (
+                        <div className="mt-4 text-sm text-rose-400 text-center">
+                          {depositError}
+                        </div>
+                      )}
                     </div>
 
                     <div className="mt-18 flex justify-center h-14">
                       <button
                         onClick={handleMoneyRequest}
-                        className="px-12 py-4 bg-emerald-600 hover:bg-emerald-500 text-white text-lg font-bold rounded-2xl shadow-[0_4px_14px_0_rgba(16,185,129,0.39)] hover:shadow-[0_6px_20px_rgba(16,185,129,0.23)] transition-all transform hover:-translate-y-0.5 active:scale-95 min-w-[260px]"
+                        disabled={isDepositing}
+                        className={`px-12 py-4 bg-emerald-600 hover:bg-emerald-500 text-white text-lg font-bold rounded-2xl shadow-[0_4px_14px_0_rgba(16,185,129,0.39)] hover:shadow-[0_6px_20px_rgba(16,185,129,0.23)] transition-all transform hover:-translate-y-0.5 active:scale-95 min-w-[260px] ${
+                          isDepositing
+                            ? "opacity-60 cursor-not-allowed hover:translate-y-0"
+                            : ""
+                        }`}
                       >
-                        Confirm Deposit
+                        {isDepositing ? `Processing… (${depositCountdown}s)` : "Confirm Deposit"}
                       </button>
                     </div>
                   </div>
