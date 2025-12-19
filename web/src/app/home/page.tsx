@@ -134,7 +134,7 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
   const [unrealizedPnl, setUnrealizedPnl] = useState(0);
   const [equity, setEquity] = useState(0);
 
-  // Market simulation
+  // Market simulation / positions
   const {
     tradingPosition,
     handleBuy,
@@ -165,7 +165,6 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
     []
   );
 
-  // Use the new watchlist positions hook
   const { positions, refreshWatchlistPositions, loadingPositions } =
     useWatchlistPositions(watchlistStocks);
 
@@ -177,25 +176,21 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
     return () => clearTimeout(timer);
   }, [refreshWatchlistPositions]);
 
-  // Effect to initialize lots from existing positions
+  // Effect to initialize lots from existing positions (placeholder avgPrice)
   useEffect(() => {
     if (loadingPositions || !positions) return;
 
-    // Clear existing lots and re-initialize when positions change
     lotsRef.current.clear();
 
-    // Convert positions to lots (assuming average price of 10000 for initialization)
-    // In a real implementation, you would need to get the actual average price from the backend
-    positions.forEach((shares, symbol) => {
+    positions.forEach((shares, sym) => {
       if (shares > 0) {
-        // Create a single lot with an estimated average price
-        const avgPrice = 10000; // Placeholder - you'd need to get this from backend
-        lotsRef.current.set(symbol, [{ qty: shares, price: avgPrice }]);
+        const avgPrice = 10000; // Placeholder - ideally load avgPrice/cost basis from backend
+        lotsRef.current.set(sym, [{ qty: shares, price: avgPrice }]);
       }
     });
 
-    // Update P&L after initialization
     markToMarketAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [positions, loadingPositions]);
 
   // ✅ MarketSimulation chỉ dùng cho bot, KHÔNG đụng tới ohlcData / bid/ask
@@ -242,10 +237,10 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
       );
     };
   }, [layoutManager, isPrivateMode]);
+
   // ✅ Re-mark-to-market whenever latest chart price changes
   useEffect(() => {
     if (!ohlcData?.close) return;
-    // mỗi khi chart close đổi => unrealized/equity update
     markToMarketAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ohlcData?.close]);
@@ -258,7 +253,7 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
     [selectedSymbol, updateLastPrice]
   );
 
-  // Chart management with drawing – data thật (Yahoo) vào đây
+  // Chart
   const chartResult = useChart({
     containerRef,
     symbol: selectedSymbol,
@@ -293,61 +288,52 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
   const FEE_RATE = 0.0015; // 0.15%
   const TAX_RATE = 0.001; // 0.1% chỉ bán
 
-  function getLastPrice(symbol: string) {
-    // ✅ FIX: prefer per-symbol cache
-    const p = lastPriceBySymbolRef.current[symbol];
+  function getLastPrice(sym: string) {
+    const p = lastPriceBySymbolRef.current[sym];
     if (Number.isFinite(p) && p > 0) return p;
 
-    // fallback: if currently viewing this symbol, use OHLC close
-    if (symbol === selectedSymbol && ohlcData?.close != null)
+    if (sym === selectedSymbol && ohlcData?.close != null)
       return Number(ohlcData.close);
 
-    // last fallback
     return Number(lastPriceRef.current || 0);
   }
 
   function markToMarketAll() {
-    // Unrealized = sum( (lastPrice - lotPrice) * lotQty )
     let u = 0;
     for (const [sym, lots] of lotsRef.current.entries()) {
       const p = getLastPrice(sym);
       if (!Number.isFinite(p) || p <= 0) continue;
-      for (const lot of lots) {
-        u += (p - lot.price) * lot.qty;
-      }
+      for (const lot of lots) u += (p - lot.price) * lot.qty;
     }
     setUnrealizedPnl(u);
 
-    // Equity = cash + market value
     let mv = 0;
     for (const [sym, lots] of lotsRef.current.entries()) {
       const p = getLastPrice(sym);
       if (!Number.isFinite(p) || p <= 0) continue;
       for (const lot of lots) mv += p * lot.qty;
     }
+
     const cash = Number(userBalance?.balance?.availableBalance ?? 0);
     setEquity(cash + mv);
   }
 
-  // ✅ Bid / Ask chỉ tính từ close của chart (ohlcData.close)
-  // ✅ FIX: update per-symbol last price + mark-to-market when price changes
+  // ✅ Bid / Ask từ close (ohlcData.close)
   useEffect(() => {
     if (!ohlcData?.close) return;
 
     const closePrice = Number(ohlcData.close);
     lastPriceRef.current = closePrice;
-
-    // ✅ store last price for this symbol
     lastPriceBySymbolRef.current[selectedSymbol] = closePrice;
 
-    const bidPrice = closePrice - 100; // SELL
-    const askPrice = closePrice + 100; // BUY
+    const bidPrice = closePrice - 100;
+    const askPrice = closePrice + 100;
 
     setBestBidPrice(bidPrice);
     setBestAskPrice(askPrice);
 
-    // ✅ IMPORTANT: update unrealized in realtime
     markToMarketAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ohlcData?.close, selectedSymbol]);
 
   function applyFillFIFO(params: {
@@ -362,14 +348,12 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
     const lots = lotsRef.current.get(symbol) ?? [];
 
     if (side === "buy") {
-      // ✅ Add fee into cost basis
       const effectiveBuyPrice = price * (1 + FEE_RATE);
       lots.push({ qty, price: effectiveBuyPrice });
       lotsRef.current.set(symbol, lots);
       return;
     }
 
-    // ✅ SELL FIFO: realized = (sellNet - costBasis) for executed qty
     let remaining = qty;
     let cost = 0;
     let executed = 0;
@@ -397,10 +381,7 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
     const netProceeds = grossProceeds - sellFee - sellTax;
 
     const realized = netProceeds - cost;
-    setRealizedPnl((prev) => {
-      const newRealized = prev + realized;
-      return newRealized;
-    });
+    setRealizedPnl((prev) => prev + realized);
   }
 
   const isFinal = (s: string) =>
@@ -516,6 +497,38 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
     }
   }, [showOrderPanel]);
 
+  // ✅ IMPORTANT: Normalize filledQty & filledPrice so FILLED never results in 0-delta
+  const normalizeFill = (
+    update: {
+      status: any;
+      filledQuantity?: any;
+      filledPrice?: any;
+    },
+    fallbackQty: number,
+    fallbackPrice: number
+  ) => {
+    const upperStatus = String(update.status).toUpperCase();
+
+    const qty = Number(update.filledQuantity);
+    const price = Number(update.filledPrice);
+
+    const normalizedFilledQty =
+      upperStatus === "FILLED"
+        ? (Number.isFinite(qty) && qty > 0 ? qty : fallbackQty)
+        : Number.isFinite(qty) && qty > 0
+        ? qty
+        : 0;
+
+    const normalizedFilledPrice =
+      Number.isFinite(price) && price > 0
+        ? price
+        : Number.isFinite(Number(fallbackPrice)) && Number(fallbackPrice) > 0
+        ? Number(fallbackPrice)
+        : 0;
+
+    return { upperStatus, normalizedFilledQty, normalizedFilledPrice };
+  };
+
   const handleOrderSubmit = useCallback(
     (side: "buy" | "sell", quantity: number, price: number) => {
       const orderQuantities = splitOrderForExchangeLimit(quantity);
@@ -537,18 +550,22 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
           timestamp: new Date(),
         };
 
+        // reset applied tracker for this order id
+        appliedFilledQtyRef.current[order.id] = 0;
+
         // 1) Add to UI first
         setOrders((prev) => [order, ...prev]);
 
         // 2) Subscribe BEFORE sending
         const unsubscribe = webSocketService.subscribe(order.id, (update) => {
-          const upperStatus = String(update.status).toUpperCase();
+          const { upperStatus, normalizedFilledQty, normalizedFilledPrice } =
+            normalizeFill(update, orderQty, price);
 
           // --- Sync orderBookService ---
           orderBookService.updateOrder(update.orderId, {
             status: update.status,
-            filledPrice: update.filledPrice,
-            filledQuantity: update.filledQuantity,
+            filledPrice: normalizedFilledPrice || update.filledPrice,
+            filledQuantity: normalizedFilledQty || update.filledQuantity,
           });
 
           // --- Sync React state ---
@@ -558,21 +575,19 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
                 ? {
                     ...o,
                     status: update.status,
-                    filledPrice: update.filledPrice,
-                    filledQuantity: update.filledQuantity,
+                    filledPrice: normalizedFilledPrice || update.filledPrice,
+                    filledQuantity: normalizedFilledQty || update.filledQuantity,
                   }
                 : o
             )
           );
 
-          // Update position on FILLED
-          if (upperStatus === "FILLED" && update.filledPrice != null) {
-            const filledQty = update.filledQuantity ?? orderQty;
-
+          // ✅ Update position on FILLED using normalized qty/price
+          if (upperStatus === "FILLED" && normalizedFilledPrice > 0) {
             const success =
               side === "buy"
-                ? handleBuy(orderSymbol, filledQty, update.filledPrice)
-                : handleSell(orderSymbol, filledQty, update.filledPrice);
+                ? handleBuy(orderSymbol, normalizedFilledQty, normalizedFilledPrice)
+                : handleSell(orderSymbol, normalizedFilledQty, normalizedFilledPrice);
 
             if (success) {
               notificationService.showSuccess(
@@ -584,30 +599,20 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
           }
 
           // ✅ Apply P&L only for NEW delta filled qty
-          const normalizedStatus = String(update.status).toUpperCase();
-
-          const totalFilled =
-            update.filledQuantity != null
-              ? Number(update.filledQuantity)
-              : normalizedStatus === "FILLED"
-              ? orderQty
-              : 0;
-
           const prevApplied = appliedFilledQtyRef.current[update.orderId] ?? 0;
+          const totalFilled = normalizedFilledQty;
           const deltaQty = totalFilled - prevApplied;
 
-          if (deltaQty > 0 && update.filledPrice != null) {
+          if (deltaQty > 0 && normalizedFilledPrice > 0) {
             appliedFilledQtyRef.current[update.orderId] = totalFilled;
 
             applyFillFIFO({
-              symbol: orderSymbol, // ✅ FIX
+              symbol: orderSymbol,
               side,
               qty: deltaQty,
-              price: Number(update.filledPrice),
+              price: normalizedFilledPrice,
             });
 
-            // ensure we have last price for this symbol (if currently selected, already updated by OHLC)
-            // and recalc unrealized
             markToMarketAll();
           }
 
@@ -631,8 +636,10 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
                     orderType: "market",
                     price,
                     status: dbStatus,
-                    filledQuantity: update.filledQuantity ?? undefined,
-                    filledPrice: update.filledPrice ?? price,
+                    filledQuantity:
+                      normalizedFilledQty > 0 ? normalizedFilledQty : undefined,
+                    filledPrice:
+                      normalizedFilledPrice > 0 ? normalizedFilledPrice : price,
                     commission: 0,
                     filledAt: new Date().toISOString(),
                   };
@@ -985,10 +992,7 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
 
                     const handleMouseUp = () => {
                       setIsOrderPanelDragging(false);
-                      document.removeEventListener(
-                        "mousemove",
-                        handleMouseMove
-                      );
+                      document.removeEventListener("mousemove", handleMouseMove);
                       document.removeEventListener("mouseup", handleMouseUp);
                       document.body.style.cursor = "";
                       document.body.style.userSelect = "";

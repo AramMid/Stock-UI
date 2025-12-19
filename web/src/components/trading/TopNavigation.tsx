@@ -107,6 +107,14 @@ export default function TopNavigation({
     { label: "5Y", value: "5Y" as Timeframe },
   ];
 
+  // Filter timeframes based on mode - in public mode, only show HFT
+  const displayedTimeframes = isPrivateMode
+    ? timeframes
+    : [{ label: "HFT", value: "1m" as Timeframe }];
+
+  // Display timeframe - in public mode, always show HFT
+  const displayTimeframe = isPrivateMode ? timeframe : "HFT";
+
   const chartTypes = [
     {
       label: "Candlestick",
@@ -269,13 +277,13 @@ export default function TopNavigation({
               e.currentTarget.style.backgroundColor = currentTheme.cardBg;
             }}
           >
-            <span>{timeframe}</span>
+            <span>{displayTimeframe}</span>
             <ChevronDown style={{ width: "14px", height: "14px" }} />
           </button>
 
           {showTimeframeDropdown && (
             <div style={dropdownStyle}>
-              {timeframes.map((tf) => (
+              {displayedTimeframes.map((tf) => (
                 <button
                   key={tf.value}
                   onClick={() => {
@@ -457,7 +465,9 @@ export default function TopNavigation({
             onClick={onTogglePrivateMode}
             style={{
               ...buttonStyle(),
-              backgroundColor: isPrivateMode ? currentTheme.active : currentTheme.cardBg,
+              backgroundColor: isPrivateMode
+                ? currentTheme.active
+                : currentTheme.cardBg,
               border: `1px solid ${currentTheme.border}`,
               padding: "8px",
             }}
@@ -465,7 +475,9 @@ export default function TopNavigation({
               e.currentTarget.style.backgroundColor = currentTheme.hover;
             }}
             onMouseLeave={(e) => {
-              e.currentTarget.style.backgroundColor = isPrivateMode ? currentTheme.active : currentTheme.cardBg;
+              e.currentTarget.style.backgroundColor = isPrivateMode
+                ? currentTheme.active
+                : currentTheme.cardBg;
             }}
             title={
               isPrivateMode

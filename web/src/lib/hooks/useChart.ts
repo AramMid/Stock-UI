@@ -1,4 +1,4 @@
-// File: lib/hooks/useChart.ts - OPTIMIZED & FIXED + SESSION PERSISTENCE (NO MAX DEPTH LOOP)
+// File: lib/hooks/useChart.ts - OPTIMIZED & FIXED + SESSION PERSISTENCE (PUBLIC ONLY)
 import {
   useRef,
   useEffect,
@@ -62,6 +62,7 @@ interface UseChartProps {
   showMACD?: boolean;
   chartType?: "candlestick" | "line" | "area";
   isPrivateMode?: boolean;
+
   enableTrendlineDrawing?: boolean;
   enableBrushDrawing?: boolean;
   activeTool?: string;
@@ -70,6 +71,7 @@ interface UseChartProps {
 
 /* =========================================================
    SESSION PERSISTENCE (bars + trendlines) via sessionStorage
+   ✅ PUBLIC ONLY (isPrivateMode === false)
    ========================================================= */
 const CHART_SESSION_VERSION = 1;
 const CHART_SESSION_PREFIX = "sim_chart_session_v1";
@@ -88,6 +90,7 @@ type PersistedChartSession = {
   v: number;
   symbol: string;
   timeframe: string;
+  // NOTE: session is only for PUBLIC, but still keep field for compatibility
   isPrivateMode: boolean;
   chartType: "candlestick" | "line" | "area";
   savedAt: number;
@@ -98,10 +101,8 @@ type PersistedChartSession = {
 const buildSessionKey = (
   symbol: string,
   timeframe: Timeframe,
-  isPrivateMode: boolean,
   chartType: "candlestick" | "line" | "area"
-) =>
-  `${CHART_SESSION_PREFIX}:${symbol}:${timeframe}:${isPrivateMode ? 1 : 0}:${chartType}`;
+) => `${CHART_SESSION_PREFIX}:${symbol}:${timeframe}:PUBLIC:${chartType}`;
 
 const safeNumber = (n: any) =>
   typeof n === "number" && Number.isFinite(n) ? n : null;
@@ -328,50 +329,60 @@ export function useChart({
 
   const crosshairSubscribedRef = useRef(false);
 
-  // ============= Persist Layer =============
-  const persistKeyRef = useRef<string>("");
+  // ============= Persist Layer (PUBLIC ONLY) =============
+  const persistKeyRef = useRef<string>(""); // empty means disabled
   const persistTimerRef = useRef<number | null>(null);
 
   const persistMetaRef = useRef<{
     symbol: string;
     timeframe: Timeframe;
-    isPrivateMode: boolean;
     chartType: "candlestick" | "line" | "area";
-  }>({ symbol, timeframe, isPrivateMode, chartType });
+  }>({ symbol, timeframe, chartType });
 
   useEffect(() => {
-    persistMetaRef.current = { symbol, timeframe, isPrivateMode, chartType };
-  }, [symbol, timeframe, isPrivateMode, chartType]);
+    persistMetaRef.current = { symbol, timeframe, chartType };
+  }, [symbol, timeframe, chartType]);
 
   const flushPersist = useCallback(() => {
+    // ✅ Only persist for PUBLIC
+    if (isPrivateMode) return;
+
     const key = persistKeyRef.current;
     if (!key) return;
 
     const meta = persistMetaRef.current;
     const bars = sanitizeBarsForSave(dataRef.current.bars);
 
+    // ✅ Only save PUBLIC trendlines
+    const publicTrendlines = (trendlinesRef.current || []).filter(
+      (t) => !t.isPrivate
+    );
+
     const payload: PersistedChartSession = {
       v: CHART_SESSION_VERSION,
       symbol: meta.symbol,
       timeframe: meta.timeframe,
-      isPrivateMode: meta.isPrivateMode,
+      isPrivateMode: false,
       chartType: meta.chartType,
       savedAt: Date.now(),
       bars,
-      trendlines: trendlinesRef.current || [],
+      trendlines: publicTrendlines,
     };
 
     saveChartSession(key, payload);
-  }, []);
+  }, [isPrivateMode]);
 
   const schedulePersist = useCallback(() => {
+    // ✅ Only persist for PUBLIC
+    if (isPrivateMode) return;
     if (!persistKeyRef.current) return;
+
     if (persistTimerRef.current) window.clearTimeout(persistTimerRef.current);
     persistTimerRef.current = window.setTimeout(() => {
       persistTimerRef.current = null;
       flushPersist();
     }, 250);
-  }, [flushPersist]);
+  }, [flushPersist, isPrivateMode]);
 
   // helpers
   const chartToCanvas = useCallback(
@@ -709,7 +720,14 @@ export function useChart({
         isMouseDownRef.current = false;
       }
     },
-    [containerRef, enableTrendlineDrawing, trendlines, isPrivateMode, chartToCanvas]
+    [
+      containerRef,
+      enableTrendlineDrawing,
+      trendlines,
+      isPrivateMode,
+      isPrivateMode,
+      chartToCanvas,
+    ]
   );
 
   const handleChartClick = useCallback(
@@ -753,6 +771,8 @@ export function useChart({
           setCurrentLine(null);
           setDrawingMode("none");
           onDrawingComplete?.();
+
+          // ✅ persist only if PUBLIC line
           schedulePersist();
         }
       } else {
@@ -769,11 +789,19 @@ export function useChart({
             const end = chartToCanvas(line.endTime, line.endPrice);
             if (!start || !end) continue;
 
-            const dist = distancePointToLine(x, y, start.x, start.y, end.x, end.y);
+            const dist = distancePointToLine(
+              x,
+              y,
+              start.x,
+              start.y,
+              end.x,
+              end.y
+            );
             if (dist <= 5) {
               setTrendlines((prev) => prev.filter((t) => t.id !== line.id));
               setSelectedLine(null);
               originalLineRef.current = null;
+
               schedulePersist();
               break;
             }
@@ -798,7 +826,7 @@ export function useChart({
     ]
   );
 
-  // persist when trendlines change
+  // ✅ persist when trendlines change (PUBLIC ONLY inside schedulePersist)
   useEffect(() => {
     if (!persistKeyRef.current) return;
     schedulePersist();
@@ -807,7 +835,8 @@ export function useChart({
   // ---------- MAIN CHART INITIALIZATION (ONLY stable deps) ----------
   useEffect(() => {
     const currentKey = `${symbol}-${timeframe}-${isDarkMode}-${showRSI}-${showMACD}-${chartType}-${isPrivateMode}`;
-    if (isInitializedRef.current === currentKey && !isDisposedRef.current) return;
+    if (isInitializedRef.current === currentKey && !isDisposedRef.current)
+      return;
 
     if (cleanupRef.current && !isDisposedRef.current) {
       try {
@@ -1088,13 +1117,19 @@ export function useChart({
       const bb = calculateBollingerBands(closes, 20);
 
       bbUpperSeries?.setData(
-        safeMap(data.map((b, i) => ({ time: b.time as Time, value: bb.upper[i] })))
+        safeMap(
+          data.map((b, i) => ({ time: b.time as Time, value: bb.upper[i] }))
+        )
       );
       bbLowerSeries?.setData(
-        safeMap(data.map((b, i) => ({ time: b.time as Time, value: bb.lower[i] })))
+        safeMap(
+          data.map((b, i) => ({ time: b.time as Time, value: bb.lower[i] }))
+        )
       );
       bbMiddleSeries?.setData(
-        safeMap(data.map((b, i) => ({ time: b.time as Time, value: bb.middle[i] })))
+        safeMap(
+          data.map((b, i) => ({ time: b.time as Time, value: bb.middle[i] }))
+        )
       );
 
       smaSeries.setData(
@@ -1117,7 +1152,7 @@ export function useChart({
       );
 
       setupCrosshairHandler();
-      schedulePersist();
+      schedulePersist(); // PUBLIC only
     };
 
     const startReplay = () => {
@@ -1155,6 +1190,69 @@ export function useChart({
           bars.push(next);
           closes.push(next.close);
           dataRef.current.lastBar = next;
+          // ===== UPDATE INDICATORS REAL-TIME =====
+const closesArr = dataRef.current.closes;
+
+// SMA / EMA
+const smaArr = calculateSMA(closesArr, 14);
+const emaArr = calculateEMA(closesArr, 14);
+
+// RSI
+const rsiArr = calculateRSI(closesArr, 14);
+
+// MACD
+const macdObj = calculateMACD(closesArr);
+
+// Bollinger Bands
+const bb = calculateBollingerBands(closesArr, 20);
+
+const idx = closesArr.length - 1;
+const t = next.time as Time;
+
+// --- SMA / EMA ---
+seriesRef.current.smaSeries?.update({
+  time: t,
+  value: smaArr[idx],
+});
+
+seriesRef.current.emaSeries?.update({
+  time: t,
+  value: emaArr[idx],
+});
+
+// --- RSI ---
+if (seriesRef.current.rsiSeries && rsiArr[idx] !== undefined) {
+  seriesRef.current.rsiSeries.update({
+    time: t,
+    value: rsiArr[idx],
+  });
+}
+
+// --- MACD ---
+if (
+  seriesRef.current.macdLineSeries &&
+  macdObj.macdLine[idx] !== undefined
+) {
+  seriesRef.current.macdLineSeries.update({
+    time: t,
+    value: macdObj.macdLine[idx],
+  });
+}
+
+// --- Bollinger Bands ---
+seriesRef.current.bbUpperSeries?.update({
+  time: t,
+  value: bb.upper[idx],
+});
+seriesRef.current.bbMiddleSeries?.update({
+  time: t,
+  value: bb.middle[idx],
+});
+seriesRef.current.bbLowerSeries?.update({
+  time: t,
+  value: bb.lower[idx],
+});
+
 
           try {
             if (chartType === "candlestick") {
@@ -1187,7 +1285,7 @@ export function useChart({
 
             currentBar = { ...next };
             lastCandleTime = now;
-            schedulePersist();
+            schedulePersist(); // PUBLIC only
           } catch {}
         } else {
           const volumes = bars.map((b) => b.volume);
@@ -1205,8 +1303,11 @@ export function useChart({
 
       if (resizeTimeoutRef.current) window.clearTimeout(resizeTimeoutRef.current);
 
-      const { mainChartHeight: newMainHeight, rsiHeight: newRsi, macdHeight: newMacd } =
-        createChartsWithDynamicSizing();
+      const {
+        mainChartHeight: newMainHeight,
+        rsiHeight: newRsi,
+        macdHeight: newMacd,
+      } = createChartsWithDynamicSizing();
 
       try {
         mainChart.resize(container.clientWidth, newMainHeight);
@@ -1262,24 +1363,47 @@ export function useChart({
       resizeObserver.observe(container);
     } catch {}
 
-    // ===== RESTORE SESSION BEFORE FETCH =====
-    persistKeyRef.current = buildSessionKey(symbol, timeframe, isPrivateMode, chartType);
-    const restored = loadChartSession(persistKeyRef.current);
+    // ===== RESTORE SESSION BEFORE FETCH (PUBLIC ONLY) =====
+    if (!isPrivateMode) {
+      persistKeyRef.current = buildSessionKey(symbol, timeframe, chartType);
+      const restored = loadChartSession(persistKeyRef.current);
 
-    if (restored) {
-      if (Array.isArray(restored.trendlines)) setTrendlines(restored.trendlines);
-      const restoredBars = sanitizeBarsForUse(restored.bars);
-      if (restoredBars.length > 0) {
-        initFromData(restoredBars);
-        if (!isPrivateMode) setTimeout(() => startReplay(), 300);
+      if (restored) {
+        // restore ONLY public trendlines
+        if (Array.isArray(restored.trendlines)) {
+          const restoredPublic = restored.trendlines
+            .filter((t) => !t.isPrivate)
+            .map((t) => ({ ...t, isPrivate: false }));
+          // merge: keep any existing private lines in state (if any), but normally private won't persist anyway
+          setTrendlines((prev) => {
+            const keepPrivate = prev.filter((t) => t.isPrivate);
+            return [...keepPrivate, ...restoredPublic];
+          });
+        }
+
+        const restoredBars = sanitizeBarsForUse(restored.bars);
+        if (restoredBars.length > 0) {
+          initFromData(restoredBars);
+          setTimeout(() => startReplay(), 300);
+        }
       }
+    } else {
+      // PRIVATE: disable persist completely
+      persistKeyRef.current = "";
     }
 
     (async () => {
       try {
         const fetched = await fetchYahooSeries(symbol, timeframe, isPrivateMode);
-        const hasRestored = dataRef.current.bars.length > 0;
-        initFromData(hasRestored ? mergeBarsByTime(dataRef.current.bars, fetched) : fetched);
+
+        const hasRestored = !isPrivateMode && dataRef.current.bars.length > 0;
+        initFromData(
+          hasRestored
+            ? mergeBarsByTime(dataRef.current.bars, fetched)
+            : fetched
+        );
+
+        // Replay only for PUBLIC
         if (!isPrivateMode) setTimeout(() => startReplay(), 1000);
       } catch {}
     })();
@@ -1293,11 +1417,14 @@ export function useChart({
           window.clearTimeout(persistTimerRef.current);
           persistTimerRef.current = null;
         }
-        flushPersist();
+        flushPersist(); // PUBLIC only
       } catch {}
 
       if (eventHandlersRef.current.chartResizeHandler) {
-        window.removeEventListener("chartResize", eventHandlersRef.current.chartResizeHandler);
+        window.removeEventListener(
+          "chartResize",
+          eventHandlersRef.current.chartResizeHandler
+        );
       }
       if (eventHandlersRef.current.resizeHandler) {
         window.removeEventListener("resize", eventHandlersRef.current.resizeHandler);
@@ -1353,7 +1480,18 @@ export function useChart({
 
     cleanupRef.current = cleanup;
     return cleanup;
-  }, [symbol, timeframe, isDarkMode, showRSI, showMACD, chartType, isPrivateMode, containerRef, flushPersist, schedulePersist]);
+  }, [
+    symbol,
+    timeframe,
+    isDarkMode,
+    showRSI,
+    showMACD,
+    chartType,
+    isPrivateMode,
+    containerRef,
+    flushPersist,
+    schedulePersist,
+  ]);
 
   // ---------- CANVAS & EVENTS ----------
   useEffect(() => {
@@ -1375,7 +1513,8 @@ export function useChart({
 
       container.style.position = "relative";
       canvas.width = container.clientWidth;
-      canvas.height = container.clientHeight;
+      // IMPORTANT: canvas should match MAIN chart height, not full container height (which includes subcharts)
+      canvas.height = (mainChart as any)?._height ?? container.clientHeight;
 
       container.appendChild(canvas);
       canvasRef.current = canvas;
@@ -1385,15 +1524,22 @@ export function useChart({
     const visibleRangeHandler = () => redrawTrendlinesRef.current();
 
     container.addEventListener("click", handleChartClick);
-    if (!enableTrendlineDrawing) container.addEventListener("mousedown", handleChartMouseDown);
+    if (!enableTrendlineDrawing)
+      container.addEventListener("mousedown", handleChartMouseDown);
 
     timeScale.subscribeVisibleLogicalRangeChange(visibleRangeHandler);
+
+    // If you use custom crosshair handler for drawing:
+    mainChart.subscribeCrosshairMove(handleDrawingCrosshairMove);
 
     redrawTrendlinesRef.current();
 
     return () => {
       try {
         timeScale.unsubscribeVisibleLogicalRangeChange(visibleRangeHandler);
+      } catch {}
+      try {
+        mainChart.unsubscribeCrosshairMove(handleDrawingCrosshairMove);
       } catch {}
       container.removeEventListener("click", handleChartClick);
       container.removeEventListener("mousedown", handleChartMouseDown);
@@ -1404,6 +1550,7 @@ export function useChart({
     handleChartClick,
     handleChartMouseDown,
     enableTrendlineDrawing,
+    handleDrawingCrosshairMove,
   ]);
 
   // redraw on changes
@@ -1461,7 +1608,7 @@ export function useChart({
       setSelectedLine(null);
       originalLineRef.current = null;
 
-      schedulePersist();
+      schedulePersist(); // PUBLIC only
     };
 
     window.addEventListener("mouseup", handleMouseUp);
@@ -1484,7 +1631,7 @@ export function useChart({
     );
     setCurrentLine(null);
     setDrawingMode("none");
-    schedulePersist();
+    schedulePersist(); // PUBLIC only
   }, [isPrivateMode, schedulePersist]);
 
   const undoLastTrendline = useCallback(() => {
@@ -1499,7 +1646,7 @@ export function useChart({
       next.splice(lastIndex, 1);
       return next;
     });
-    schedulePersist();
+    schedulePersist(); // PUBLIC only
   }, [isPrivateMode, schedulePersist]);
 
   return {
