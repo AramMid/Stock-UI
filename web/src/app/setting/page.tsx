@@ -173,6 +173,10 @@ export default function SettingsPage() {
   const [selectedPreset, setSelectedPreset] = useState(10_000_000);
   const [successMessage, setSuccessMessage] = useState("");
 
+  // ✅ NEW: Profile Save states
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
   // =========================
   // WAITING / DEPOSIT FLOW
   // =========================
@@ -233,7 +237,38 @@ export default function SettingsPage() {
       throw new Error(msg);
     }
 
-    // Optional: read response
+    try {
+      return await res.json();
+    } catch {
+      return null;
+    }
+  };
+
+  // ✅ NEW: PATCH /api/user/update helper
+  const patchUserUpdate = async (payload: Record<string, any>) => {
+    const token = localStorage.getItem("access_token");
+    if (!token) throw new Error("Not authenticated. Please log in.");
+
+    const res = await fetch("http://localhost:3001/api/user/update", {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) {
+      let msg = `Update failed (${res.status})`;
+      try {
+        const data = await res.json();
+        msg = data?.message || data?.error || msg;
+      } catch {
+        // ignore
+      }
+      throw new Error(msg);
+    }
+
     try {
       return await res.json();
     } catch {
@@ -269,7 +304,9 @@ export default function SettingsPage() {
           last_login_at: userDetail.last_login_at
             ? new Date(userDetail.last_login_at)
             : null,
-          created_at: userDetail.created_at ? new Date(userDetail.created_at) : null,
+          created_at: userDetail.created_at
+            ? new Date(userDetail.created_at)
+            : null,
         };
 
         setUserData(userDataObj);
@@ -328,21 +365,62 @@ export default function SettingsPage() {
     setTimeout(() => setSuccessMessage(""), 3000);
   };
 
-  const handleProfileSubmit = (e: React.FormEvent) => {
+  // ✅ UPDATED: Save Changes will call PATCH /api/user/update with ONLY changed fields
+  const handleProfileSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSaving) return;
 
-    setUserData((prev) => ({
-      ...prev,
-      first_name: firstName,
-      last_name: lastName,
-      email,
-      phone,
-      address,
-      dob,
-      occupation,
-    }));
+    setSaveError(null);
 
-    showSuccess("Profile updated successfully");
+    const clean = (v: string) => (v ?? "").trim();
+
+    const nextFirst = clean(firstName);
+    const nextLast = clean(lastName);
+    const nextEmail = clean(email);
+    const nextPhone = clean(phone);
+
+    // Build payload with only changed fields
+    const payload: Record<string, any> = {};
+    if (nextFirst !== clean(userData.first_name)) payload.first_name = nextFirst;
+    if (nextLast !== clean(userData.last_name)) payload.last_name = nextLast;
+    if (nextEmail !== clean(userData.email)) payload.email = nextEmail;
+
+    // phone: backend expects "phone" (string). If user clears -> send "" (or null if your backend wants null)
+    const currentPhone = clean(userData.phone ?? "");
+    if (nextPhone !== currentPhone) payload.phone = nextPhone;
+
+    // If nothing changed
+    if (Object.keys(payload).length === 0) {
+      showSuccess("No changes to save");
+      return;
+    }
+
+    try {
+      setIsSaving(true);
+
+      // Call API
+      await patchUserUpdate(payload);
+
+      // Update local UI state after success
+      setUserData((prev) => ({
+        ...prev,
+        ...(payload.first_name !== undefined ? { first_name: payload.first_name } : {}),
+        ...(payload.last_name !== undefined ? { last_name: payload.last_name } : {}),
+        ...(payload.email !== undefined ? { email: payload.email } : {}),
+        ...(payload.phone !== undefined ? { phone: payload.phone } : {}),
+        // keep address/dob/occupation in UI as you had (not sent to backend)
+        address,
+        dob,
+        occupation,
+      }));
+
+      showSuccess("Profile updated successfully");
+    } catch (err: any) {
+      console.error("Profile update error:", err);
+      setSaveError(err?.message || "Update failed. Please try again.");
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   // ✅ NEW: Confirm Deposit -> wait 32s, call API at second 30
@@ -458,7 +536,9 @@ export default function SettingsPage() {
                 <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-emerald-400" />
               </div>
               <div>
-                <h3 className="text-xl font-bold text-white">Processing deposit</h3>
+                <h3 className="text-xl font-bold text-white">
+                  Processing deposit
+                </h3>
                 <p className="text-sm text-gray-400">
                   Please wait… system is simulating settlement.
                 </p>
@@ -468,7 +548,9 @@ export default function SettingsPage() {
             <div className="bg-[#181c24] border border-[#343b4d] rounded-2xl p-5">
               <div className="flex items-center justify-between text-sm text-gray-300">
                 <span>Time remaining</span>
-                <span className="font-mono text-emerald-400">{depositCountdown}s</span>
+                <span className="font-mono text-emerald-400">
+                  {depositCountdown}s
+                </span>
               </div>
 
               <div className="mt-3 h-2 w-full rounded-full bg-[#0f1219] overflow-hidden border border-[#343b4d]">
@@ -485,7 +567,8 @@ export default function SettingsPage() {
               </div>
 
               <div className="mt-4 text-xs text-gray-400 leading-relaxed">
-                • Waiting for admin acceptable: <span className="text-gray-200 font-mono">...is loading</span>
+                • Waiting for admin acceptable:{" "}
+                <span className="text-gray-200 font-mono">...is loading</span>
                 <br />
                 • Amount:{" "}
                 <span className="text-emerald-400 font-mono">
@@ -527,7 +610,9 @@ export default function SettingsPage() {
               <div className="text-sm font-medium text-gray-200">
                 {firstName} {lastName}
               </div>
-              <div className="text-xs text-gray-500 font-mono">ID: {userData.id}</div>
+              <div className="text-xs text-gray-500 font-mono">
+                ID: {userData.id}
+              </div>
             </div>
 
             <div className="h-10 w-10 rounded-xl bg-gradient-to-tr from-blue-600 to-cyan-500 p-[1px] shadow-lg shadow-blue-500/20">
@@ -683,14 +768,26 @@ export default function SettingsPage() {
                             />
                           </div>
                         </div>
+
+                        {/* Save error */}
+                        {saveError && (
+                          <div className="text-sm text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded-xl px-4 py-3 text-center">
+                            {saveError}
+                          </div>
+                        )}
                       </div>
 
                       <div className="flex justify-center mt-6">
                         <button
                           type="submit"
-                          className="px-12 py-4 bg-blue-600 hover:bg-blue-500 text-white text-lg font-bold rounded-2xl shadow-[0_4px_14px_0_rgba(37,99,235,0.39)] hover:shadow-[0_6px_20px_rgba(37,99,235,0.23)] transition-all transform hover:-translate-y-0.5 active:scale-95 min-w-[260px]"
+                          disabled={isSaving}
+                          className={`px-12 py-4 bg-blue-600 hover:bg-blue-500 text-white text-lg font-bold rounded-2xl shadow-[0_4px_14px_0_rgba(37,99,235,0.39)] hover:shadow-[0_6px_20px_rgba(37,99,235,0.23)] transition-all transform hover:-translate-y-0.5 active:scale-95 min-w-[260px] ${
+                            isSaving
+                              ? "opacity-60 cursor-not-allowed hover:translate-y-0"
+                              : ""
+                          }`}
                         >
-                          Save Changes
+                          {isSaving ? "Saving..." : "Save Changes"}
                         </button>
                       </div>
                     </form>
@@ -796,7 +893,9 @@ export default function SettingsPage() {
                             : ""
                         }`}
                       >
-                        {isDepositing ? `Processing… (${depositCountdown}s)` : "Confirm Deposit"}
+                        {isDepositing
+                          ? `Processing… (${depositCountdown}s)`
+                          : "Confirm Deposit"}
                       </button>
                     </div>
                   </div>
