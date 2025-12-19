@@ -8,7 +8,14 @@ export interface OrderUpdate {
   timestamp: number;
 }
 
+export interface NotificationMessage {
+  type: string;
+  message: string;
+  timestamp?: number;
+}
+
 export type OrderUpdateCallback = (update: OrderUpdate) => void;
+export type NotificationCallback = (notification: NotificationMessage) => void;
 
 /**
  * WebSocket Service (in-memory event bus)
@@ -23,6 +30,9 @@ export class WebSocketService {
 
   // orderId -> last update (for replay)
   private lastUpdate: Map<string, OrderUpdate> = new Map();
+
+  // notification callbacks
+  private notificationSubscribers: Set<NotificationCallback> = new Set();
 
   private constructor() {
     // No mock updates here — updates come from MarketSimulationService.sendOrderUpdate()
@@ -78,6 +88,37 @@ export class WebSocketService {
       // optional: keep lastUpdate for later UI refresh, or clear if you want
       // this.lastUpdate.delete(orderId);
     }
+  }
+
+  /**
+   * Send notification to subscribers
+   */
+  public sendNotification(notification: NotificationMessage): void {
+    // Add timestamp if not provided
+    if (!notification.timestamp) {
+      notification.timestamp = Date.now();
+    }
+
+    // Send notification to all subscribers
+    for (const cb of this.notificationSubscribers) {
+      try {
+        cb(notification);
+      } catch (error) {
+        // Error in notification callback
+      }
+    }
+  }
+
+  /**
+   * Subscribe to notifications
+   */
+  public subscribeToNotifications(callback: NotificationCallback): () => void {
+    this.notificationSubscribers.add(callback);
+
+    // Return unsubscribe function
+    return () => {
+      this.notificationSubscribers.delete(callback);
+    };
   }
 
   /**

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   Plus,
   ChevronDown,
@@ -9,6 +9,7 @@ import {
   Bell,
   Lock,
   Unlock,
+  AlertTriangle,
 } from "lucide-react";
 
 import { Timeframe } from "@/lib/types";
@@ -207,6 +208,8 @@ export default function TopNavigation({
     minWidth: "140px",
   };
 
+
+
   const handleThemeToggle = () => {
     if (onToggleDarkMode) {
       // Use isDarkMode/onToggleDarkMode pattern
@@ -217,6 +220,8 @@ export default function TopNavigation({
       onThemeChange(newTheme);
     }
   };
+
+
 
   return (
     <div style={containerStyle}>
@@ -444,6 +449,7 @@ export default function TopNavigation({
 
         {/* App Settings */}
         <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+
           {/* Notifications */}
           <button
             style={buttonStyle()}

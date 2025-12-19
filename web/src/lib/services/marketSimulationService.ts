@@ -4,6 +4,7 @@ import { OrderStatus } from "./orderService";
 import { CandlestickWithVolume } from "../types";
 import { Time } from "lightweight-charts";
 import { getExchangeBySymbol, getFluctuationLimit } from "../position-sizing";
+import { BlackSwanService } from "./blackSwanService";
 
 export interface MarketMakerBot {
   id: string;
@@ -312,6 +313,7 @@ export class MarketSimulationService {
   private onUpdateCallback: ((data: SimulatedMarketData) => void) | null = null;
   private isRunning = false;
   private webSocketService: WebSocketService;
+  private blackSwanService: BlackSwanService;
 
   private marketMetrics = new Map<string, MarketMetrics>();
   private correlationMatrix = new Map<string, Map<string, number>>();
@@ -327,11 +329,17 @@ export class MarketSimulationService {
   private userOrderCount = 0;
   constructor() {
     this.webSocketService = WebSocketService.getInstance();
+    this.blackSwanService = BlackSwanService.getInstance();
     this.initializeBots();
     this.initializeMarketData();
     this.calculateCorrelations();
     this.lastTrendGenerationTime = Date.now();
     this.lastStabilityCheckTime = Date.now();
+
+    // Listen for Black Swan events
+    this.blackSwanService.addEventListener((event) => {
+      this.handleBlackSwanEvent(event);
+    });
   }
 
   private initializeBots() {
@@ -1475,6 +1483,17 @@ export class MarketSimulationService {
       ) {
         marketData.price *= 1 - breakout.strength * 0.01;
         marketData.volume *= 2;
+      }
+    });
+
+    // Apply Black Swan event effects
+    const blackSwanEvents =
+      this.blackSwanService.getActiveEventsForSymbol(symbol);
+    blackSwanEvents.forEach((event) => {
+      if (event.type === "delist") {
+        marketData.price = 0;
+      } else if (event.type === "crash") {
+        marketData.price *= 1 - event.severity;
       }
     });
 
@@ -2758,11 +2777,42 @@ export class MarketSimulationService {
   }
 
   /**
+   * Handle Black Swan event
+   * @param event The Black Swan event to handle
+   */
+  private handleBlackSwanEvent(
+    event: import("./blackSwanService").BlackSwanEvent
+  ): void {
+
+
+    // Start flashing notification when a Black Swan event occurs
+    this.blackSwanService.startFlashing();
+
+    // Send notification to WebSocket clients
+    this.webSocketService.sendNotification({
+      type: "blackSwan",
+      message: `Black Swan event triggered for ${event.symbol}: ${
+        event.type === "delist" ? "Delisted" : "Severe price drop"
+      } (${Math.round((1 - event.severity) * 100)}% loss)`,
+    });
+  }
+
+  /**
    * Get historical data for backtesting
    * @param symbol Stock symbol
    * @param days Number of days of historical data to retrieve
    * @returns Array of candlestick data with volume
    */
+  /**
+   * Trigger a test Black Swan event for testing purposes
+   * @param symbol The stock symbol to trigger the event for
+   */
+  public triggerTestBlackSwanEvent(
+    symbol: string
+  ): import("./blackSwanService").BlackSwanEvent {
+    return this.blackSwanService.triggerTestEvent(symbol);
+  }
+
   public getHistoricalData(
     symbol: string,
     days: number = 30

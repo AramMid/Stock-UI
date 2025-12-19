@@ -18,6 +18,7 @@ import {
 import { orderBookService } from "@/lib/services/orderBookService";
 import { WebSocketService } from "@/lib/services/webSocketService";
 import { NotificationService } from "@/lib/services/notificationService";
+import { BlackSwanService } from "@/lib/services/blackSwanService";
 import { splitOrderForExchangeLimit } from "@/lib/position-sizing";
 
 // Import cursor configurations to ensure they're loaded
@@ -97,6 +98,7 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
   const [showOrderPanel, setShowOrderPanel] = useState(false);
   const [isOrderPanelDragging, setIsOrderPanelDragging] = useState(false);
   const [orderPanelSide, setOrderPanelSide] = useState<"buy" | "sell">("buy");
+  const [isBlackSwanActive, setIsBlackSwanActive] = useState(false);
   const [bestBidPrice, setBestBidPrice] = useState<number | undefined>(
     undefined
   );
@@ -193,9 +195,13 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [positions, loadingPositions]);
 
-  // ✅ MarketSimulation chỉ dùng cho bot, KHÔNG đụng tới ohlcData / bid/ask
+  // ✅ MarketSimulation initialization
   useEffect(() => {
+    // Initialize MarketSimulationService
     marketSimulationRef.current = new MarketSimulationService();
+
+    // Make market simulation service available globally for testing
+    (window as any).marketSimulationRef = marketSimulationRef;
 
     marketSimulationRef.current.startSimulation((data: SimulatedMarketData) => {
       if (data.symbol === selectedSymbol) {
@@ -205,8 +211,52 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
 
     return () => {
       marketSimulationRef.current?.stopSimulation();
+      // Clean up global reference
+      delete (window as any).marketSimulationRef;
     };
   }, [updateLastPrice, selectedSymbol]);
+
+  // ✅ BlackSwanService initialization
+useEffect(() => {
+  const blackSwanService = BlackSwanService.getInstance();
+
+  // Register position checker (giữ nguyên)
+  blackSwanService.registerPositionChecker((symbol: string) => {
+    const position = getAllPositions().find((pos: any) => pos.symbol === symbol);
+    return position ? position.position : 0;
+  });
+
+  blackSwanService.startMonitoring();
+  blackSwanService.stopAutomaticTriggering();
+  blackSwanService.startAutomaticTriggering(selectedSymbol);
+
+  // ✅ LISTEN TRỰC TIẾP EVENT TỪ BlackSwanService
+  const onBlackSwan = (event: any) => {
+    if (event?.symbol !== selectedSymbol) return;
+
+    setIsBlackSwanActive(true);
+
+    // nếu bạn muốn nhấp nháy nhanh theo event service
+    blackSwanService.startFlashing();
+
+    setTimeout(() => {
+      setIsBlackSwanActive(false);
+      // nếu không còn event nào active thì tắt nhấp nháy
+      if (!blackSwanService.hasActiveEvents()) {
+        blackSwanService.stopFlashing();
+      }
+    }, 10000);
+  };
+
+  blackSwanService.addEventListener(onBlackSwan);
+
+  return () => {
+    blackSwanService.removeEventListener(onBlackSwan);
+    blackSwanService.stopMonitoring();
+    blackSwanService.stopAutomaticTriggering();
+  };
+}, [selectedSymbol, getAllPositions]);
+
 
   // Strategy Tester fullscreen toggle
   useEffect(() => {
@@ -514,7 +564,9 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
 
     const normalizedFilledQty =
       upperStatus === "FILLED"
-        ? (Number.isFinite(qty) && qty > 0 ? qty : fallbackQty)
+        ? Number.isFinite(qty) && qty > 0
+          ? qty
+          : fallbackQty
         : Number.isFinite(qty) && qty > 0
         ? qty
         : 0;
@@ -576,7 +628,8 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
                     ...o,
                     status: update.status,
                     filledPrice: normalizedFilledPrice || update.filledPrice,
-                    filledQuantity: normalizedFilledQty || update.filledQuantity,
+                    filledQuantity:
+                      normalizedFilledQty || update.filledQuantity,
                   }
                 : o
             )
@@ -586,8 +639,16 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
           if (upperStatus === "FILLED" && normalizedFilledPrice > 0) {
             const success =
               side === "buy"
-                ? handleBuy(orderSymbol, normalizedFilledQty, normalizedFilledPrice)
-                : handleSell(orderSymbol, normalizedFilledQty, normalizedFilledPrice);
+                ? handleBuy(
+                    orderSymbol,
+                    normalizedFilledQty,
+                    normalizedFilledPrice
+                  )
+                : handleSell(
+                    orderSymbol,
+                    normalizedFilledQty,
+                    normalizedFilledPrice
+                  );
 
             if (success) {
               notificationService.showSuccess(
@@ -704,6 +765,7 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
         onToggleMACD={() => setShowMACD(!showMACD)}
         isPrivateMode={isPrivateMode}
         onTogglePrivateMode={() => setIsPrivateMode(!isPrivateMode)}
+        isBlackSwanActive={isBlackSwanActive}
       />
 
       <StockInfoBar
@@ -992,7 +1054,10 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
 
                     const handleMouseUp = () => {
                       setIsOrderPanelDragging(false);
-                      document.removeEventListener("mousemove", handleMouseMove);
+                      document.removeEventListener(
+                        "mousemove",
+                        handleMouseMove
+                      );
                       document.removeEventListener("mouseup", handleMouseUp);
                       document.body.style.cursor = "";
                       document.body.style.userSelect = "";
