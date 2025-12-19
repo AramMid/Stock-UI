@@ -195,7 +195,20 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
 
   // ✅ MarketSimulation chỉ dùng cho bot, KHÔNG đụng tới ohlcData / bid/ask
   useEffect(() => {
-    marketSimulationRef.current = new MarketSimulationService();
+    console.log("[HomePage] Initializing MarketSimulationService");
+    // Get the MarketSimulationService instance from the orderBookService
+    marketSimulationRef.current = (orderBookService as any).marketSimulation;
+    console.log("[HomePage] MarketSimulationService obtained from orderBookService");
+    
+    // Set initial user position
+    if (positions && !loadingPositions) {
+      const userShares = positions.get(selectedSymbol) || 0;
+      console.log(`[HomePage] Setting user position for ${selectedSymbol}: ${userShares}`);
+      marketSimulationRef.current?.setCurrentUserPosition(
+        selectedSymbol,
+        userShares
+      );
+    }
 
     marketSimulationRef.current.startSimulation((data: SimulatedMarketData) => {
       if (data.symbol === selectedSymbol) {
@@ -204,9 +217,21 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
     });
 
     return () => {
+      console.log("[HomePage] Cleaning up MarketSimulationService");
       marketSimulationRef.current?.stopSimulation();
     };
-  }, [updateLastPrice, selectedSymbol]);
+  }, [updateLastPrice, selectedSymbol, positions, loadingPositions]);
+
+  // Update market simulation with user's current position
+  useEffect(() => {
+    if (positions && !loadingPositions && marketSimulationRef.current) {
+      const userShares = positions.get(selectedSymbol) || 0;
+      marketSimulationRef.current?.setCurrentUserPosition(
+        selectedSymbol,
+        userShares
+      );
+    }
+  }, [positions, loadingPositions, selectedSymbol]);
 
   // Strategy Tester fullscreen toggle
   useEffect(() => {
@@ -514,7 +539,9 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
 
     const normalizedFilledQty =
       upperStatus === "FILLED"
-        ? (Number.isFinite(qty) && qty > 0 ? qty : fallbackQty)
+        ? Number.isFinite(qty) && qty > 0
+          ? qty
+          : fallbackQty
         : Number.isFinite(qty) && qty > 0
         ? qty
         : 0;
@@ -531,6 +558,9 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
 
   const handleOrderSubmit = useCallback(
     (side: "buy" | "sell", quantity: number, price: number) => {
+      console.log(
+        `[HomePage] Submitting ${side} order for ${quantity} shares at ${price}`
+      );
       const orderQuantities = splitOrderForExchangeLimit(quantity);
 
       const webSocketService = WebSocketService.getInstance();
@@ -550,6 +580,8 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
           timestamp: new Date(),
         };
 
+        console.log(`[HomePage] Created order ${order.id}:`, order);
+
         // reset applied tracker for this order id
         appliedFilledQtyRef.current[order.id] = 0;
 
@@ -558,6 +590,10 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
 
         // 2) Subscribe BEFORE sending
         const unsubscribe = webSocketService.subscribe(order.id, (update) => {
+          console.log(
+            `[HomePage] Received order update for ${order.id}:`,
+            update
+          );
           const { upperStatus, normalizedFilledQty, normalizedFilledPrice } =
             normalizeFill(update, orderQty, price);
 
@@ -576,7 +612,8 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
                     ...o,
                     status: update.status,
                     filledPrice: normalizedFilledPrice || update.filledPrice,
-                    filledQuantity: normalizedFilledQty || update.filledQuantity,
+                    filledQuantity:
+                      normalizedFilledQty || update.filledQuantity,
                   }
                 : o
             )
@@ -584,14 +621,31 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
 
           // ✅ Update position on FILLED using normalized qty/price
           if (upperStatus === "FILLED" && normalizedFilledPrice > 0) {
+            console.log(
+              `[HomePage] Order ${order.id} filled, updating position`
+            );
             const success =
               side === "buy"
-                ? handleBuy(orderSymbol, normalizedFilledQty, normalizedFilledPrice)
-                : handleSell(orderSymbol, normalizedFilledQty, normalizedFilledPrice);
+                ? handleBuy(
+                    orderSymbol,
+                    normalizedFilledQty,
+                    normalizedFilledPrice
+                  )
+                : handleSell(
+                    orderSymbol,
+                    normalizedFilledQty,
+                    normalizedFilledPrice
+                  );
 
             if (success) {
+              console.log(
+                `[HomePage] Showing order filled notification for ${update.orderId}`
+              );
               notificationService.showSuccess(
                 `Order ${update.orderId} filled successfully`
+              );
+              console.log(
+                `[OrderFilled] Order ${update.orderId} filled successfully`
               );
               refreshUserData();
               setTimeout(() => refreshWatchlistPositions(), 1000);
@@ -618,6 +672,9 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
 
           // Final status → sync backend 1 lần + unsubscribe
           if (isFinal(upperStatus)) {
+            console.log(
+              `[HomePage] Order ${order.id} reached final status: ${upperStatus}`
+            );
             try {
               const calledKey = `order_api_called_${order.id}`;
               if (!sessionStorage.getItem(calledKey)) {
@@ -653,18 +710,23 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
                 }
               }
             } finally {
+              console.log(`[HomePage] Unsubscribing from order ${order.id}`);
               unsubscribe?.();
             }
           }
         });
 
         // 3) Send order into the engine
+        console.log(
+          `[HomePage] Sending order ${order.id} to order book service`
+        );
         orderBookService.addOrder(order);
 
         notificationService.showSuccess(
           "Order submitted. Waiting for execution...",
           3000
         );
+        console.log("[HomePage] Order submission notification shown");
       });
 
       setShowOrderPanel(false);
@@ -704,6 +766,13 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
         onToggleMACD={() => setShowMACD(!showMACD)}
         isPrivateMode={isPrivateMode}
         onTogglePrivateMode={() => setIsPrivateMode(!isPrivateMode)}
+        onTriggerBlackSwan={(symbol, eventType, severity) => {
+          marketSimulationRef.current?.triggerBlackSwanEvent(
+            symbol,
+            eventType,
+            severity
+          );
+        }}
       />
 
       <StockInfoBar
@@ -992,7 +1061,10 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
 
                     const handleMouseUp = () => {
                       setIsOrderPanelDragging(false);
-                      document.removeEventListener("mousemove", handleMouseMove);
+                      document.removeEventListener(
+                        "mousemove",
+                        handleMouseMove
+                      );
                       document.removeEventListener("mouseup", handleMouseUp);
                       document.body.style.cursor = "";
                       document.body.style.userSelect = "";

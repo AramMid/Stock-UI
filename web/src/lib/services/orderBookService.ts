@@ -2,6 +2,7 @@ import { OrderBook, OrderBookLevel, OrderBookUpdate, Trade } from "../types";
 import { Order } from "../order-management";
 import { OrderStatus } from "./orderService";
 import { MarketSimulationService } from "./marketSimulationService";
+import { WebSocketService } from "./webSocketService";
 import {
   MarketDepthLevel,
   SimulatedMarketData,
@@ -16,11 +17,12 @@ export class OrderBookService {
   private orderBook: OrderBook;
   private trades: Trade[] = [];
   private orders: Map<string, Order> = new Map();
-  private marketSimulation: MarketSimulationService;
+  public marketSimulation: MarketSimulationService;
+  private webSocketService: WebSocketService;
   private matchingInterval: NodeJS.Timeout | null = null;
   private orderBookUpdateCallbacks: ((orderBook: OrderBook) => void)[] = [];
 
-  constructor() {
+  constructor(marketSimulation?: MarketSimulationService) {
     // Initialize with empty order book
     this.orderBook = {
       bids: [],
@@ -33,8 +35,9 @@ export class OrderBookService {
       totalAskVolume: 0,
     };
 
-    // Initialize market simulation
-    this.marketSimulation = new MarketSimulationService();
+    // Initialize services
+    this.marketSimulation = marketSimulation || new MarketSimulationService();
+    this.webSocketService = WebSocketService.getInstance();
 
     // Start listening to market simulation updates
     this.startMarketSimulation();
@@ -42,6 +45,11 @@ export class OrderBookService {
 
   // Start market simulation and order matching
   private startMarketSimulation(): void {
+    if (!this.marketSimulation) {
+      console.warn("[OrderBookService] No market simulation service available");
+      return;
+    }
+    
     // Start the market simulation
     this.marketSimulation.startSimulation((marketData) => {
       this.updateOrderBookFromMarketData(marketData);
@@ -68,16 +76,32 @@ export class OrderBookService {
 
   // Add a new order to the order book
   addOrder(order: Order): { success: boolean; message: string } {
+    console.log(`[OrderBookService] Adding new order:`, order);
+    
+    // Check if market simulation is available
+    if (!this.marketSimulation) {
+      console.error("[OrderBookService] No market simulation service available");
+      return { success: false, message: "Market simulation service not available" };
+    }
+    
     // Adding order to order book
 
     // Validate order
     const validation = this.validateOrder(order);
     if (!validation.valid) {
+      console.log(
+        `[OrderBookService] Order validation failed:`,
+        validation.message
+      );
       return { success: false, message: validation.message };
     }
 
     // Process through market simulation for realistic matching
     const simulationResult = this.marketSimulation.processUserOrder(order);
+    console.log(
+      `[OrderBookService] Market simulation result:`,
+      simulationResult
+    );
 
     if (simulationResult.success) {
       // Order was immediately matched
@@ -98,6 +122,9 @@ export class OrderBookService {
       // Update order book
       this.updateOrderBook();
 
+      console.log(
+        `[OrderBookService] Order filled immediately at ${order.filledPrice}`
+      );
       return {
         success: true,
         message: `Order filled immediately at ${order.filledPrice}`,
@@ -111,6 +138,7 @@ export class OrderBookService {
       // Update order book
       this.updateOrderBook();
 
+      console.log(`[OrderBookService] Order added to order book`);
       return {
         success: true,
         message: "Order added to order book",
@@ -142,21 +170,23 @@ export class OrderBookService {
     }
 
     // Check price limits according to Vietnamese exchange fluctuation bands
-    const marketData = this.marketSimulation.getMarketData(order.symbol);
-    if (marketData && order.orderType === "Limit") {
-      const currentPrice = marketData.price;
-      const exchange = getExchangeBySymbol(order.symbol);
-      const flucLimit = getFluctuationLimit(exchange);
+    if (this.marketSimulation) {
+      const marketData = this.marketSimulation.getMarketData(order.symbol);
+      if (marketData && order.orderType === "Limit") {
+        const currentPrice = marketData.price;
+        const exchange = getExchangeBySymbol(order.symbol);
+        const flucLimit = getFluctuationLimit(exchange);
 
-      // Calculate ceiling and floor prices with proper rounding
-      const ceilingPrice = Math.floor(currentPrice * (1 + flucLimit));
-      const floorPrice = Math.ceil(currentPrice * (1 - flucLimit));
+        // Calculate ceiling and floor prices with proper rounding
+        const ceilingPrice = Math.floor(currentPrice * (1 + flucLimit));
+        const floorPrice = Math.ceil(currentPrice * (1 - flucLimit));
 
-      if (order.price! > ceilingPrice || order.price! < floorPrice) {
-        return {
-          valid: false,
-          message: `Price out of fluctuation band (Trần/Sàn). Valid range: ${floorPrice} - ${ceilingPrice}`,
-        };
+        if (order.price! > ceilingPrice || order.price! < floorPrice) {
+          return {
+            valid: false,
+            message: `Price out of fluctuation band (Trần/Sàn). Valid range: ${floorPrice} - ${ceilingPrice}`,
+          };
+        }
       }
     }
 
@@ -191,8 +221,13 @@ export class OrderBookService {
     orderId: string,
     updates: Partial<Order>
   ): { success: boolean; message: string } {
+    console.log(
+      `[OrderBookService] Updating order ${orderId} with updates:`,
+      updates
+    );
     const order = this.orders.get(orderId);
     if (!order) {
+      console.log(`[OrderBookService] Order ${orderId} not found`);
       return { success: false, message: "Order not found" };
     }
 
@@ -244,6 +279,7 @@ export class OrderBookService {
     // Update order book
     this.updateOrderBook();
 
+    console.log(`[OrderBookService] Order ${orderId} updated successfully`);
     return { success: true, message: "Order updated successfully" };
   }
 
@@ -666,6 +702,7 @@ export class OrderBookService {
     this.orderBook.lastTradedPrice = trade.price;
   }
 
+
   // Get market statistics
   getMarketStatistics(): ReturnType<
     typeof MarketSimulationService.prototype.getMarketStatistics
@@ -690,5 +727,6 @@ export class OrderBookService {
   }
 }
 
-// Create a singleton instance
+// Create a singleton instance with a placeholder MarketSimulationService
+// The actual MarketSimulationService will be accessed directly from the home page
 export const orderBookService = new OrderBookService();

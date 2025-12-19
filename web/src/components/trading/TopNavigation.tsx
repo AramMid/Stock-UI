@@ -10,6 +10,7 @@ import {
   Lock,
   Unlock,
 } from "lucide-react";
+import BlackSwanControls from "./BlackSwanControls";
 
 import { Timeframe } from "@/lib/types";
 
@@ -35,6 +36,11 @@ interface TopNavigationProps {
   onToggleMACD?: () => void;
   isPrivateMode?: boolean;
   onTogglePrivateMode?: () => void;
+  onTriggerBlackSwan?: (
+    symbol: string,
+    eventType: "crash" | "delist",
+    severity: "mild" | "moderate" | "severe"
+  ) => void;
 }
 
 export default function TopNavigation({
@@ -54,9 +60,11 @@ export default function TopNavigation({
   onToggleMACD,
   isPrivateMode = false,
   onTogglePrivateMode,
+  onTriggerBlackSwan,
 }: TopNavigationProps) {
   const [showTimeframeDropdown, setShowTimeframeDropdown] = useState(false);
   const [showIndicators, setShowIndicators] = useState(false);
+  const [isBlackSwanActive, setIsBlackSwanActive] = useState(false);
 
   // Determine current theme (support both prop patterns)
   const currentThemeMode: Theme =
@@ -218,8 +226,56 @@ export default function TopNavigation({
     }
   };
 
+  // Listen for Black Swan event activation
+  useEffect(() => {
+    const handleBlackSwanEvent = (event: CustomEvent) => {
+      setIsBlackSwanActive(event.detail.active);
+    };
+
+    if (typeof window !== "undefined" && typeof CustomEvent !== "undefined") {
+      window.addEventListener(
+        "blackSwanEventScheduled",
+        handleBlackSwanEvent as EventListener
+      );
+      window.addEventListener(
+        "blackSwanEventEnded",
+        handleBlackSwanEvent as EventListener
+      );
+    }
+
+    return () => {
+      if (typeof window !== "undefined" && typeof CustomEvent !== "undefined") {
+        window.removeEventListener(
+          "blackSwanEventScheduled",
+          handleBlackSwanEvent as EventListener
+        );
+        window.removeEventListener(
+          "blackSwanEventEnded",
+          handleBlackSwanEvent as EventListener
+        );
+      }
+    };
+  }, []);
+
+  // Define pulse animation styles
+  const pulseAnimationStyle = `
+    @keyframes pulse {
+      0%, 100% {
+        opacity: 1;
+      }
+      50% {
+        opacity: 0.5;
+      }
+    }
+    
+    .black-swan-pulse {
+      animation: pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    }
+  `;
+
   return (
     <div style={containerStyle}>
+      <style>{pulseAnimationStyle}</style>
       {/* Centered Section - All Controls */}
       <div style={centerSectionStyle}>
         {/* Symbol Search */}
@@ -459,6 +515,14 @@ export default function TopNavigation({
           >
             <Bell style={{ width: "16px", height: "16px" }} />
           </button>
+
+          {/* Black Swan Controls */}
+          <div className={isBlackSwanActive ? "black-swan-pulse" : ""}>
+            <BlackSwanControls
+              isDarkMode={currentThemeMode === "dark"}
+              selectedSymbol={symbol}
+            />
+          </div>
 
           {/* Private Mode Toggle */}
           <button

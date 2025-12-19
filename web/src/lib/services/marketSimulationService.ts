@@ -4,6 +4,7 @@ import { OrderStatus } from "./orderService";
 import { CandlestickWithVolume } from "../types";
 import { Time } from "lightweight-charts";
 import { getExchangeBySymbol, getFluctuationLimit } from "../position-sizing";
+import { BlackSwanService, BlackSwanEvent } from "./blackSwanService";
 
 export interface MarketMakerBot {
   id: string;
@@ -316,6 +317,11 @@ export class MarketSimulationService {
   private marketMetrics = new Map<string, MarketMetrics>();
   private correlationMatrix = new Map<string, Map<string, number>>();
   private tradeHistory: TradeRecord[] = [];
+  private blackSwanService: BlackSwanService;
+
+  // Add properties to track user position
+  private currentUserSymbol: string = "VIC.VN";
+  private currentUserShares: number = 0;
 
   private activeTrends: ActiveTrend[] = [];
   private momentumWaves: MomentumWave[] = [];
@@ -327,6 +333,7 @@ export class MarketSimulationService {
   private userOrderCount = 0;
   constructor() {
     this.webSocketService = WebSocketService.getInstance();
+    this.blackSwanService = new BlackSwanService(this);
     this.initializeBots();
     this.initializeMarketData();
     this.calculateCorrelations();
@@ -558,6 +565,9 @@ export class MarketSimulationService {
       this.generateStrongTrendsAndPatterns();
       this.lastTrendGenerationTime = now;
     }
+
+    // Schedule black swan events based on user position
+    this.blackSwanService.scheduleRandomBlackSwanEvent();
 
     this.updateActiveTrends();
 
@@ -2055,37 +2065,60 @@ export class MarketSimulationService {
     filledPrice?: number;
     filledQuantity?: number;
   } {
+    console.log(`[MarketSimulation] Processing user order ${order.id}:`, order);
     this.userOrderCount += 1; // ✅ ADD
     const delay = Math.floor(Math.random() * 6000) + 2000;
+    console.log(
+      `[MarketSimulation] Setting delay for order ${order.id}: ${delay}ms`
+    );
     // USER_ORDER: Order received
 
     this.pendingUserOrders.set(order.id, {
       order,
       decisionTime: Date.now() + delay,
     });
+    console.log(`[MarketSimulation] Added order ${order.id} to pending orders`);
     return { success: false };
   }
 
   private processPendingUserOrders(marketData: SimulatedMarketData): void {
     const currentTime = Date.now();
+    console.log(
+      `[MarketSimulation] Processing ${this.pendingUserOrders.size} pending user orders`
+    );
 
     this.pendingUserOrders.forEach((pendingItem, orderId) => {
       if (currentTime >= pendingItem.decisionTime) {
         const { order } = pendingItem;
+        console.log(`[MarketSimulation] Processing order ${order.id}`);
         const currentData = this.marketData.get(order.symbol);
 
         if (!currentData) {
+          console.log(
+            `[MarketSimulation] No market data for symbol ${order.symbol}, deleting order`
+          );
           this.pendingUserOrders.delete(orderId);
           return;
         }
 
         const botDecision = this.evaluateUserOrder(order, currentData);
+        console.log(
+          `[MarketSimulation] Bot decision for order ${order.id}:`,
+          botDecision
+        );
 
         if (botDecision.accepted) {
           const execution = this.executeUserOrderWithBots(order, currentData);
+          console.log(
+            `[MarketSimulation] Execution result for order ${order.id}:`,
+            execution
+          );
 
           if (execution.filled) {
             // USER_FILL: Order filled
+            console.log(
+              `[MarketSimulation] Order ${order.id} filled, sending update`
+            );
 
             this.sendOrderUpdate({
               orderId: order.id,
@@ -2108,6 +2141,9 @@ export class MarketSimulationService {
               return;
             }
           } else {
+            console.log(
+              `[MarketSimulation] Order ${order.id} rejected by bots, sending update`
+            );
             this.sendOrderUpdate({
               orderId: order.id,
               status: "REJECTED",
@@ -2116,6 +2152,9 @@ export class MarketSimulationService {
           }
         } else {
           // USER_REJECT: Order rejected
+          console.log(
+            `[MarketSimulation] Order ${order.id} rejected, sending update`
+          );
           this.sendOrderUpdate({
             orderId: order.id,
             status: "REJECTED",
@@ -2132,6 +2171,7 @@ export class MarketSimulationService {
     order: Order,
     marketData: SimulatedMarketData
   ): { accepted: boolean; reason: string } {
+    console.log(`[MarketSimulation] Evaluating user order ${order.id}`);
     const isBuy = order.type === "buy";
     const currentPrice = marketData.price;
     const orderPrice = order.price || currentPrice;
@@ -2146,6 +2186,10 @@ export class MarketSimulationService {
         : currentPrice;
     const spread = bestAsk - bestBid;
 
+    console.log(
+      `[MarketSimulation] Order details - Type: ${order.type}, Price: ${orderPrice}, Best Bid: ${bestBid}, Best Ask: ${bestAsk}, Spread: ${spread}`
+    );
+
     // Implement decreasing probability logic for first 10 orders
     let acceptanceProbability = 0.7;
 
@@ -2155,35 +2199,61 @@ export class MarketSimulationService {
         1.0 - (this.userOrderCount - 1) * 0.1,
         0.1
       );
+      console.log(
+        `[MarketSimulation] First 10 orders logic, acceptance probability: ${acceptanceProbability}`
+      );
       // USER_ORDER: First 10 orders acceptance probability
     } else {
       // After 10 orders, use normal logic
       if (order.orderType === "Market") {
         acceptanceProbability = 0.9;
+        console.log(
+          `[MarketSimulation] Market order, acceptance probability: ${acceptanceProbability}`
+        );
       } else if (order.orderType === "Limit") {
         if (isBuy) {
           const priceAdvantage = (orderPrice - bestAsk) / bestAsk;
           acceptanceProbability = 0.6 + Math.min(0.3, priceAdvantage * 10);
+          console.log(
+            `[MarketSimulation] Buy limit order, price advantage: ${priceAdvantage}, acceptance probability: ${acceptanceProbability}`
+          );
         } else {
           const priceAdvantage = (bestBid - orderPrice) / bestBid;
           acceptanceProbability = 0.6 + Math.min(0.3, priceAdvantage * 10);
+          console.log(
+            `[MarketSimulation] Sell limit order, price advantage: ${priceAdvantage}, acceptance probability: ${acceptanceProbability}`
+          );
         }
       }
 
       const spreadFactor = Math.max(0.5, 1 - spread / (currentPrice * 0.01));
       acceptanceProbability *= spreadFactor;
+      console.log(
+        `[MarketSimulation] After spread factor (${spreadFactor}), acceptance probability: ${acceptanceProbability}`
+      );
 
       const sizeFactor = Math.max(0.3, 1 - order.quantity / 10000);
       acceptanceProbability *= sizeFactor;
+      console.log(
+        `[MarketSimulation] After size factor (${sizeFactor}), acceptance probability: ${acceptanceProbability}`
+      );
     }
 
     const accepted = Math.random() < acceptanceProbability;
+    console.log(
+      `[MarketSimulation] Random roll: ${Math.random()}, Acceptance threshold: ${acceptanceProbability}, Accepted: ${accepted}`
+    );
+
+    const reason = accepted
+      ? `Bot willing to trade (${Math.round(acceptanceProbability * 100)}%)`
+      : `Bot not interested (${Math.round(acceptanceProbability * 100)}%)`;
+    console.log(
+      `[MarketSimulation] Evaluation result for order ${order.id}: ${reason}`
+    );
 
     return {
       accepted,
-      reason: accepted
-        ? `Bot willing to trade (${Math.round(acceptanceProbability * 100)}%)`
-        : `Bot not interested (${Math.round(acceptanceProbability * 100)}%)`,
+      reason,
     };
   }
 
@@ -2191,6 +2261,9 @@ export class MarketSimulationService {
     order: Order,
     marketData: SimulatedMarketData
   ) {
+    console.log(
+      `[MarketSimulation] Executing user order ${order.id} for symbol ${order.symbol}`
+    );
     const isBuy = order.type === "buy";
 
     const candidates = this.bots
@@ -2216,15 +2289,28 @@ export class MarketSimulationService {
       )
       .sort((a, b) => b.available - a.available); // ưu tiên bot có nhiều khả năng fill
 
-    if (!candidates.length) return { filled: false, price: 0, quantity: 0 };
+    console.log(
+      `[MarketSimulation] Found ${candidates.length} candidate bots for order ${order.id}`
+    );
+    if (!candidates.length) {
+      console.log(
+        `[MarketSimulation] No candidate bots found for order ${order.id}`
+      );
+      return { filled: false, price: 0, quantity: 0 };
+    }
 
     const selected = candidates[0]; // ✅ chọn bot tốt nhất (hoặc random trong top N)
     const tradeQty = Math.min(selected.available, order.quantity);
+    console.log(
+      `[MarketSimulation] Selected bot ${selected.bot.id} for order ${order.id}, trade quantity: ${tradeQty}`
+    );
 
     const price = this.calculateTradePrice(order, marketData, selected.bot);
+    console.log(`[MarketSimulation] Calculated trade price: ${price}`);
 
     // update bot position (bot side opposite user)
-    if (isBuy)
+    if (isBuy) {
+      console.log(`[MarketSimulation] Updating bot position for sell trade`);
       this.updateBotPositionFromTrade(
         selected.bot.id,
         "sell",
@@ -2232,7 +2318,8 @@ export class MarketSimulationService {
         tradeQty,
         order.symbol
       );
-    else
+    } else {
+      console.log(`[MarketSimulation] Updating bot position for buy trade`);
       this.updateBotPositionFromTrade(
         selected.bot.id,
         "buy",
@@ -2240,8 +2327,10 @@ export class MarketSimulationService {
         tradeQty,
         order.symbol
       );
+    }
 
     // ... push tradeHistory, update marketData ...
+    console.log(`[MarketSimulation] Order ${order.id} executed successfully`);
     return { filled: true, price, quantity: tradeQty };
   }
 
@@ -2590,6 +2679,7 @@ export class MarketSimulationService {
     filledQuantity?: number;
     timestamp: number;
   }) {
+    console.log(`[MarketSimulation] Sending order update:`, update);
     this.webSocketService.sendOrderUpdate(update);
   }
 
@@ -2601,6 +2691,45 @@ export class MarketSimulationService {
     //   price: data.price
     // } : 'undefined');
     return data;
+  }
+
+  /**
+   * Update market data for a symbol
+   * @param symbol The stock symbol to update
+   * @param newData Partial data to update
+   */
+  public updateMarketData(
+    symbol: string,
+    newData: Partial<SimulatedMarketData>
+  ): void {
+    const existingData = this.marketData.get(symbol);
+    if (existingData) {
+      // Merge the existing data with the new data
+      const updatedData = {
+        ...existingData,
+        ...newData,
+        timestamp: Date.now(),
+      };
+      this.marketData.set(symbol, updatedData as SimulatedMarketData);
+
+      // Update price history if price changed
+      if (newData.price !== undefined) {
+        const priceHistory = this.priceHistory.get(symbol) || [];
+        priceHistory.push(newData.price);
+        if (priceHistory.length > PARAMS.VOLATILITY_WINDOW * 10) {
+          priceHistory.splice(
+            0,
+            priceHistory.length - PARAMS.VOLATILITY_WINDOW * 10
+          );
+        }
+        this.priceHistory.set(symbol, priceHistory);
+      }
+
+      // Notify subscribers if there's an update callback
+      if (this.onUpdateCallback) {
+        this.onUpdateCallback(updatedData as SimulatedMarketData);
+      }
+    }
   }
 
   public getBotPositions(): BotPosition[] {
@@ -2817,5 +2946,38 @@ export class MarketSimulationService {
     });
 
     return candles.sort((a, b) => (a.time as number) - (b.time as number));
+  }
+
+  /**
+   * Set the current user position for black swan event targeting
+   * @param symbol The stock symbol the user is currently trading
+   * @param shares The number of shares the user owns
+   */
+  public setCurrentUserPosition(symbol: string, shares: number): void {
+    // Update the BlackSwanService with this information
+    this.blackSwanService.setCurrentUserSymbol(symbol);
+    this.blackSwanService.setCurrentUserShares(shares);
+
+    // Re-schedule black swan event based on new position
+    this.blackSwanService.scheduleRandomBlackSwanEvent();
+  }
+
+  /**
+   * Manually trigger a black swan event
+   * @param symbol The stock symbol to affect
+   * @param eventType Type of event - crash or delist
+   * @param severity Severity level of the event
+   * @returns The created BlackSwanEvent
+   */
+  public triggerBlackSwanEvent(
+    symbol: string,
+    eventType: "crash" | "delist" = "crash",
+    severity: "severe" | "moderate" | "mild" = "severe"
+  ): BlackSwanEvent {
+    return this.blackSwanService.triggerBlackSwanEvent(
+      symbol,
+      eventType,
+      severity
+    );
   }
 }
