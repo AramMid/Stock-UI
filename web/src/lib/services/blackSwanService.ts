@@ -126,8 +126,6 @@ export class BlackSwanService {
     const eventType = Math.random() > 0.5 ? "crash" : "delist";
     const severity = eventType === "delist" ? 1.0 : 0.5 + Math.random() * 0.3; // 50-80% for crash
 
-
-
     const event: BlackSwanEvent = {
       id: eventId,
       symbol,
@@ -145,7 +143,7 @@ export class BlackSwanService {
     // Notify listeners
     this.listeners.forEach((listener) => listener(event));
     this.startFlashing();
-        
+
     // Auto-deactivate after 2 minutes
     setTimeout(() => {
       this.deactivateEvent(eventId);
@@ -268,8 +266,6 @@ export class BlackSwanService {
     if (this.autoTriggerInterval) {
       clearInterval(this.autoTriggerInterval);
     }
-
-
 
     // Trigger every 3 minutes (180000 ms)
     this.autoTriggerInterval = setInterval(() => {

@@ -2783,8 +2783,6 @@ export class MarketSimulationService {
   private handleBlackSwanEvent(
     event: import("./blackSwanService").BlackSwanEvent
   ): void {
-
-
     // Start flashing notification when a Black Swan event occurs
     this.blackSwanService.startFlashing();
 

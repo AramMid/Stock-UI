@@ -1,4 +1,5 @@
 // File: lib/hooks/useChart.ts - OPTIMIZED & FIXED + SESSION PERSISTENCE (PUBLIC ONLY)
+// ✅ FIX: Each symbol/timeframe/chartType has its own session (no data bleeding across symbols)
 import {
   useRef,
   useEffect,
@@ -90,7 +91,6 @@ type PersistedChartSession = {
   v: number;
   symbol: string;
   timeframe: string;
-  // NOTE: session is only for PUBLIC, but still keep field for compatibility
   isPrivateMode: boolean;
   chartType: "candlestick" | "line" | "area";
   savedAt: number;
@@ -725,7 +725,6 @@ export function useChart({
       enableTrendlineDrawing,
       trendlines,
       isPrivateMode,
-      isPrivateMode,
       chartToCanvas,
     ]
   );
@@ -1033,6 +1032,25 @@ export function useChart({
 
     setChartsReady(true);
 
+    // ✅ FIX: reset dataRef (ref keeps old symbol's data if not cleared)
+    dataRef.current.bars = [];
+    dataRef.current.closes = [];
+    dataRef.current.volumes = [];
+    dataRef.current.lastBar = null;
+
+    // ✅ FIX: clear series so old symbol data won't flash/bleed
+    try {
+      seriesRef.current.priceSeries?.setData([]);
+      seriesRef.current.volumeSeries?.setData([]);
+      seriesRef.current.smaSeries?.setData([]);
+      seriesRef.current.emaSeries?.setData([]);
+      seriesRef.current.bbUpperSeries?.setData([]);
+      seriesRef.current.bbMiddleSeries?.setData([]);
+      seriesRef.current.bbLowerSeries?.setData([]);
+      seriesRef.current.rsiSeries?.setData([]);
+      seriesRef.current.macdLineSeries?.setData([]);
+    } catch {}
+
     const setupCrosshairHandler = () => {
       const onVol = onVolumeUpdateRef.current;
       if (!onVol) return;
@@ -1190,69 +1208,69 @@ export function useChart({
           bars.push(next);
           closes.push(next.close);
           dataRef.current.lastBar = next;
+
           // ===== UPDATE INDICATORS REAL-TIME =====
-const closesArr = dataRef.current.closes;
+          const closesArr = dataRef.current.closes;
 
-// SMA / EMA
-const smaArr = calculateSMA(closesArr, 14);
-const emaArr = calculateEMA(closesArr, 14);
+          // SMA / EMA
+          const smaArr = calculateSMA(closesArr, 14);
+          const emaArr = calculateEMA(closesArr, 14);
 
-// RSI
-const rsiArr = calculateRSI(closesArr, 14);
+          // RSI
+          const rsiArr = calculateRSI(closesArr, 14);
 
-// MACD
-const macdObj = calculateMACD(closesArr);
+          // MACD
+          const macdObj = calculateMACD(closesArr);
 
-// Bollinger Bands
-const bb = calculateBollingerBands(closesArr, 20);
+          // Bollinger Bands
+          const bb = calculateBollingerBands(closesArr, 20);
 
-const idx = closesArr.length - 1;
-const t = next.time as Time;
+          const idx = closesArr.length - 1;
+          const t = next.time as Time;
 
-// --- SMA / EMA ---
-seriesRef.current.smaSeries?.update({
-  time: t,
-  value: smaArr[idx],
-});
+          // --- SMA / EMA ---
+          seriesRef.current.smaSeries?.update({
+            time: t,
+            value: smaArr[idx],
+          });
 
-seriesRef.current.emaSeries?.update({
-  time: t,
-  value: emaArr[idx],
-});
+          seriesRef.current.emaSeries?.update({
+            time: t,
+            value: emaArr[idx],
+          });
 
-// --- RSI ---
-if (seriesRef.current.rsiSeries && rsiArr[idx] !== undefined) {
-  seriesRef.current.rsiSeries.update({
-    time: t,
-    value: rsiArr[idx],
-  });
-}
+          // --- RSI ---
+          if (seriesRef.current.rsiSeries && rsiArr[idx] !== undefined) {
+            seriesRef.current.rsiSeries.update({
+              time: t,
+              value: rsiArr[idx],
+            });
+          }
 
-// --- MACD ---
-if (
-  seriesRef.current.macdLineSeries &&
-  macdObj.macdLine[idx] !== undefined
-) {
-  seriesRef.current.macdLineSeries.update({
-    time: t,
-    value: macdObj.macdLine[idx],
-  });
-}
+          // --- MACD ---
+          if (
+            seriesRef.current.macdLineSeries &&
+            macdObj.macdLine[idx] !== undefined
+          ) {
+            seriesRef.current.macdLineSeries.update({
+              time: t,
+              value: macdObj.macdLine[idx],
+            });
+          }
 
-// --- Bollinger Bands ---
-seriesRef.current.bbUpperSeries?.update({
-  time: t,
-  value: bb.upper[idx],
-});
-seriesRef.current.bbMiddleSeries?.update({
-  time: t,
-  value: bb.middle[idx],
-});
-seriesRef.current.bbLowerSeries?.update({
-  time: t,
-  value: bb.lower[idx],
-});
-
+          // --- Bollinger Bands ---
+          seriesRef.current.bbUpperSeries?.update({
+            time: t,
+            value: bb.upper[idx],
+          });
+          seriesRef.current.bbMiddleSeries?.update({
+            time: t,
+            value: bb.middle[idx],
+          });
+          seriesRef.current.bbLowerSeries?.update({
+            time: t,
+            value: bb.lower[idx],
+          });
 
           try {
             if (chartType === "candlestick") {
@@ -1364,6 +1382,9 @@ seriesRef.current.bbLowerSeries?.update({
     } catch {}
 
     // ===== RESTORE SESSION BEFORE FETCH (PUBLIC ONLY) =====
+    // ✅ FIX: do NOT use dataRef.current.bars.length to decide merge (it may contain previous symbol)
+    let restoredUsed = false;
+
     if (!isPrivateMode) {
       persistKeyRef.current = buildSessionKey(symbol, timeframe, chartType);
       const restored = loadChartSession(persistKeyRef.current);
@@ -1374,7 +1395,6 @@ seriesRef.current.bbLowerSeries?.update({
           const restoredPublic = restored.trendlines
             .filter((t) => !t.isPrivate)
             .map((t) => ({ ...t, isPrivate: false }));
-          // merge: keep any existing private lines in state (if any), but normally private won't persist anyway
           setTrendlines((prev) => {
             const keepPrivate = prev.filter((t) => t.isPrivate);
             return [...keepPrivate, ...restoredPublic];
@@ -1383,6 +1403,7 @@ seriesRef.current.bbLowerSeries?.update({
 
         const restoredBars = sanitizeBarsForUse(restored.bars);
         if (restoredBars.length > 0) {
+          restoredUsed = true;
           initFromData(restoredBars);
           setTimeout(() => startReplay(), 300);
         }
@@ -1396,11 +1417,9 @@ seriesRef.current.bbLowerSeries?.update({
       try {
         const fetched = await fetchYahooSeries(symbol, timeframe, isPrivateMode);
 
-        const hasRestored = !isPrivateMode && dataRef.current.bars.length > 0;
+        // ✅ Only merge if THIS symbol actually restored from its own session
         initFromData(
-          hasRestored
-            ? mergeBarsByTime(dataRef.current.bars, fetched)
-            : fetched
+          restoredUsed ? mergeBarsByTime(dataRef.current.bars, fetched) : fetched
         );
 
         // Replay only for PUBLIC
@@ -1474,7 +1493,11 @@ seriesRef.current.bbLowerSeries?.update({
         if (rsiChart) rsiChart.remove();
         if (macdChart) macdChart.remove();
 
-        chartsRef.current = { mainChart: null, rsiChart: null, macdChart: null };
+        chartsRef.current = {
+          mainChart: null,
+          rsiChart: null,
+          macdChart: null,
+        };
       } catch {}
     };
 
