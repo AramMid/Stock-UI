@@ -2073,7 +2073,12 @@ export default function AccountManagerSection({
                         <span>BID (Buy orders)</span>
                         <span>Price - Volume - Orders</span>
                       </div>
-                      <table className="w-full text-xs">
+                      <table className="w-full text-xs table-fixed">
+                        <colgroup>
+                          <col className="w-[38%]" />
+                          <col className="w-[42%]" />
+                          <col className="w-[20%]" />
+                        </colgroup>
                         <thead>
                           <tr
                             className={`text-left ${
@@ -2091,6 +2096,7 @@ export default function AccountManagerSection({
                             </th>
                           </tr>
                         </thead>
+
                         <tbody>
                           {orderBook?.bids.map((level, i) => {
                             const vols =
@@ -2112,20 +2118,24 @@ export default function AccountManagerSection({
                                   onOpenOrderPanel &&
                                   onOpenOrderPanel("buy", toNumber((level as any)?.price, 0))
                                 }
-                                className="cursor-pointer relative hover:opacity-90 transition-all group"
+                                className="cursor-pointer hover:opacity-90 transition-all group"
                               >
-                                <td
-                                  className="absolute right-0 top-0 bottom-0 bg-emerald-500/10 z-0 group-hover:bg-emerald-500/20"
-                                  style={{ width: `${widthPercent}%` }}
-                                ></td>
-                                <td className="relative z-10 py-1.5 px-3 font-mono text-emerald-400 font-medium">
-                                  {formatVNDCurrency(toNumber((level as any)?.price, 0))}
-                                </td>
-                                <td className="relative z-10 py-1.5 px-3 text-right font-mono text-gray-300">
-                                  {toNumber((level as any)?.totalQuantity, 0).toLocaleString()}
-                                </td>
-                                <td className="relative z-10 py-1.5 px-3 text-right font-mono text-gray-300">
-                                  {toNumber((level as any)?.orderCount, 0)}
+                                <td colSpan={3} className="relative p-0">
+                                  <div
+                                    className="absolute right-0 top-0 bottom-0 bg-emerald-500/10 z-0 group-hover:bg-emerald-500/20"
+                                    style={{ width: `${widthPercent}%` }}
+                                  />
+                                  <div className="relative z-10 grid grid-cols-[38%_42%_20%]">
+                                    <div className="py-1.5 px-3 font-mono text-emerald-400 font-medium">
+                                      {formatVNDCurrency(toNumber((level as any)?.price, 0))}
+                                    </div>
+                                    <div className="py-1.5 px-3 text-right font-mono text-gray-300">
+                                      {toNumber((level as any)?.totalQuantity, 0).toLocaleString()}
+                                    </div>
+                                    <div className="py-1.5 px-3 text-right font-mono text-gray-300">
+                                      {toNumber((level as any)?.orderCount, 0)}
+                                    </div>
+                                  </div>
                                 </td>
                               </tr>
                             );
@@ -2162,7 +2172,12 @@ export default function AccountManagerSection({
                         <span>ASK (Sell orders)</span>
                         <span>Price - Volume - Orders</span>
                       </div>
-                      <table className="w-full text-xs">
+                      <table className="w-full text-xs table-fixed">
+                        <colgroup>
+                          <col className="w-[38%]" />
+                          <col className="w-[42%]" />
+                          <col className="w-[20%]" />
+                        </colgroup>
                         <thead>
                           <tr
                             className={`text-left ${
@@ -2180,6 +2195,7 @@ export default function AccountManagerSection({
                             </th>
                           </tr>
                         </thead>
+
                         <tbody>
                           {orderBook?.asks.map((level, i) => {
                             const vols =
@@ -2201,20 +2217,24 @@ export default function AccountManagerSection({
                                   onOpenOrderPanel &&
                                   onOpenOrderPanel("sell", toNumber((level as any)?.price, 0))
                                 }
-                                className="cursor-pointer relative hover:opacity-90 transition-all group"
+                                className="cursor-pointer hover:opacity-90 transition-all group"
                               >
-                                <td
-                                  className="absolute right-0 top-0 bottom-0 bg-rose-500/10 z-0 group-hover:bg-rose-500/20"
-                                  style={{ width: `${widthPercent}%` }}
-                                ></td>
-                                <td className="relative z-10 py-1.5 px-3 font-mono text-rose-400 font-medium">
-                                  {formatVNDCurrency(toNumber((level as any)?.price, 0))}
-                                </td>
-                                <td className="relative z-10 py-1.5 px-3 text-right font-mono text-gray-300">
-                                  {toNumber((level as any)?.totalQuantity, 0).toLocaleString()}
-                                </td>
-                                <td className="relative z-10 py-1.5 px-3 text-right font-mono text-gray-300">
-                                  {toNumber((level as any)?.orderCount, 0)}
+                                <td colSpan={3} className="relative p-0">
+                                  <div
+                                    className="absolute right-0 top-0 bottom-0 bg-rose-500/10 z-0 group-hover:bg-rose-500/20"
+                                    style={{ width: `${widthPercent}%` }}
+                                  />
+                                  <div className="relative z-10 grid grid-cols-[38%_42%_20%]">
+                                    <div className="py-1.5 px-3 font-mono text-rose-400 font-medium">
+                                      {formatVNDCurrency(toNumber((level as any)?.price, 0))}
+                                    </div>
+                                    <div className="py-1.5 px-3 text-right font-mono text-gray-300">
+                                      {toNumber((level as any)?.totalQuantity, 0).toLocaleString()}
+                                    </div>
+                                    <div className="py-1.5 px-3 text-right font-mono text-gray-300">
+                                      {toNumber((level as any)?.orderCount, 0)}
+                                    </div>
+                                  </div>
                                 </td>
                               </tr>
                             );

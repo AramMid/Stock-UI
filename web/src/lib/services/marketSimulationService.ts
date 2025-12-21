@@ -261,7 +261,7 @@ const PARAMS = {
 
   BASE_PRICE_VOLATILITY: 0.003,
   BASE_VOLUME: 2000,
-  PRICE_UPDATE_INTERVAL: 1000,
+  PRICE_UPDATE_INTERVAL: 60000,
   VOLATILITY_WINDOW: 20,
   VOLUME_PROFILE_SIZE: 50,
 
@@ -295,6 +295,34 @@ const SYMBOLS = {
   "MSN.VN": { price: 0, lotSize: 100, tickSize: 100 },
 };
 
+// ===== Tick/Price helpers =====
+const isVnSymbol = (symbol: string) => symbol.includes('.VN');
+
+const getTickSize = (symbol: string): number => {
+  const cfg = (SYMBOLS as Record<string, { tickSize: number }>)[symbol];
+  if (cfg && Number.isFinite(cfg.tickSize) && cfg.tickSize > 0) return cfg.tickSize;
+  return isVnSymbol(symbol) ? 100 : 0.01;
+};
+
+const roundToTick = (symbol: string, price: number): number => {
+  const tick = getTickSize(symbol);
+  if (!Number.isFinite(price)) return 0;
+  if (tick <= 0) return price;
+  const rounded = Math.round(price / tick) * tick;
+  // VN: integer ticks; Non-VN: keep 2 decimals by default
+  return isVnSymbol(symbol) ? Math.max(0, Math.round(rounded)) : Number(rounded.toFixed(2));
+};
+
+const getFallbackInitialPrice = (symbol: string): number => {
+  // Choose a reasonable initial band, then round to tick
+  if (isVnSymbol(symbol)) {
+    const base = 20000 + Math.random() * 80000; // 20k - 100k VND
+    return roundToTick(symbol, base);
+  }
+  return roundToTick(symbol, 100 + Math.random() * 200);
+};
+
+
 export class MarketSimulationService {
   private bots: Bot[] = [];
   private botPositions = new Map<string, BotPosition>();
@@ -310,7 +338,7 @@ export class MarketSimulationService {
   private simulationInterval: NodeJS.Timeout | null = null;
   private stabilizerInterval: NodeJS.Timeout | null = null;
   private stabilityCheckInterval: NodeJS.Timeout | null = null;
-  private onUpdateCallback: ((data: SimulatedMarketData) => void) | null = null;
+  private updateListeners = new Set<(data: SimulatedMarketData) => void>();
   private isRunning = false;
   private webSocketService: WebSocketService;
   private blackSwanService: BlackSwanService;
@@ -479,9 +507,10 @@ export class MarketSimulationService {
 
   private initializeMarketData() {
     Object.entries(SYMBOLS).forEach(([symbol, data]) => {
+      const initialPrice = Number.isFinite(data.price) && data.price > 0 ? roundToTick(symbol, data.price) : getFallbackInitialPrice(symbol);
       const marketData: SimulatedMarketData = {
         symbol,
-        price: data.price,
+        price: initialPrice,
         volume: PARAMS.BASE_VOLUME,
         timestamp: Date.now(),
         bidDepth: [],
@@ -491,13 +520,13 @@ export class MarketSimulationService {
         volumeProfile: new Map(),
       };
       this.marketData.set(symbol, marketData);
-      this.priceHistory.set(symbol, [data.price]);
+      this.priceHistory.set(symbol, [initialPrice]);
       this.volumeHistory.set(symbol, [PARAMS.BASE_VOLUME]);
 
       for (let i = 0; i < PARAMS.VOLUME_PROFILE_SIZE; i++) {
         const priceLevel =
-          data.price * (1 + (i - PARAMS.VOLUME_PROFILE_SIZE / 2) * 0.001);
-        marketData.volumeProfile.set(priceLevel, 0);
+          initialPrice * (1 + (i - PARAMS.VOLUME_PROFILE_SIZE / 2) * 0.001);
+        marketData.volumeProfile.set(roundToTick(symbol, priceLevel), 0);
       }
 
       this.updateMarketDepth(marketData, PARAMS.BASE_PRICE_VOLATILITY);
@@ -516,12 +545,20 @@ export class MarketSimulationService {
     });
   }
 
-  public startSimulation(onUpdate: (data: SimulatedMarketData) => void) {
-    if (this.isRunning) return;
-    this.onUpdateCallback = onUpdate;
+  public subscribe(listener: (data: SimulatedMarketData) => void) {
+    this.updateListeners.add(listener);
+    return () => {
+      this.updateListeners.delete(listener);
+    };
+  }
+
+  public startSimulation(onUpdate?: (data: SimulatedMarketData) => void) {
+    // Allow multiple listeners. Calling startSimulation again will just attach a new listener.
+    const unsubscribe = onUpdate ? this.subscribe(onUpdate) : () => {};
+    if (this.isRunning) return unsubscribe;
     this.isRunning = true;
 
-    // Main simulation interval
+    // Main simulation interval (order book + price update).
     this.simulationInterval = setInterval(
       () => this.updateMarket(),
       PARAMS.PRICE_UPDATE_INTERVAL
@@ -535,12 +572,10 @@ export class MarketSimulationService {
 
     // Stability check interval
     this.stabilityCheckInterval = setInterval(
-      () => this.checkOrderBookStability(),
+      this.performStabilityCheck.bind(this),
       PARAMS.ORDER_BOOK_STABILITY_CHECK_INTERVAL
     );
-
-    // Market simulation started with stabilizer bots
-  }
+    return unsubscribe;  }
 
   public stopSimulation() {
     if (this.simulationInterval) {
@@ -572,6 +607,14 @@ export class MarketSimulationService {
     this.marketData.forEach((marketData, symbol) => {
       const dynamicVolatility = this.calculateDynamicVolatility(symbol);
       marketData.volatility = dynamicVolatility;
+
+      // Safety: if price becomes invalid, re-seed it to avoid broken order books (e.g., 0 => 100/200 levels).
+      if (!Number.isFinite(marketData.price) || marketData.price <= 0) {
+        marketData.price = getFallbackInitialPrice(symbol);
+        const hist = this.priceHistory.get(symbol) || [];
+        this.priceHistory.set(symbol, [...hist.slice(-PARAMS.VOLATILITY_WINDOW), marketData.price]);
+      }
+
 
       this.applyTrendEffects(marketData);
 
@@ -630,8 +673,16 @@ export class MarketSimulationService {
         (t) => Date.now() - t.timestamp < 60000
       );
 
-      if (this.onUpdateCallback) {
-        this.onUpdateCallback({ ...marketData });
+      if (this.updateListeners.size > 0) {
+        const snapshot = { ...marketData };
+        this.updateListeners.forEach((cb) => {
+          try {
+            cb(snapshot);
+          } catch (err) {
+            // Never let a consumer crash the simulation loop
+            console.error('[MarketSimulationService] update listener error', err);
+          }
+        });
       }
     });
   }
@@ -715,9 +766,7 @@ export class MarketSimulationService {
         const priceStep = dynamicSpread * (i + 1);
 
         // Round price based on symbol type
-        const bidPrice = symbol.includes(".VN")
-          ? Math.round((currentPrice - priceStep) / 100) * 100
-          : parseFloat((currentPrice - priceStep).toFixed(2));
+        const bidPrice = roundToTick(symbol, currentPrice - priceStep);
 
         // Make quantity more dynamic based on current price
         const dynamicMinQty = symbol.includes(".VN")
@@ -750,9 +799,7 @@ export class MarketSimulationService {
         const priceStep = dynamicSpread * (i + 1);
 
         // Round price based on symbol type
-        const askPrice = symbol.includes(".VN")
-          ? Math.round((currentPrice + priceStep) / 100) * 100
-          : parseFloat((currentPrice + priceStep).toFixed(2));
+        const askPrice = roundToTick(symbol, currentPrice + priceStep);
 
         // Make quantity more dynamic based on current price
         const dynamicMinQty = symbol.includes(".VN")
@@ -802,7 +849,7 @@ export class MarketSimulationService {
           );
 
           marketData.bidDepth.splice(i + 1, 0, {
-            price: Math.round(fillPrice / 100) * 100,
+            price: roundToTick(symbol, fillPrice),
             quantity: fillQuantity,
             type: "stabilizer",
             expiry: now + this.getStaggeredExpiryTime(),
@@ -831,7 +878,7 @@ export class MarketSimulationService {
           );
 
           marketData.askDepth.splice(i + 1, 0, {
-            price: Math.round(fillPrice / 100) * 100,
+            price: roundToTick(symbol, fillPrice),
             quantity: fillQuantity,
             type: "stabilizer",
             expiry: now + this.getStaggeredExpiryTime(),
@@ -890,7 +937,8 @@ export class MarketSimulationService {
     const targetSpread = maxSpread * 0.7; // Nhắm đến 70% của max spread
 
     // Thêm bid order
-    const bidPrice = Math.round((currentPrice - targetSpread / 2) / 100) * 100;
+    const symbol = bot.symbol;
+    const bidPrice = roundToTick(symbol, currentPrice - targetSpread / 2);
     const bidQuantity = Math.floor(PARAMS.MARKET_MAKER_QUANTITY_RANGE[1] * 1.5);
 
     marketData.bidDepth.push({
@@ -903,7 +951,7 @@ export class MarketSimulationService {
     });
 
     // Thêm ask order
-    const askPrice = Math.round((currentPrice + targetSpread / 2) / 100) * 100;
+    const askPrice = roundToTick(symbol, currentPrice + targetSpread / 2);
     const askQuantity = Math.floor(PARAMS.MARKET_MAKER_QUANTITY_RANGE[1] * 1.5);
 
     marketData.askDepth.push({
@@ -916,6 +964,11 @@ export class MarketSimulationService {
     });
 
     // STABILIZER: Bot added liquidity to market data
+  }
+
+  // Wrapper used by stabilityCheckInterval
+  private performStabilityCheck() {
+    this.checkOrderBookStability();
   }
 
   private checkOrderBookStability() {
@@ -2568,7 +2621,7 @@ export class MarketSimulationService {
 
   private updateVolumeProfile(marketData: SimulatedMarketData) {
     const currentPrice = marketData.price;
-    const roundedPrice = Math.round(currentPrice / 100) * 100;
+    const roundedPrice = roundToTick(marketData.symbol, currentPrice);
 
     const currentVolume = marketData.volumeProfile.get(roundedPrice) || 0;
     marketData.volumeProfile.set(

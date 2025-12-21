@@ -137,6 +137,27 @@ const NAV_ITEMS: Array<{
   { id: "logout", label: "Log Out", icon: Icons.Logout, color: "red" },
 ];
 
+// =========================
+// CHART SESSION CLEANUP
+// =========================
+// Must match useChart.ts prefix
+const CHART_SESSION_PREFIX = "sim_chart_session_v1";
+
+const clearChartSessions = () => {
+  // remove chart sessions stored in sessionStorage
+  try {
+    const keys: string[] = [];
+    for (let i = 0; i < sessionStorage.length; i++) {
+      const k = sessionStorage.key(i);
+      if (!k) continue;
+      if (k.startsWith(CHART_SESSION_PREFIX)) keys.push(k);
+    }
+    keys.forEach((k) => sessionStorage.removeItem(k));
+  } catch {
+    // ignore
+  }
+};
+
 export default function SettingsPage() {
   const router = useRouter();
 
@@ -404,7 +425,9 @@ export default function SettingsPage() {
       // Update local UI state after success
       setUserData((prev) => ({
         ...prev,
-        ...(payload.first_name !== undefined ? { first_name: payload.first_name } : {}),
+        ...(payload.first_name !== undefined
+          ? { first_name: payload.first_name }
+          : {}),
         ...(payload.last_name !== undefined ? { last_name: payload.last_name } : {}),
         ...(payload.email !== undefined ? { email: payload.email } : {}),
         ...(payload.phone !== undefined ? { phone: payload.phone } : {}),
@@ -423,7 +446,7 @@ export default function SettingsPage() {
     }
   };
 
-  // ✅ NEW: Confirm Deposit -> wait 32s, call API at second 30
+  // ✅ Confirm Deposit -> wait 32s, call API at second 30
   const handleMoneyRequest = () => {
     if (isDepositing) return;
 
@@ -482,10 +505,17 @@ export default function SettingsPage() {
     }, 32_000);
   };
 
+  // ✅ UPDATED: Logout clears token + chart sessions
   const handleLogout = () => {
-    localStorage.removeItem("access_token");
-    localStorage.removeItem("sessionId");
-    router.push("/login");
+    try {
+      localStorage.removeItem("access_token");
+      localStorage.removeItem("sessionId");
+
+      // clear chart-related sessions (PUBLIC chart sessions stored in sessionStorage)
+      clearChartSessions();
+    } finally {
+      router.push("/login");
+    }
   };
 
   // Loading state
