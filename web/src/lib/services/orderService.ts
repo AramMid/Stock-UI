@@ -1,5 +1,6 @@
 import { Order } from "../order-management";
 import { TradingPosition } from "../types";
+import { validateOrderQuantity, roundDownToLotSize, getExchangeBySymbol, getFluctuationLimit } from "../position-sizing";
 
 export type OrderStatus = 'NEW' | 'PARTIALLY_FILLED' | 'FILLED' | 'CANCELED' | 'REJECTED';
 
@@ -41,6 +42,92 @@ export function executeOrder(order: OrderRequest, account: TradingPosition): Exe
     };
   }
 
+  // Validate order quantity according to Vietnamese exchange rules
+  const validation = validateOrderQuantity(order.quantity);
+  if (!validation.isValid) {
+    return {
+      orderId: `ORD${Date.now()}`,
+      status: 'REJECTED',
+      filledQuantity: 0,
+      errorMessage: validation.message
+    };
+  }
+  const FEE_RATE = 0.0015;
+const TAX_RATE = 0.001;
+
+type Side = "buy" | "sell";
+
+type PositionLot = {
+  qty: number;
+  avgCost: number; // giá vốn /1 cp, đã bao gồm phí BUY
+};
+
+type PnlState = {
+  cash: number;
+  realized: number;
+  positions: Record<string, PositionLot>; // key = symbol
+};
+
+function applyFill(
+  prev: PnlState,
+  fill: { symbol: string; side: Side; qty: number; price: number }
+): PnlState {
+  const { symbol, side, qty, price } = fill;
+  if (!Number.isFinite(qty) || qty <= 0) return prev;
+  if (!Number.isFinite(price) || price <= 0) return prev;
+
+  const positions = { ...prev.positions };
+  const pos = positions[symbol] ?? { qty: 0, avgCost: 0 };
+
+  const gross = price * qty;
+
+  if (side === "buy") {
+    const fee = gross * FEE_RATE;
+    const totalCost = gross + fee;
+
+    const newQty = pos.qty + qty;
+    const newAvgCost =
+      newQty > 0 ? (pos.qty * pos.avgCost + totalCost) / newQty : 0;
+
+    positions[symbol] = { qty: newQty, avgCost: newAvgCost };
+
+    return {
+      cash: prev.cash - totalCost,
+      realized: prev.realized,
+      positions,
+    };
+  }
+
+  // sell
+  const fee = gross * FEE_RATE;
+  const tax = gross * TAX_RATE;
+  const proceeds = gross - fee - tax;
+
+  const sellQty = Math.min(qty, pos.qty); // long-only guard
+  const realizedDelta = proceeds - pos.avgCost * sellQty;
+  const newQty = pos.qty - sellQty;
+
+  positions[symbol] = newQty > 0 ? { qty: newQty, avgCost: pos.avgCost } : { qty: 0, avgCost: 0 };
+
+  return {
+    cash: prev.cash + proceeds,
+    realized: prev.realized + realizedDelta,
+    positions,
+  };
+}
+
+function computeUnrealized(positions: Record<string, PositionLot>, lastPrices: Record<string, number>) {
+  let u = 0;
+  for (const [sym, p] of Object.entries(positions)) {
+    if (p.qty <= 0) continue;
+    const last = lastPrices[sym];
+    if (!Number.isFinite(last) || last <= 0) continue; // ✅ chống NaN
+    u += (last - p.avgCost) * p.qty;
+  }
+  return u;
+}
+
+
   // For market orders, use current price
   // For StopLimit orders, we need both stopPrice and price
   let executionPrice = 0;
@@ -65,8 +152,15 @@ export function executeOrder(order: OrderRequest, account: TradingPosition): Exe
 
   // Check if order can be filled
   const cost = order.quantity * executionPrice;
+
+  let totalCost = cost;
+if (order.type === 'buy') {
+    totalCost = cost * (1 + FEE_RATE);
+  } else if (order.type === 'sell') {
+    totalCost = cost * (1 + FEE_RATE + TAX_RATE);
+  }
   
-  if (order.type === 'buy' && account.cash < cost) {
+  if (order.type === 'buy' && account.cash < totalCost) {
     return {
       orderId: `ORD${Date.now()}`,
       status: 'REJECTED',
@@ -153,4 +247,18 @@ export function updateOrderStatus(
  */
 export function formatVND(value: number): string {
   return new Intl.NumberFormat('vi-VN').format(value);
+}
+
+/**
+ * Format currency in VND with currency symbol
+ * @param value Amount to format
+ * @returns Formatted VND string with currency symbol
+ */
+export function formatVNDCurrency(value: number): string {
+  return new Intl.NumberFormat('vi-VN', {
+    style: 'currency',
+    currency: 'VND',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0
+  }).format(value);
 }

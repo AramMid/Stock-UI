@@ -1,9 +1,51 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { TradingPosition } from "@/lib/types";
-import { Order } from "@/lib/order-management";
-import { orderBookService } from "@/lib/services/orderBookService";
+import { Order, formatVND, formatVNDCurrency } from "@/lib/order-management";
 import { OrderBook, OrderBookLevel } from "@/lib/types";
+import {
+  MarketSimulationService,
+  MarketDepthLevel,
+  SimulatedMarketData,
+} from "@/lib/services/marketSimulationService";
+import {
+  getOrders,
+  OrderResponse as BackendOrder,
+  CreateOrderDto,
+} from "@/lib/services/orderApiService";
+import { WebSocketService } from "@/lib/services/webSocketService";
+import {
+  OrderUpdate,
+  OrderUpdateCallback,
+} from "@/lib/services/webSocketService";
+
+// Suggestion data type
+interface SuggestionData {
+  price: number;
+  quantity: number;
+  reason: string;
+  winRate: number;
+  confidence: number; // 0-100%
+  riskLevel: "LOW" | "MEDIUM" | "HIGH";
+  type: "SCALPING" | "DAY_TRADING" | "SWING";
+  stopLoss?: number;
+  takeProfit?: number;
+  expectedProfit?: number;
+  expectedLoss?: number;
+  timeFrame: "IMMEDIATE" | "SHORT" | "MEDIUM";
+  marketCondition: "BULLISH" | "BEARISH" | "SIDEWAYS";
+}
+
+interface MarketAnalysis {
+  trendStrength: number;
+  volatility: number;
+  liquidityScore: number;
+  supportLevels: number[];
+  resistanceLevels: number[];
+  volumeAnalysis: "HIGH" | "NORMAL" | "LOW";
+  rsi: number | null;
+  vwap: number | null;
+}
 
 interface AccountManagerSectionProps {
   tradingPosition: TradingPosition;
@@ -16,8 +58,15 @@ interface AccountManagerSectionProps {
   onOpenPanel: () => void;
   onMaximizePanel: () => void;
   onRestorePanel: () => void;
+  onFullScreenStrategyTester?: () => void;
   orders: Order[];
-  onOpenOrderPanel?: (orderType: 'buy' | 'sell', price?: number) => void;
+  marketSimulation: MarketSimulationService | null;
+  onOpenOrderPanel?: (orderType: "buy" | "sell", price?: number) => void;
+  selectedSymbol?: string;
+  userBalance?: number; // Add userBalance prop
+  userName?: string; // Add userName prop
+  realizedPnl?: number;
+  unrealizedPnl?: number;
 }
 
 export default function AccountManagerSection({
@@ -31,53 +80,989 @@ export default function AccountManagerSection({
   onOpenPanel,
   onMaximizePanel,
   onRestorePanel,
+  onFullScreenStrategyTester,
   orders,
+  marketSimulation,
   onOpenOrderPanel,
+  selectedSymbol = "VIC.VN",
+  userBalance, // Destructure userBalance prop
+  userName, // Destructure userName prop
+  realizedPnl,
+  unrealizedPnl,
 }: AccountManagerSectionProps) {
-  const [activeTab, setActiveTab] = useState("Orders");
+  const [activeTab, setActiveTab] = useState("Order Book");
   const [orderBook, setOrderBook] = useState<OrderBook | null>(null);
+  const [marketAnalysis, setMarketAnalysis] = useState<MarketAnalysis | null>(
+    null
+  );
 
-  useEffect(() => {
-    // Initialize order book
-    setOrderBook(orderBookService.getOrderBook());
-    
-    // In a real implementation, this would subscribe to WebSocket updates
-    const interval = setInterval(() => {
-      orderBookService.matchOrders(); // Simulate order matching
-      setOrderBook(orderBookService.getOrderBook());
-    }, 3000);
-    
-    return () => clearInterval(interval);
-  }, []);
+  // Suggestion state
+  const [suggestedOrders, setSuggestedOrders] = useState<{
+    buy: SuggestionData | null;
+    sell: SuggestionData | null;
+  }>({ buy: null, sell: null });
 
-  // Format VND currency
-  const formatVND = (value: number) => {
-    return new Intl.NumberFormat('vi-VN').format(value);
+  // Suggestion history
+  const [suggestionHistory, setSuggestionHistory] = useState<SuggestionData[]>(
+    []
+  );
+
+  // Debug state
+  const [debugInfo, setDebugInfo] = useState<string>("Initializing...");
+  const [lastUpdateTime, setLastUpdateTime] = useState<Date>(new Date());
+
+  // ========================
+  // BACKEND ORDER HISTORY
+  // ========================
+  const [orderHistory, setOrderHistory] = useState<BackendOrder[]>([]);
+  const [loadingOrderHistory, setLoadingOrderHistory] = useState(false);
+  const [orderHistoryError, setOrderHistoryError] = useState<string | null>(
+    null
+  );
+
+  const getStatusBadge = (status: string) => {
+    const s = String(status).toUpperCase();
+
+    // ✅ FILLED xanh lá
+    if (s === "FILLED") {
+      return isDarkMode
+        ? "bg-emerald-900/30 text-emerald-400 border border-emerald-500/20"
+        : "bg-emerald-100 text-emerald-700 border border-emerald-200";
+    }
+
+    // ✅ CANCELLED / CANCELED / REJECTED đỏ
+    if (s === "CANCELLED" || s === "CANCELED" || s === "REJECTED") {
+      return isDarkMode
+        ? "bg-rose-900/30 text-rose-400 border border-rose-500/20"
+        : "bg-rose-100 text-rose-700 border border-rose-200";
+    }
+
+    // ⏳ các trạng thái đang chạy
+    if (s === "NEW" || s === "PENDING" || s === "PARTIALLY_FILLED") {
+      return isDarkMode
+        ? "bg-amber-900/30 text-amber-400 border border-amber-500/20"
+        : "bg-amber-100 text-amber-700 border border-amber-200";
+    }
+
+    // mặc định
+    return isDarkMode
+      ? "bg-gray-800 text-gray-300 border border-gray-700"
+      : "bg-gray-100 text-gray-700 border border-gray-200";
   };
 
-  const tabs = [
-    "Orders",
-    "Order History",
-    "Order Book",
-    "Balance History",
-  ];
+  // ========================
+  // ORDER SYNC STATE
+  // ========================
+  /**
+   * Lưu lại status cuối cùng đã được POST cho từng order.id
+   * để tránh POST lặp lại nhiều lần, đồng thời đảm bảo
+   * chỉ POST khi order chuyển sang trạng thái cuối.
+   */
+  const orderSyncStatusRef = useRef<Record<string, string>>({});
+
+  // ========================
+  // LẤY ORDER HISTORY TỪ BACKEND
+  // ========================
+  useEffect(() => {
+    if (activeTab !== "Order History") return;
+
+    let cancelled = false;
+
+    const fetchHistory = async () => {
+      try {
+        setLoadingOrderHistory(true);
+        setOrderHistoryError(null);
+
+        const data = await getOrders({
+          limit: 50,
+          offset: 0,
+        });
+
+        if (!cancelled) {
+          setOrderHistory(data);
+        }
+      } catch (err: unknown) {
+        console.error("Error fetching backend order history:", err);
+        if (!cancelled) {
+          setOrderHistoryError(
+            (err as Error)?.message || "Failed to load order history"
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingOrderHistory(false);
+        }
+      }
+    };
+
+    fetchHistory();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab]);
+
+  // =========================================================================
+  // EFFECT: WEBSOCKET SUBSCRIPTION FOR REAL-TIME ORDER UPDATES
+  // =========================================================================
+  useEffect(() => {
+    // Only subscribe when on Orders tab
+    if (activeTab !== "Orders") return;
+
+    // WebSocket service instance
+    const webSocketService = WebSocketService.getInstance();
+
+    // Track active subscriptions to clean up later
+    const subscriptions: { orderId: string; callback: OrderUpdateCallback }[] =
+      [];
+
+    // Callback function to handle order updates
+    const handleOrderUpdate = (update: OrderUpdate) => {
+      // Since orders is a prop, we can't directly update it
+      // The parent component should handle order updates
+      // We'll just log the update for now
+    };
+
+    // Subscribe to all existing orders
+    orders.forEach((order) => {
+      webSocketService.subscribe(order.id, handleOrderUpdate);
+      subscriptions.push({ orderId: order.id, callback: handleOrderUpdate });
+    });
+
+    // Cleanup subscriptions when component unmounts or tab changes
+    return () => {
+      subscriptions.forEach(({ orderId, callback }) => {
+        webSocketService.unsubscribe(orderId, callback);
+      });
+    };
+  }, [activeTab, orders]);
+
+  // =========================================================================
+  // HELPER: MAP STATUS FRONTEND -> BACKEND
+  // =========================================================================
+  // Only map final statuses that should be saved to database
+  const mapFrontendStatusToBackendStatus = (
+    status: string
+  ): "filled" | "cancelled" => {
+    switch (status) {
+      case "FILLED":
+        return "filled";
+      case "CANCELLED":
+        return "cancelled";
+      case "REJECTED": // ⬅️ gom về cancelled
+        return "cancelled";
+      // Any other status should not be saved to database
+      default:
+        throw new Error(`Unexpected status for database sync: ${status}`);
+    }
+  };
+
+  // =========================================================================
+  // HELPER: POST ORDER LÊN BACKEND (CHỈ KHI ĐÃ ĐỔI STATUS)
+  // =========================================================================
+  const syncOrderToBackend = async (
+    order: Order,
+    backendStatus: "filled" | "cancelled"
+  ) => {
+    // Create payload matching the NestJS DTO
+    const payload: CreateOrderDto = {
+      stockSymbol: order.symbol,
+      side: order.type, // "buy" | "sell"
+      quantity: order.quantity,
+      orderType: order.orderType?.toLowerCase() ?? "limit", // Convert to lowercase to match DTO
+      price: order.price !== undefined ? order.price : undefined, // Use undefined instead of null for optional fields
+      status: backendStatus, // Only "filled" or "cancelled" statuses
+      // Optional fields from DTO
+      filledQuantity: order.filledQuantity ?? undefined, // Use undefined for optional fields
+      filledPrice: order.filledPrice ?? order.price ?? undefined, // Use undefined for optional fields
+      commission: 0,
+      filledAt:
+        (order as unknown as { filledAt?: Date }).filledAt?.toISOString?.() ??
+        order.timestamp?.toISOString?.() ??
+        new Date().toISOString(),
+    };
+
+    try {
+      // Import the createOrder function
+      const orderApiService = await import("@/lib/services/orderApiService");
+
+      // Call the createOrder function which handles the correct API endpoint
+      await orderApiService.createOrder(payload);
+    } catch (error) {
+      // Không cập nhật ref ở đây để lần sau có thể retry nếu cần
+      throw error;
+    }
+  };
+
+  // =========================================================================
+  // EFFECT: CHỈ POST ORDER LÊN BACKEND KHI STATUS ĐÃ ĐỔI
+  // =========================================================================
+  // DISABLED: Order syncing is now handled by the home page component to prevent duplicates
+  // useEffect(() => {
+  //   if (!orders || orders.length === 0) return;
+  //
+  //   // Các trạng thái được coi là "cuối" / đáng để sync
+  //   // Theo yêu cầu: chỉ sync khi order có trạng thái FILLED hoặc REJECTED/CANCELLED
+  //   const finalStatuses = new Set(["FILLED", "REJECTED", "CANCELLED"]);
+  //
+  //   // Store timeout IDs for cleanup
+  //   const timeouts: NodeJS.Timeout[] = [];
+  //
+  //   orders.forEach((order) => {
+  //     const id = String(order.id);
+  //     const currentStatus = order.status;
+  //     const prevStatus = orderSyncStatusRef.current[id];
+  //
+  //     // Nếu status không thay đổi => không làm gì
+  //     if (currentStatus === prevStatus) return;
+  //
+  //     // Nếu status hiện tại chưa phải trạng thái cuối
+  //     // => chỉ cập nhật cache, không POST
+  //     if (!finalStatuses.has(currentStatus)) {
+  //       orderSyncStatusRef.current[id] = currentStatus;
+  //       return;
+  //     }
+  //
+  //     // Nếu trước đó đã từng sync 1 trạng thái cuối rồi
+  //     // => tránh POST lặp lại nhiều lần
+  //     if (prevStatus && finalStatuses.has(prevStatus)) {
+  //       orderSyncStatusRef.current[id] = currentStatus;
+  //       return;
+  //     }
+  //
+  //     // Only map and sync if this is a final status that should be saved to database
+  //     let timeoutId: NodeJS.Timeout | null = null;
+  //     try {
+  //       const backendStatus = mapFrontendStatusToBackendStatus(currentStatus);
+  //
+  //       // Thêm 1 giây delay trước khi gọi API (theo yêu cầu)
+  //       timeoutId = setTimeout(async () => {
+  //         try {
+  //           await syncOrderToBackend(order, backendStatus);
+  //           // Chỉ khi POST thành công mới đánh dấu là đã sync trạng thái này
+  //           orderSyncStatusRef.current[id] = currentStatus;
+  //         } catch (err) {
+  //           // Nếu lỗi, không cập nhật ref để có thể thử lại khi orders update
+  //           console.error(
+  //             "[OrderSync] Sync failed for order, will retry on next status change:",
+  //             id
+  //           );
+  //         }
+  //       }, 1000); // 1 giây delay theo yêu cầu
+  //
+  //       // Store timeout ID for cleanup
+  //       timeouts.push(timeoutId);
+  //     } catch (err) {
+  //       // This status should not be synced to database, just update the cache
+  //       console.debug("Status not synced to database (expected):", currentStatus);
+  //       orderSyncStatusRef.current[id] = currentStatus;
+  //       // Clean up timeout if it was created
+  //       if (timeoutId) {
+  //         clearTimeout(timeoutId);
+  //       }
+  //     }
+  //   });
+  //
+  //   // Cleanup all timeouts when component unmounts or orders change
+  //   return () => {
+  //     timeouts.forEach(timeoutId => clearTimeout(timeoutId));
+  //   };
+  // }, [orders]); // ⬅️ chỉ phụ thuộc vào orders
+
+  // ========================
+  // HELPERS (ANTI-NaN)
+  // ========================
+  const toNumber = (v: unknown, fallback = 0) => {
+    const n = typeof v === "number" ? v : Number(v);
+    return Number.isFinite(n) ? n : fallback;
+  };
+
+  const clamp = (v: number, min: number, max: number) =>
+    Math.max(min, Math.min(max, v));
+
+  // ========================
+  // MARKET SIMULATION EFFECT
+  // ========================
+  useEffect(() => {
+    const analyzeMarket = (
+      marketData: SimulatedMarketData,
+      bids: OrderBookLevel[],
+      asks: OrderBookLevel[]
+    ) => {
+      const priceHistory = bids
+        .concat(asks)
+        .map((l) => toNumber((l as any)?.price, 0))
+        .filter((p) => p > 0);
+
+      const trendStrength = calculateTrendStrength(priceHistory);
+      const volatility = calculateVolatility(priceHistory);
+
+      const totalBidVol = bids.reduce(
+        (acc, level) => acc + toNumber((level as any)?.totalQuantity, 0),
+        0
+      );
+      const totalAskVol = asks.reduce(
+        (acc, level) => acc + toNumber((level as any)?.totalQuantity, 0),
+        0
+      );
+      const liquidityScore = clamp(
+        ((totalBidVol + totalAskVol) / 100) || 0,
+        0,
+        100
+      );
+
+      const supportLevels = identifySupportLevels(bids);
+      const resistanceLevels = identifyResistanceLevels(asks);
+      const volumeAnalysis = analyzeVolume(totalBidVol + totalAskVol);
+
+      const rsiVal = toNumber((marketData as any)?.rsi, NaN);
+      const vwapVal = toNumber((marketData as any)?.vwap, NaN);
+
+      return {
+        trendStrength,
+        volatility,
+        liquidityScore,
+        supportLevels,
+        resistanceLevels,
+        volumeAnalysis,
+        rsi: Number.isFinite(rsiVal) ? rsiVal : null,
+        vwap: Number.isFinite(vwapVal) ? vwapVal : null,
+      };
+    };
+
+    const generateSmartSuggestion = (
+      analysis: MarketAnalysis,
+      marketData: SimulatedMarketData,
+      bids: OrderBookLevel[],
+      asks: OrderBookLevel[]
+    ): { buy: SuggestionData | null; sell: SuggestionData | null } => {
+      const currentPrice = toNumber((marketData as any)?.price, NaN);
+      if (!Number.isFinite(currentPrice) || currentPrice <= 0) {
+        setDebugInfo(
+          `Invalid current price from simulation (${String(
+            (marketData as any)?.price
+          )}), skip signals`
+        );
+        return { buy: null, sell: null };
+      }
+
+      const bestAsk = asks.length > 0 ? asks[0] : null;
+      const bestBid = bids.length > 0 ? bids[0] : null;
+
+      if (!bestAsk || !bestBid) {
+        setDebugInfo("No bid/ask data available");
+        return { buy: null, sell: null };
+      }
+
+      const marketCondition = determineMarketCondition(analysis, currentPrice);
+
+      const rsi = analysis.rsi ?? 50;
+      const isOversold = rsi < 35;
+      const isOverbought = rsi > 65;
+
+      const vwapBase = analysis.vwap ?? currentPrice;
+      const vwap = vwapBase > 0 ? vwapBase : currentPrice;
+      const vwapDiff = vwap > 0 ? ((currentPrice - vwap) / vwap) * 100 : 0;
+
+      let buySuggestion: SuggestionData | null = null;
+      let sellSuggestion: SuggestionData | null = null;
+
+      // BUY logic
+      const buyCondition =
+        analysis.trendStrength > 0.2 || isOversold || vwapDiff < -0.5;
+
+      if (buyCondition) {
+        const supportLevel =
+          analysis.supportLevels.length > 0
+            ? Math.max(...analysis.supportLevels)
+            : toNumber((bestBid as any)?.price, currentPrice) * 0.995;
+
+        const entryPrice = calculateOptimalEntryPrice(
+          "buy",
+          supportLevel,
+          currentPrice,
+          analysis
+        );
+        const stopLoss = entryPrice * 0.99; // -1%
+        const takeProfit = entryPrice * 1.02; // +2%
+
+        const winProbability = calculateWinProbability(
+          "buy",
+          analysis,
+          rsi,
+          vwapDiff
+        );
+        const confidence = calculateConfidence(analysis, winProbability);
+        const riskLevel = determineRiskLevel(
+          analysis.volatility,
+          winProbability
+        );
+
+        const expectedProfit = (takeProfit - entryPrice) * 100;
+        const expectedLoss = (entryPrice - stopLoss) * 100;
+        const safeExpectedLoss = toNumber(expectedLoss, 0);
+        const riskRewardRatio =
+          safeExpectedLoss > 0 ? expectedProfit / safeExpectedLoss : 0;
+
+        if (riskRewardRatio > 1.2 && winProbability > 45) {
+          buySuggestion = {
+            price: Math.round(entryPrice / 100) * 100,
+            quantity: calculatePositionSize(
+              entryPrice,
+              toNumber((tradingPosition as any)?.cash, 0),
+              riskLevel
+            ),
+            reason: generateBuyReason(analysis, rsi, vwapDiff),
+            winRate: Math.round(toNumber(winProbability, 0)),
+            confidence: Math.round(toNumber(confidence, 0)),
+            riskLevel,
+            type: determineTradeType(analysis.trendStrength),
+            stopLoss: Math.round(stopLoss / 100) * 100,
+            takeProfit: Math.round(takeProfit / 100) * 100,
+            expectedProfit: Math.round(toNumber(expectedProfit, 0)),
+            expectedLoss: Math.round(toNumber(expectedLoss, 0)),
+            timeFrame: determineTimeFrame(analysis.trendStrength),
+            marketCondition,
+          };
+
+          setDebugInfo(
+            `Created BUY signal: RRR=${toNumber(riskRewardRatio, 0)
+              .toFixed(2)
+              .toString()}, Win=${toNumber(winProbability, 0)}%`
+          );
+        } else {
+          setDebugInfo(
+            `BUY rejected: RRR=${toNumber(riskRewardRatio, 0)
+              .toFixed(2)
+              .toString()}, Win=${toNumber(winProbability, 0)}%`
+          );
+        }
+      }
+
+      // SELL logic
+      const sellCondition =
+        analysis.trendStrength < -0.15 || isOverbought || vwapDiff > 0.3;
+
+      if (sellCondition) {
+        const resistanceLevel =
+          analysis.resistanceLevels.length > 0
+            ? Math.min(...analysis.resistanceLevels)
+            : toNumber((bestAsk as any)?.price, currentPrice) * 1.005;
+
+        const entryPrice = Math.max(resistanceLevel, currentPrice * 1.002);
+        const stopLoss = entryPrice * 1.015; // +1.5%
+        const takeProfit = entryPrice * 0.985; // -1.5%
+
+        const winProbability = calculateWinProbability(
+          "sell",
+          analysis,
+          rsi,
+          vwapDiff
+        );
+        const confidence = calculateConfidence(analysis, winProbability);
+        const riskLevel = determineRiskLevel(
+          analysis.volatility,
+          winProbability
+        );
+
+        const expectedProfit = (entryPrice - takeProfit) * 100;
+        const expectedLoss = (stopLoss - entryPrice) * 100;
+        const safeExpectedLoss = toNumber(expectedLoss, 0);
+        const riskRewardRatio =
+          safeExpectedLoss > 0 ? expectedProfit / safeExpectedLoss : 0;
+
+        if (riskRewardRatio > 1.1 && winProbability > 40) {
+          sellSuggestion = {
+            price: Math.round(entryPrice / 100) * 100,
+            quantity: calculatePositionSize(
+              entryPrice,
+              toNumber((tradingPosition as any)?.cash, 0),
+              riskLevel
+            ),
+            reason: generateSellReason(analysis, rsi, vwapDiff),
+            winRate: Math.round(toNumber(winProbability, 0)),
+            confidence: Math.round(toNumber(confidence, 0)),
+            riskLevel,
+            type: determineTradeType(analysis.trendStrength),
+            stopLoss: Math.round(stopLoss / 100) * 100,
+            takeProfit: Math.round(takeProfit / 100) * 100,
+            expectedProfit: Math.round(toNumber(expectedProfit, 0)),
+            expectedLoss: Math.round(toNumber(expectedLoss, 0)),
+            timeFrame: determineTimeFrame(analysis.trendStrength),
+            marketCondition,
+          };
+
+          setDebugInfo(
+            `Created SELL signal: RRR=${toNumber(riskRewardRatio, 0)
+              .toFixed(2)
+              .toString()}, Win=${toNumber(winProbability, 0)}%`
+          );
+        } else {
+          setDebugInfo(
+            `SELL rejected: RRR=${toNumber(riskRewardRatio, 0)
+              .toFixed(2)
+              .toString()}, Win=${toNumber(winProbability, 0)}%`
+          );
+        }
+      }
+
+      // Fallback basic signals
+      if (
+        !buySuggestion &&
+        !sellSuggestion &&
+        Math.abs(toNumber(analysis.trendStrength, 0)) > 0.1
+      ) {
+        if (analysis.trendStrength > 0.1) {
+          buySuggestion = {
+            price: Math.round((currentPrice * 0.998) / 100) * 100,
+            quantity: 100,
+            reason: "Mild uptrend – potential long scalp",
+            winRate: 55,
+            confidence: 60,
+            riskLevel: "MEDIUM",
+            type: "SCALPING",
+            stopLoss: Math.round((currentPrice * 0.98) / 100) * 100,
+            takeProfit: Math.round((currentPrice * 1.02) / 100) * 100,
+            expectedProfit: 2000,
+            expectedLoss: 1000,
+            timeFrame: "IMMEDIATE",
+            marketCondition: "BULLISH",
+          };
+          setDebugInfo("Created basic BUY signal from mild uptrend");
+        } else if (analysis.trendStrength < -0.1) {
+          sellSuggestion = {
+            price: Math.round((currentPrice * 1.002) / 100) * 100,
+            quantity: 100,
+            reason: "Mild downtrend – potential short scalp",
+            winRate: 55,
+            confidence: 60,
+            riskLevel: "MEDIUM",
+            type: "SCALPING",
+            stopLoss: Math.round((currentPrice * 1.02) / 100) * 100,
+            takeProfit: Math.round((currentPrice * 0.98) / 100) * 100,
+            expectedProfit: 2000,
+            expectedLoss: 1000,
+            timeFrame: "IMMEDIATE",
+            marketCondition: "BEARISH",
+          };
+          setDebugInfo("Created basic SELL signal from mild downtrend");
+        }
+      }
+
+      return { buy: buySuggestion, sell: sellSuggestion };
+    };
+
+    const interval = setInterval(() => {
+      if (marketSimulation) {
+        const marketData = marketSimulation.getMarketData(selectedSymbol);
+        if (marketData) {
+          const cleanBidDepth = (marketData.bidDepth ?? []).filter(
+            (l) => Number.isFinite(toNumber((l as any)?.price, NaN)) && toNumber((l as any)?.price, 0) > 0
+          );
+          const cleanAskDepth = (marketData.askDepth ?? []).filter(
+            (l) => Number.isFinite(toNumber((l as any)?.price, NaN)) && toNumber((l as any)?.price, 0) > 0
+          );
+
+          const aggregateLevels = (depth: MarketDepthLevel[]) => {
+            const priceMap: {
+              [price: number]: { totalQuantity: number; orderCount: number };
+            } = {};
+
+            depth.forEach((level) => {
+              const p = toNumber((level as any)?.price, NaN);
+              const q = toNumber((level as any)?.quantity, 0);
+
+              if (!Number.isFinite(p) || p <= 0) return;
+
+              if (priceMap[p]) {
+                priceMap[p].totalQuantity += q;
+                priceMap[p].orderCount += 1;
+              } else {
+                priceMap[p] = {
+                  totalQuantity: q,
+                  orderCount: 1,
+                };
+              }
+            });
+
+            return Object.entries(priceMap)
+              .map(([price, data]) => ({
+                price: toNumber(price, 0),
+                totalQuantity: toNumber(data.totalQuantity, 0),
+                orderCount: toNumber(data.orderCount, 0),
+              }))
+              .slice(0, 20);
+          };
+
+          const bids = aggregateLevels(cleanBidDepth).sort(
+            (a, b) => toNumber(b.price, 0) - toNumber(a.price, 0)
+          );
+          const asks = aggregateLevels(cleanAskDepth).sort(
+            (a, b) => toNumber(a.price, 0) - toNumber(b.price, 0)
+          );
+
+          setOrderBook({
+            bids: bids.map((bid) => ({
+              price: toNumber(bid.price, 0),
+              totalQuantity: toNumber(bid.totalQuantity, 0),
+              orderCount: toNumber(bid.orderCount, 0),
+            })),
+            asks: asks.map((ask) => ({
+              price: toNumber(ask.price, 0),
+              totalQuantity: toNumber(ask.totalQuantity, 0),
+              orderCount: toNumber(ask.orderCount, 0),
+            })),
+            lastTradedPrice: toNumber((marketData as any)?.price, 0),
+            timestamp: new Date(),
+          });
+
+          const analysis = analyzeMarket(marketData, bids as any, asks as any);
+          setMarketAnalysis(analysis);
+
+          const suggestions = generateSmartSuggestion(
+            analysis,
+            marketData,
+            bids as any,
+            asks as any
+          );
+          setSuggestedOrders(suggestions);
+
+          if (suggestions.buy) {
+            setSuggestionHistory((prev) => [
+              suggestions.buy!,
+              ...prev.slice(0, 9),
+            ]);
+          }
+          if (suggestions.sell) {
+            setSuggestionHistory((prev) => [
+              suggestions.sell!,
+              ...prev.slice(0, 9),
+            ]);
+          }
+
+          setLastUpdateTime(new Date());
+        } else {
+          setDebugInfo(`No market data for symbol ${selectedSymbol}`);
+        }
+      } else {
+        setDebugInfo("Market simulation is not initialized");
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [marketSimulation, tradingPosition.cash, selectedSymbol]);
+
+  // =========================================================================
+  // HELPER FUNCTIONS
+  // =========================================================================
+
+  const calculateTrendStrength = (prices: number[]): number => {
+    const cleaned = (prices ?? []).filter((p) => Number.isFinite(p) && p > 0);
+    if (cleaned.length < 5) return 0;
+
+    const recentPrices = cleaned.slice(-5);
+    const base = toNumber(recentPrices[0], 0);
+    if (base <= 0) return 0;
+
+    const slope =
+      (toNumber(recentPrices[recentPrices.length - 1], base) - base) / base;
+
+    const v = slope * 20;
+    return clamp(v, -1, 1);
+  };
+
+  const calculateVolatility = (prices: number[]): number => {
+    const cleaned = (prices ?? []).filter((p) => Number.isFinite(p) && p > 0);
+    if (cleaned.length < 2) return 0;
+
+    const returns: number[] = [];
+    for (let i = 1; i < cleaned.length; i++) {
+      const prev = cleaned[i - 1];
+      const curr = cleaned[i];
+      if (!Number.isFinite(prev) || !Number.isFinite(curr) || prev <= 0 || curr <= 0)
+        continue;
+
+      const r = Math.log(curr / prev);
+      if (Number.isFinite(r)) returns.push(r);
+    }
+    if (returns.length === 0) return 0;
+
+    const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
+    const variance =
+      returns.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / returns.length;
+
+    const vol = Math.sqrt(variance * 252);
+    return Number.isFinite(vol) ? vol : 0;
+  };
+
+  const identifySupportLevels = (bids: OrderBookLevel[]): number[] => {
+    if (!bids || bids.length < 3) return [];
+    const levels: number[] = [];
+
+    const topBids = [...bids].sort((a, b) => toNumber((b as any)?.price, 0) - toNumber((a as any)?.price, 0)).slice(0, 3);
+    topBids.forEach((bid) => {
+      if (toNumber((bid as any)?.totalQuantity, 0) > 1000) {
+        levels.push(toNumber((bid as any)?.price, 0));
+      }
+    });
+
+    return levels.filter((x) => Number.isFinite(x) && x > 0);
+  };
+
+  const identifyResistanceLevels = (asks: OrderBookLevel[]): number[] => {
+    if (!asks || asks.length < 3) return [];
+    const levels: number[] = [];
+
+    const topAsks = [...asks].sort((a, b) => toNumber((a as any)?.price, 0) - toNumber((b as any)?.price, 0)).slice(0, 3);
+    topAsks.forEach((ask) => {
+      if (toNumber((ask as any)?.totalQuantity, 0) > 1000) {
+        levels.push(toNumber((ask as any)?.price, 0));
+      }
+    });
+
+    return levels.filter((x) => Number.isFinite(x) && x > 0);
+  };
+
+  const analyzeVolume = (totalVolume: number): "HIGH" | "NORMAL" | "LOW" => {
+    const v = toNumber(totalVolume, 0);
+    if (v > 20000) return "HIGH";
+    if (v > 5000) return "NORMAL";
+    return "LOW";
+  };
+
+  const determineMarketCondition = (
+    analysis: MarketAnalysis,
+    currentPrice: number
+  ): "BULLISH" | "BEARISH" | "SIDEWAYS" => {
+    const t = toNumber(analysis?.trendStrength, 0);
+    if (t > 0.1) return "BULLISH";
+    if (t < -0.1) return "BEARISH";
+    return "SIDEWAYS";
+  };
+
+  const calculateOptimalEntryPrice = (
+    type: "buy" | "sell",
+    level: number,
+    currentPrice: number,
+    analysis: MarketAnalysis
+  ): number => {
+    const lvl = toNumber(level, currentPrice);
+    const cp = toNumber(currentPrice, 0);
+
+    if (type === "buy") {
+      return Math.min(lvl, cp * 0.999);
+    } else {
+      return Math.max(lvl, cp * 1.001);
+    }
+  };
+
+  const calculateWinProbability = (
+    type: "buy" | "sell",
+    analysis: MarketAnalysis,
+    rsi: number,
+    vwapDiff: number
+  ): number => {
+    let baseProbability = 50;
+
+    baseProbability +=
+      type === "buy"
+        ? toNumber(analysis?.trendStrength, 0) * 20
+        : -toNumber(analysis?.trendStrength, 0) * 20;
+
+    if (type === "buy" && rsi < 35) baseProbability += 10;
+    if (type === "sell" && rsi > 65) baseProbability += 10;
+
+    if (type === "buy" && vwapDiff < -0.3) baseProbability += 8;
+    if (type === "sell" && vwapDiff > 0.3) baseProbability += 8;
+
+    if (toNumber(analysis?.liquidityScore, 0) > 30) baseProbability += 5;
+
+    return clamp(baseProbability, 30, 90);
+  };
+
+  const calculateConfidence = (
+    analysis: MarketAnalysis,
+    winProbability: number
+  ): number => {
+    let confidence = toNumber(winProbability, 0);
+
+    const t = toNumber(analysis?.trendStrength, 0);
+    if (t > 0.3 || t < -0.3) confidence += 10;
+    if (toNumber(analysis?.volatility, 0) < 0.03) confidence += 5;
+    if (toNumber(analysis?.liquidityScore, 0) > 20) confidence += 5;
+
+    return clamp(confidence, 0, 95);
+  };
+
+  const determineRiskLevel = (
+    volatility: number,
+    winProbability: number
+  ): "LOW" | "MEDIUM" | "HIGH" => {
+    const riskScore = toNumber(volatility, 0) * 100 + (100 - toNumber(winProbability, 0)) * 0.3;
+
+    if (riskScore < 40) return "LOW";
+    if (riskScore < 70) return "MEDIUM";
+    return "HIGH";
+  };
+
+  const calculatePositionSize = (
+    price: number,
+    availableCash: number,
+    riskLevel: "LOW" | "MEDIUM" | "HIGH"
+  ): number => {
+    const riskMultiplier = {
+      LOW: 0.08,
+      MEDIUM: 0.05,
+      HIGH: 0.02,
+    };
+
+    const p = toNumber(price, 0);
+    const cash = toNumber(availableCash, 0);
+
+    if (p <= 0 || cash <= 0) return 100;
+
+    const maxInvestment = cash * riskMultiplier[riskLevel];
+    const positionSize = Math.floor(maxInvestment / p / 100) * 100;
+
+    return clamp(Math.max(100, positionSize), 100, 1000);
+  };
+
+  const generateBuyReason = (
+    analysis: MarketAnalysis,
+    rsi: number,
+    vwapDiff: number
+  ): string => {
+    const reasons: string[] = [];
+
+    if (toNumber(analysis?.trendStrength, 0) > 0.2) reasons.push("Uptrend momentum");
+    if (rsi < 35) reasons.push("RSI in oversold zone");
+    if (vwapDiff < -0.5) reasons.push("Price trading below VWAP");
+    if ((analysis?.supportLevels?.length ?? 0) > 0)
+      reasons.push("Strong support level nearby");
+    if (analysis?.volumeAnalysis === "HIGH")
+      reasons.push("High volume confirming demand");
+
+    if (reasons.length === 0)
+      return "Potential long opportunity based on technical confluence";
+    return reasons.slice(0, 3).join(" • ");
+  };
+
+  const generateSellReason = (
+    analysis: MarketAnalysis,
+    rsi: number,
+    vwapDiff: number
+  ): string => {
+    const reasons: string[] = [];
+
+    if (toNumber(analysis?.trendStrength, 0) < -0.1) reasons.push("Downtrend momentum");
+    if (rsi > 60) reasons.push("RSI in overbought zone");
+    if (vwapDiff > 0.2) reasons.push("Price trading above VWAP");
+    if ((analysis?.resistanceLevels?.length ?? 0) > 0)
+      reasons.push("Key resistance zone overhead");
+    if (analysis?.volumeAnalysis === "HIGH")
+      reasons.push("High volume confirming selling pressure");
+    if (toNumber(analysis?.volatility, 0) > 0.02)
+      reasons.push("Elevated volatility – good short environment");
+
+    if (reasons.length === 0)
+      return "Potential short opportunity based on technical confluence";
+    return reasons.slice(0, 3).join(" • ");
+  };
+
+  const determineTradeType = (
+    trendStrength: number
+  ): "SCALPING" | "DAY_TRADING" | "SWING" => {
+    const absStrength = Math.abs(toNumber(trendStrength, 0));
+
+    if (absStrength > 0.3) return "SWING";
+    if (absStrength > 0.15) return "DAY_TRADING";
+    return "SCALPING";
+  };
+
+  const determineTimeFrame = (
+    trendStrength: number
+  ): "IMMEDIATE" | "SHORT" | "MEDIUM" => {
+    const absStrength = Math.abs(toNumber(trendStrength, 0));
+
+    if (absStrength > 0.2) return "MEDIUM";
+    if (absStrength > 0.08) return "SHORT";
+    return "IMMEDIATE";
+  };
+
+  const getRiskColor = (riskLevel: "LOW" | "MEDIUM" | "HIGH") => {
+    const colors = {
+      LOW: isDarkMode
+        ? "text-emerald-400 bg-emerald-400/10 border-emerald-400/20"
+        : "text-emerald-600 bg-emerald-100 border-emerald-200",
+      MEDIUM: isDarkMode
+        ? "text-amber-400 bg-amber-400/10 border-amber-400/20"
+        : "text-amber-600 bg-amber-100 border-amber-200",
+      HIGH: isDarkMode
+        ? "text-rose-400 bg-rose-400/10 border-rose-400/20"
+        : "text-rose-600 bg-rose-100 border-rose-200",
+    };
+    return colors[riskLevel];
+  };
+
+  const getTimeFrameColor = (timeFrame: "IMMEDIATE" | "SHORT" | "MEDIUM") => {
+    const colors = {
+      IMMEDIATE: isDarkMode
+        ? "text-sky-400 bg-sky-400/10 border-sky-400/20"
+        : "text-sky-600 bg-sky-100 border-sky-200",
+      SHORT: isDarkMode
+        ? "text-violet-400 bg-violet-400/10 border-violet-400/20"
+        : "text-violet-600 bg-violet-100 border-violet-200",
+      MEDIUM: isDarkMode
+        ? "text-indigo-400 bg-indigo-400/10 border-indigo-400/20"
+        : "text-indigo-600 bg-indigo-100 border-indigo-200",
+    };
+    return colors[timeFrame];
+  };
+
+  const getMarketConditionColor = (
+    condition: "BULLISH" | "BEARISH" | "SIDEWAYS"
+  ) => {
+    const colors = {
+      BULLISH: isDarkMode
+        ? "text-emerald-400 bg-emerald-400/10 border-emerald-400/20"
+        : "text-emerald-600 bg-emerald-100 border-emerald-200",
+      BEARISH: isDarkMode
+        ? "text-rose-400 bg-rose-400/10 border-rose-400/20"
+        : "text-rose-600 bg-rose-100 border-rose-200",
+      SIDEWAYS: isDarkMode
+        ? "text-slate-400 bg-slate-400/10 border-slate-400/20"
+        : "text-slate-600 bg-slate-100 border-slate-200",
+    };
+    return colors[condition];
+  };
+
+  const tabs = ["Orders", "Order Book", "Order History", "AI Insights"];
+
+  // Balance: ưu tiên userBalance (từ backend), fallback tradingPosition.cash
+  const balance = toNumber(userBalance, toNumber(tradingPosition.cash, 0));
+
+  // ✅ IMPORTANT: use props from Home (FIFO ledger)
+  const realized = toNumber(realizedPnl, 0);
+  const unrealized = toNumber(
+    unrealizedPnl,
+    toNumber((tradingPosition as any)?.pnl, 0) // fallback nếu bạn có pnl trong tradingPosition
+  );
+
+  // ✅ Equity đúng nghĩa: cash + realized + unrealized
+  const equity = balance + realized + unrealized;
 
   const metrics = [
-    { label: "Account Balance", value: formatVND(tradingPosition.cash) },
-    { label: "Equity", value: formatVND(tradingPosition.cash + tradingPosition.pnl) },
-    { label: "Realized P&L", value: "0.00" },
-    { label: "Unrealized P&L", value: formatVND(tradingPosition.pnl) },
-    { label: "Account margin", value: "0.00", info: true },
-    { label: "Available funds", value: formatVND(tradingPosition.cash), info: true },
-    { label: "Orders margin", value: "0.00", info: true },
+    { label: "Account Balance", value: formatVNDCurrency(balance) },
+    { label: "Equity", value: formatVNDCurrency(equity) },
+    { label: "Realized P&L", value: formatVNDCurrency(realized) },
+    { label: "Unrealized P&L", value: formatVNDCurrency(unrealized) },
+    { label: "Available Funds", value: formatVNDCurrency(balance), info: true },
   ];
 
   return (
     <div
       className={`border rounded overflow-hidden relative flex flex-col transition-colors duration-200 ${
-        isDarkMode
-          ? "bg-[#131722] border-[#2a2e39]"
-          : "bg-white border-gray-200"
+        isDarkMode ? "bg-[#0f1219] border-[#1e222d]" : "bg-white border-gray-200"
       }`}
       style={{
         willChange: isDragging ? "height" : "auto",
@@ -85,49 +1070,112 @@ export default function AccountManagerSection({
         height: "100%",
       }}
     >
-      {/* --- HEADER SECTION (Removed Paper Trading) --- */}
+      {/* HEADER */}
       <div
         className={`flex-none flex items-center justify-between px-4 py-3 border-b select-none ${
           isDarkMode
-            ? "border-[#2a2e39] text-[#d1d4dc]"
+            ? "border-[#1e222d] text-gray-300"
             : "border-gray-200 text-gray-900"
         }`}
       >
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2 text-sm opacity-80">
-            <span>vuvuihoc123 VND</span>
-          </div>
-           {/* Settings Icon */}
-           <div className="cursor-pointer hover:text-blue-500 ml-2">
-             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M12 2L2 7L2 17L12 22L22 17L22 7L12 2Z" strokeLinecap="round" strokeLinejoin="round"/>
-              <circle cx="12" cy="12" r="3" />
-            </svg>
+            <span className="font-bold bg-gradient-to-r from-blue-500 to-cyan-400 bg-clip-text text-transparent">
+              AI TRADING ASSISTANT
+            </span>
+            <span className="text-gray-500">•</span>
+            <span>{userName || "User"}</span>
           </div>
         </div>
 
         {/* Window Controls */}
         <div className="flex items-center gap-1">
           {!isAccountCollapsed && chartAccountSplit < 90 && (
-            <button onClick={onCollapsePanel} className={`p-1.5 rounded hover:bg-gray-700/50 ${isDarkMode ? "text-gray-400" : "text-gray-600"}`}>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="6,9 12,15 18,9"></polyline></svg>
+            <button
+              onClick={onCollapsePanel}
+              className={`p-1.5 rounded hover:bg-gray-700/50 ${
+                isDarkMode ? "text-gray-400" : "text-gray-600"
+              }`}
+            >
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <polyline points="6,9 12,15 18,9"></polyline>
+              </svg>
             </button>
           )}
           {isAccountCollapsed && (
-            <button onClick={onOpenPanel} className={`p-1.5 rounded hover:bg-gray-700/50 ${isDarkMode ? "text-gray-400" : "text-gray-600"}`}>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="18,15 12,9 6,15"></polyline></svg>
+            <button
+              onClick={onOpenPanel}
+              className={`p-1.5 rounded hover:bg-gray-700/50 ${
+                isDarkMode ? "text-gray-400" : "text-gray-600"
+              }`}
+            >
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <polyline points="18,15 12,9 6,15"></polyline>
+              </svg>
             </button>
           )}
-          <button onClick={isAccountMaximized ? onRestorePanel : onMaximizePanel} className={`p-1.5 rounded hover:bg-gray-700/50 ${isDarkMode ? "text-gray-400" : "text-gray-600"}`}>
-             {isAccountMaximized ? (
-               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          {activeTab === "Strategy Tester" && onFullScreenStrategyTester && (
+            <button
+              onClick={onFullScreenStrategyTester}
+              className={`p-1.5 rounded hover:bg-gray-700/50 ${
+                isDarkMode ? "text-gray-400" : "text-gray-600"
+              }`}
+            >
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path>
+              </svg>
+            </button>
+          )}
+          <button
+            onClick={isAccountMaximized ? onRestorePanel : onMaximizePanel}
+            className={`p-1.5 rounded hover:bg-gray-700/50 ${
+              isDarkMode ? "text-gray-400" : "text-gray-600"
+            }`}
+          >
+            {isAccountMaximized ? (
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
                 <polyline points="4,14 10,14 10,20"></polyline>
                 <polyline points="20,10 14,10 14,4"></polyline>
                 <line x1="14" y1="10" x2="21" y2="3"></line>
                 <line x1="3" y1="21" x2="10" y2="14"></line>
               </svg>
             ) : (
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
                 <polyline points="15,3 21,3 21,9"></polyline>
                 <polyline points="9,21 3,21 3,15"></polyline>
                 <line x1="21" y1="3" x2="14" y2="10"></line>
@@ -138,262 +1186,1579 @@ export default function AccountManagerSection({
         </div>
       </div>
 
-      {/* --- CONTENT AREA --- */}
+      {/* CONTENT */}
       {!isAccountCollapsed && (
         <div className="flex-1 flex flex-col min-h-0">
-          
-          {/* 1. Metrics Row - Giữ nguyên layout thoáng */}
-          <div className={`flex-none px-4 py-4 border-b ${isDarkMode ? "border-[#2a2e39]" : "border-gray-200"}`}>
-            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4">
+          {/* Metrics Row */}
+          <div
+            className={`flex-none px-4 py-4 border-b ${
+              isDarkMode ? "border-[#1e222d]" : "border-gray-200"
+            }`}
+          >
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
               {metrics.map((metric, index) => (
                 <div key={index} className="flex flex-col gap-1.5">
-                  <div className={`flex items-center gap-1 text-xs font-normal ${isDarkMode ? "text-gray-400" : "text-gray-500"}`}>
+                  <div
+                    className={`flex items-center gap-1 text-xs font-normal ${
+                      isDarkMode ? "text-gray-400" : "text-gray-500"
+                    }`}
+                  >
                     {metric.label}
                     {metric.info && (
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="cursor-help opacity-70 hover:opacity-100">
-                        <circle cx="12" cy="12" r="10"></circle>
-                        <line x1="12" y1="16" x2="12" y2="12"></line>
-                        <line x1="12" y1="8" x2="12.01" y2="8"></line>
-                      </svg>
+                      <span className="cursor-help opacity-70">ⓘ</span>
                     )}
                   </div>
-                  <div className={`font-medium text-[14px] tracking-wide ${isDarkMode ? "text-white" : "text-gray-900"}`}>{metric.value}</div>
+                  <div
+                    className={`font-medium text-[14px] tracking-wide ${
+                      isDarkMode ? "text-gray-200" : "text-gray-900"
+                    }`}
+                  >
+                    {metric.value}
+                  </div>
                 </div>
               ))}
             </div>
+
+            {/* Debug info */}
+            {process.env.NODE_ENV === "development" && (
+              <div className="mt-2 text-xs text-gray-500">
+                <div>Last update: {lastUpdateTime.toLocaleTimeString()}</div>
+                <div>Debug: {debugInfo}</div>
+                {marketAnalysis && (
+                  <div className="mt-1">
+                    Trend: {toNumber(marketAnalysis.trendStrength, 0).toFixed(3)}{" "}
+                    | RSI:{" "}
+                    {marketAnalysis.rsi === null
+                      ? "--"
+                      : toNumber(marketAnalysis.rsi, 0).toFixed(1)}{" "}
+                    | Vol: {(toNumber(marketAnalysis.volatility, 0) * 100).toFixed(2)}%
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
-          {/* 2. Navigation Tabs */}
-          <div className={`flex-none flex items-center px-4 border-b gap-6 ${isDarkMode ? "border-[#2a2e39]" : "border-gray-200"}`}>
+          {/* Tabs */}
+          <div
+            className={`flex-none flex items-center px-4 border-b gap-6 ${
+              isDarkMode ? "border-[#1e222d]" : "border-gray-200"
+            }`}
+          >
             {tabs.map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
-                className={`
-                  relative py-3 text-sm font-medium transition-colors select-none
-                  ${
-                    activeTab === tab
-                      ? (isDarkMode ? "text-[#2962ff]" : "text-blue-600")
-                      : (isDarkMode ? "text-gray-400 hover:text-gray-200" : "text-gray-500 hover:text-gray-700")
-                  }
-                `}
+                className={`relative py-3 text-sm font-medium transition-colors select-none ${
+                  activeTab === tab
+                    ? isDarkMode
+                      ? "text-blue-400"
+                      : "text-blue-600"
+                    : isDarkMode
+                    ? "text-gray-400 hover:text-gray-200"
+                    : "text-gray-500 hover:text-gray-700"
+                }`}
               >
                 {tab}
                 {activeTab === tab && (
-                  <div className={`absolute bottom-0 left-0 w-full h-[2px] ${isDarkMode ? "bg-[#2962ff]" : "bg-blue-600"}`} />
+                  <div
+                    className={`absolute bottom-0 left-0 w-full h-[2px] ${
+                      isDarkMode ? "bg-blue-400" : "bg-blue-600"
+                    }`}
+                  />
                 )}
               </button>
             ))}
           </div>
 
-          {/* 3. Table Content Area - Container */}
+          {/* Main Tab Content */}
           <div className="flex-1 overflow-hidden relative">
+            {/* ORDERS TAB */}
             {activeTab === "Orders" && (
               <div className="h-full overflow-auto trading-scrollbar p-4">
-                <div className="rounded-lg border overflow-hidden">
+                <div
+                  className={`rounded-lg border overflow-hidden ${
+                    isDarkMode
+                      ? "bg-[#0f1219] border-gray-800"
+                      : "bg-white border-gray-200"
+                  }`}
+                >
                   <table className="w-full text-xs">
                     <thead>
-                      <tr className={`text-left ${isDarkMode ? "bg-gray-800 text-gray-400" : "bg-gray-100 text-gray-600"}`}>
-                        <th className="py-3 px-4 font-medium">Order ID</th>
+                      <tr
+                        className={`text-left ${
+                          isDarkMode
+                            ? "bg-[#1a1d29] text-gray-400"
+                            : "bg-gray-100 text-gray-600"
+                        }`}
+                      >
                         <th className="py-3 px-4 font-medium">Symbol</th>
-                        <th className="py-3 px-4 font-medium">Type</th>
-                        <th className="py-3 px-4 font-medium">Order Type</th>
-                        <th className="py-3 px-4 font-medium text-right">Size</th>
-                        <th className="py-3 px-4 font-medium text-right">Price (VND)</th>
+                        <th className="py-3 px-4 font-medium">Side</th>
+                        <th className="py-3 px-4 font-medium text-right">
+                          Size
+                        </th>
+                        <th className="py-3 px-4 font-medium text-right">
+                          Price
+                        </th>
                         <th className="py-3 px-4 font-medium">Status</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {orderBookService.getAllOrders().filter(order => order.status === "NEW" || order.status === "PARTIALLY_FILLED").map((order: Order) => (
-                        <tr
-                          key={order.id}
-                          className={`border-t ${isDarkMode ? "border-gray-800 hover:bg-gray-800/50" : "border-gray-200 hover:bg-gray-50"}`}
-                        >
-                          <td className="py-3 px-4 font-mono">{order.id}</td>
-                          <td className="py-3 px-4 font-mono">{order.symbol}</td>
-                          <td className="py-3 px-4">
-                            <span
-                              className={`px-2.5 py-1 rounded text-xs font-medium ${
-                                order.type === "buy"
-                                  ? "bg-green-900/30 text-green-400"
-                                  : "bg-red-900/30 text-red-400"
-                              }`}
-                            >
-                              {order.type === "buy" ? "Buy" : "Sell"}
-                            </span>
-                          </td>
-                          <td className="py-3 px-4">{order.orderType}</td>
-                          <td className="py-3 px-4 text-right font-mono">{order.quantity}</td>
-                          <td className="py-3 px-4 text-right font-mono">
-                            {order.price ? `${formatVND(order.price)} VND` : "Market"}
-                          </td>
-                          <td className="py-3 px-4">
-                            <span
-                              className={`px-2.5 py-1 rounded text-xs font-medium ${
-                                order.status === "FILLED"
-                                  ? "bg-green-900/30 text-green-400"
-                                  : "bg-yellow-900/30 text-yellow-400"
-                              }`}
-                            >
-                              {order.status}
-                            </span>
+                      {orders.filter((order) =>
+                        ["NEW", "PARTIALLY_FILLED"].includes(order.status)
+                      ).length === 0 && (
+                        <tr>
+                          <td
+                            colSpan={5}
+                            className="py-8 text-center text-gray-500"
+                          >
+                            No open orders
                           </td>
                         </tr>
-                      ))}
+                      )}
+                      {orders
+                        .filter((order) =>
+                          ["NEW", "PARTIALLY_FILLED"].includes(order.status)
+                        )
+                        .map((order) => (
+                          <tr
+                            key={order.id}
+                            className={`border-t ${
+                              isDarkMode
+                                ? "border-gray-800 hover:bg-gray-800/50"
+                                : "border-gray-200 hover:bg-gray-50"
+                            }`}
+                          >
+                            <td className="py-3 px-4 font-bold text-gray-200">
+                              {order.symbol}
+                            </td>
+                            <td
+                              className={`py-3 px-4 ${
+                                order.type === "buy"
+                                  ? "text-emerald-400"
+                                  : "text-rose-400"
+                              }`}
+                            >
+                              {order.type.toUpperCase()}
+                            </td>
+                            <td className="py-3 px-4 text-right font-mono text-gray-300">
+                              {toNumber(order.quantity, 0)}
+                            </td>
+                            <td className="py-3 px-4 text-right font-mono text-gray-300">
+                              {formatVNDCurrency(toNumber(order.price, 0))}
+                            </td>
+                            <td className="py-3 px-4">
+                              <span
+                                className={`px-2 py-1 rounded text-[10px] inline-flex items-center ${getStatusBadge(
+                                  order.status
+                                )}`}
+                              >
+                                {order.status}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
                     </tbody>
                   </table>
                 </div>
               </div>
             )}
-            
+
+            {/* ORDER BOOK + AI TRADING SIGNALS */}
+            {activeTab === "Order Book" && (
+              <div className="h-full overflow-auto trading-scrollbar">
+                {/* AI Trading Signals Section */}
+                <div className="p-4 border-b border-gray-200 dark:border-gray-800">
+                  <div className="mb-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-2">
+                        <div
+                          className={`p-1.5 rounded-lg ${
+                            isDarkMode ? "bg-blue-500/20" : "bg-blue-100"
+                          }`}
+                        >
+                          <svg
+                            className="w-5 h-5 text-blue-500"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth="2"
+                              d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"
+                            />
+                          </svg>
+                        </div>
+                        <div className="flex flex-col">
+                          <h3
+                            className={`font-bold text-lg ${
+                              isDarkMode ? "text-gray-200" : "text-gray-900"
+                            }`}
+                          >
+                            AI Trading Signals
+                          </h3>
+                          <p
+                            className={`text-xs mt-0.5 ${
+                              isDarkMode ? "text-gray-400" : "text-gray-600"
+                            }`}
+                          >
+                            Real-time market companion – refreshed every second
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs px-2 py-1 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400">
+                          {new Date().toLocaleTimeString()}
+                        </span>
+                        {process.env.NODE_ENV === "development" && (
+                          <span className="text-xs px-2 py-1 rounded-full bg-yellow-100 dark:bg-yellow-900 text-yellow-700 dark:text-yellow-300">
+                            Debug
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Compact market snapshot */}
+                    {marketAnalysis && (
+                      <div className="grid grid-cols-3 gap-3 mt-2 mb-4">
+                        <div
+                          className={`rounded-lg px-3 py-2 text-xs border ${
+                            isDarkMode
+                              ? "bg-gray-900/60 border-gray-800"
+                              : "bg-gray-50 border-gray-200"
+                          }`}
+                        >
+                          <div
+                            className={
+                              isDarkMode ? "text-gray-400" : "text-gray-500"
+                            }
+                          >
+                            Trend
+                          </div>
+                          <div className="flex items-baseline gap-1 mt-1">
+                            <span
+                              className={`font-semibold text-sm ${
+                                toNumber(marketAnalysis.trendStrength, 0) > 0
+                                  ? "text-emerald-400"
+                                  : toNumber(marketAnalysis.trendStrength, 0) < 0
+                                  ? "text-rose-400"
+                                  : "text-gray-400"
+                              }`}
+                            >
+                              {toNumber(marketAnalysis.trendStrength, 0) > 0
+                                ? "+"
+                                : ""}
+                              {toNumber(marketAnalysis.trendStrength, 0).toFixed(2)}
+                            </span>
+                            <span className="text-[10px] text-gray-500">
+                              {toNumber(marketAnalysis.trendStrength, 0) > 0.2
+                                ? "Strong uptrend"
+                                : toNumber(marketAnalysis.trendStrength, 0) < -0.2
+                                ? "Strong downtrend"
+                                : "Sideways"}
+                            </span>
+                          </div>
+                        </div>
+                        <div
+                          className={`rounded-lg px-3 py-2 text-xs border ${
+                            isDarkMode
+                              ? "bg-gray-900/60 border-gray-800"
+                              : "bg-gray-50 border-gray-200"
+                          }`}
+                        >
+                          <div
+                            className={
+                              isDarkMode ? "text-gray-400" : "text-gray-500"
+                            }
+                          >
+                            Volatility
+                          </div>
+                          <div className="flex items-baseline gap-1 mt-1">
+                            <span className="font-semibold text-sm text-sky-400">
+                              {(toNumber(marketAnalysis.volatility, 0) * 100).toFixed(1)}%
+                            </span>
+                            <span className="text-[10px] text-gray-500">
+                              {toNumber(marketAnalysis.volatility, 0) > 0.03
+                                ? "High"
+                                : toNumber(marketAnalysis.volatility, 0) > 0.01
+                                ? "Medium"
+                                : "Low"}
+                            </span>
+                          </div>
+                        </div>
+                        <div
+                          className={`rounded-lg px-3 py-2 text-xs border ${
+                            isDarkMode
+                              ? "bg-gray-900/60 border-gray-800"
+                              : "bg-gray-50 border-gray-200"
+                          }`}
+                        >
+                          <div
+                            className={
+                              isDarkMode ? "text-gray-400" : "text-gray-500"
+                            }
+                          >
+                            Liquidity
+                          </div>
+                          <div className="flex items-baseline gap-1 mt-1">
+                            <span className="font-semibold text-sm text-violet-400">
+                              {Math.round(toNumber(marketAnalysis.liquidityScore, 0))}
+                            </span>
+                            <span className="text-[10px] text-gray-500">
+                              {marketAnalysis.volumeAnalysis === "HIGH"
+                                ? "High volume"
+                                : marketAnalysis.volumeAnalysis === "NORMAL"
+                                ? "Normal volume"
+                                : "Low volume"}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Signal cards row */}
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    {/* BUY SIGNAL CARD */}
+                    {suggestedOrders.buy ? (
+                      <div
+                        onClick={() =>
+                          suggestedOrders.buy &&
+                          onOpenOrderPanel &&
+                          onOpenOrderPanel("buy", suggestedOrders.buy.price)
+                        }
+                        className={`relative overflow-hidden rounded-xl border p-5 cursor-pointer transition-all duration-300 hover:scale-[1.02] hover:shadow-xl ${
+                          isDarkMode
+                            ? "border-emerald-500/30 bg-gradient-to-br from-emerald-900/10 to-gray-900/30 hover:border-emerald-500/50"
+                            : "border-emerald-200 bg-gradient-to-br from-emerald-50 to-white hover:border-emerald-300"
+                        }`}
+                      >
+                        <div className="absolute top-0 right-0 w-24 h-24 opacity-10">
+                          <svg
+                            viewBox="0 0 100 100"
+                            className="w-full h-full text-emerald-500"
+                          >
+                            <path
+                              d="M20,20 L80,20 L80,80 L20,80 Z"
+                              fill="currentColor"
+                            />
+                          </svg>
+                        </div>
+
+                        <div className="relative z-10">
+                          <div className="flex justify-between items-start mb-4">
+                            <div>
+                              <div className="flex items-center gap-2 mb-2">
+                                <span
+                                  className={`text-xs font-bold px-3 py-1.5 rounded-full ${
+                                    isDarkMode
+                                      ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
+                                      : "bg-emerald-100 text-emerald-700 border border-emerald-200"
+                                  }`}
+                                >
+                                  LONG • {suggestedOrders.buy.type}
+                                </span>
+                                <span
+                                  className={`text-xs font-bold px-2 py-1 rounded-full border ${getRiskColor(
+                                    suggestedOrders.buy.riskLevel
+                                  )}`}
+                                >
+                                  {suggestedOrders.buy.riskLevel} RISK
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2 text-xs">
+                                <span
+                                  className={`px-2 py-0.5 rounded border ${getTimeFrameColor(
+                                    suggestedOrders.buy.timeFrame
+                                  )}`}
+                                >
+                                  {suggestedOrders.buy.timeFrame}
+                                </span>
+                                <span
+                                  className={`px-2 py-0.5 rounded border ${getMarketConditionColor(
+                                    suggestedOrders.buy.marketCondition
+                                  )}`}
+                                >
+                                  {suggestedOrders.buy.marketCondition}
+                                </span>
+                              </div>
+                            </div>
+
+                            <div className="text-right">
+                              <div className="text-xs text-gray-500 mb-1">
+                                Confidence
+                              </div>
+                              <div className="relative w-14 h-14">
+                                <svg
+                                  className="w-full h-full"
+                                  viewBox="0 0 36 36"
+                                >
+                                  <path
+                                    d="M18 2.0845
+                                      a 15.9155 15.9155 0 0 1 0 31.831
+                                      a 15.9155 15.9155 0 0 1 0 -31.831"
+                                    fill="none"
+                                    stroke={isDarkMode ? "#2a2e39" : "#e5e7eb"}
+                                    strokeWidth="3"
+                                  />
+                                  <path
+                                    d="M18 2.0845
+                                      a 15.9155 15.9155 0 0 1 0 31.831
+                                      a 15.9155 15.9155 0 0 1 0 -31.831"
+                                    fill="none"
+                                    stroke="#10b981"
+                                    strokeWidth="3"
+                                    strokeDasharray={`${clamp(
+                                      toNumber(suggestedOrders.buy.confidence, 0),
+                                      0,
+                                      100
+                                    )}, 100`}
+                                  />
+                                </svg>
+                                <div className="absolute inset-0 flex items-center justify-center">
+                                  <span className="text-sm font-bold text-emerald-500">
+                                    {clamp(
+                                      toNumber(suggestedOrders.buy.confidence, 0),
+                                      0,
+                                      100
+                                    )}
+                                    %
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="mb-4">
+                            <div className="text-xs text-gray-500 mb-1">
+                              Entry price
+                            </div>
+                            <div className="flex items-baseline gap-2">
+                              <span
+                                className={`text-3xl font-bold ${
+                                  isDarkMode ? "text-gray-200" : "text-gray-900"
+                                }`}
+                              >
+                                {formatVNDCurrency(toNumber(suggestedOrders.buy.price, 0))}
+                              </span>
+                              <span className="text-sm text-gray-400">VND</span>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-3 mb-4">
+                            <div
+                              className={`text-center p-2 rounded-lg border ${
+                                isDarkMode
+                                  ? "bg-gray-800/50 border-gray-700"
+                                  : "bg-gray-50 border-gray-200"
+                              }`}
+                            >
+                              <div className="text-xs text-gray-500">
+                                Win rate
+                              </div>
+                              <div className="text-lg font-bold text-emerald-500">
+                                {toNumber(suggestedOrders.buy.winRate, 0)}%
+                              </div>
+                            </div>
+                            <div
+                              className={`text-center p-2 rounded-lg border ${
+                                isDarkMode
+                                  ? "bg-gray-800/50 border-gray-700"
+                                  : "bg-gray-50 border-gray-200"
+                              }`}
+                            >
+                              <div className="text-xs text-gray-500">
+                                Position size
+                              </div>
+                              <div className="text-lg font-bold text-blue-500">
+                                {toNumber(suggestedOrders.buy.quantity, 0)}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="mb-4">
+                            <div className="text-xs text-gray-500 mb-2">
+                              Risk / reward
+                            </div>
+                            <div className="grid grid-cols-2 gap-3">
+                              <div
+                                className={`p-2 rounded-lg border ${
+                                  isDarkMode
+                                    ? "border-emerald-500/30"
+                                    : "border-emerald-200"
+                                }`}
+                              >
+                                <div className="text-xs text-gray-500">
+                                  Take profit
+                                </div>
+                                <div className="text-sm font-bold text-emerald-500">
+                                  {formatVND(toNumber(suggestedOrders.buy.takeProfit, 0))}
+                                </div>
+                                <div className="text-xs text-emerald-400">
+                                  +{toNumber(suggestedOrders.buy.expectedProfit, 0).toLocaleString()}{" "}
+                                  VND
+                                </div>
+                              </div>
+                              <div
+                                className={`p-2 rounded-lg border ${
+                                  isDarkMode
+                                    ? "border-rose-500/30"
+                                    : "border-rose-200"
+                                }`}
+                              >
+                                <div className="text-xs text-gray-500">
+                                  Stop loss
+                                </div>
+                                <div className="text-sm font-bold text-rose-500">
+                                  {formatVNDCurrency(
+                                    toNumber(suggestedOrders.buy.stopLoss, 0)
+                                  )}
+                                </div>
+                                <div className="text-xs text-rose-400">
+                                  -{toNumber(suggestedOrders.buy.expectedLoss, 0).toLocaleString()}{" "}
+                                  VND
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="mb-4">
+                            <div className="text-xs text-gray-500 mb-1">
+                              Signal explanation
+                            </div>
+                            <p className="text-sm text-gray-700 dark:text-gray-300">
+                              {suggestedOrders.buy.reason}
+                            </p>
+                          </div>
+
+                          <button className="w-full py-3 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white font-bold rounded-lg transition-all duration-300 transform hover:scale-[1.02] shadow-lg">
+                            Open BUY order • Qty:{" "}
+                            {toNumber(suggestedOrders.buy.quantity, 0)}
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div
+                        className={`rounded-xl border-2 border-dashed p-8 flex flex-col items-center justify-center text-center ${
+                          isDarkMode
+                            ? "border-gray-700 bg-gray-900/30"
+                            : "border-gray-300 bg-gray-50"
+                        }`}
+                      >
+                        <div
+                          className={`p-3 rounded-full mb-4 ${
+                            isDarkMode ? "bg-gray-800" : "bg-gray-200"
+                          }`}
+                        >
+                          <svg
+                            className="w-8 h-8 text-gray-500"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth="2"
+                              d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
+                            />
+                          </svg>
+                        </div>
+                        <h4
+                          className={`font-bold mb-2 ${
+                            isDarkMode ? "text-gray-300" : "text-gray-700"
+                          }`}
+                        >
+                          Waiting for long signal
+                        </h4>
+                        <p className="text-xs text-gray-500">
+                          AI is scanning the order book for a high-quality long
+                          opportunity.
+                        </p>
+                        {process.env.NODE_ENV === "development" &&
+                          debugInfo && (
+                            <p className="text-xs text-yellow-600 mt-2">
+                              {debugInfo}
+                            </p>
+                          )}
+                      </div>
+                    )}
+
+                    {/* SELL SIGNAL CARD */}
+                    {suggestedOrders.sell ? (
+                      <div
+                        onClick={() =>
+                          suggestedOrders.sell &&
+                          onOpenOrderPanel &&
+                          onOpenOrderPanel("sell", suggestedOrders.sell.price)
+                        }
+                        className={`relative overflow-hidden rounded-xl border p-5 cursor-pointer transition-all duration-300 hover:scale-[1.02] hover:shadow-xl ${
+                          isDarkMode
+                            ? "border-rose-500/30 bg-gradient-to-br from-rose-900/10 to-gray-900/30 hover:border-rose-500/50"
+                            : "border-rose-200 bg-gradient-to-br from-rose-50 to-white hover:border-rose-300"
+                        }`}
+                      >
+                        <div className="absolute top-0 right-0 w-24 h-24 opacity-10">
+                          <svg
+                            viewBox="0 0 100 100"
+                            className="w-full h-full text-rose-500"
+                          >
+                            <path
+                              d="M20,20 L80,20 L80,80 L20,80 Z"
+                              fill="currentColor"
+                            />
+                          </svg>
+                        </div>
+
+                        <div className="relative z-10">
+                          <div className="flex justify-between items-start mb-4">
+                            <div>
+                              <div className="flex items-center gap-2 mb-2">
+                                <span
+                                  className={`text-xs font-bold px-3 py-1.5 rounded-full ${
+                                    isDarkMode
+                                      ? "bg-rose-500/20 text-rose-400 border border-rose-500/30"
+                                      : "bg-rose-100 text-rose-700 border border-rose-200"
+                                  }`}
+                                >
+                                  SHORT • {suggestedOrders.sell.type}
+                                </span>
+                                <span
+                                  className={`text-xs font-bold px-2 py-1 rounded-full border ${getRiskColor(
+                                    suggestedOrders.sell.riskLevel
+                                  )}`}
+                                >
+                                  {suggestedOrders.sell.riskLevel} RISK
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2 text-xs">
+                                <span
+                                  className={`px-2 py-0.5 rounded border ${getTimeFrameColor(
+                                    suggestedOrders.sell.timeFrame
+                                  )}`}
+                                >
+                                  {suggestedOrders.sell.timeFrame}
+                                </span>
+                                <span
+                                  className={`px-2 py-0.5 rounded border ${getMarketConditionColor(
+                                    suggestedOrders.sell.marketCondition
+                                  )}`}
+                                >
+                                  {suggestedOrders.sell.marketCondition}
+                                </span>
+                              </div>
+                            </div>
+
+                            <div className="text-right">
+                              <div className="text-xs text-gray-500 mb-1">
+                                Confidence
+                              </div>
+                              <div className="relative w-14 h-14">
+                                <svg
+                                  className="w-full h-full"
+                                  viewBox="0 0 36 36"
+                                >
+                                  <path
+                                    d="M18 2.0845
+                                      a 15.9155 15.9155 0 0 1 0 31.831
+                                      a 15.9155 15.9155 0 0 1 0 -31.831"
+                                    fill="none"
+                                    stroke={isDarkMode ? "#2a2e39" : "#e5e7eb"}
+                                    strokeWidth="3"
+                                  />
+                                  <path
+                                    d="M18 2.0845
+                                      a 15.9155 15.9155 0 0 1 0 31.831
+                                      a 15.9155 15.9155 0 0 1 0 -31.831"
+                                    fill="none"
+                                    stroke="#ef4444"
+                                    strokeWidth="3"
+                                    strokeDasharray={`${clamp(
+                                      toNumber(suggestedOrders.sell.confidence, 0),
+                                      0,
+                                      100
+                                    )}, 100`}
+                                  />
+                                </svg>
+                                <div className="absolute inset-0 flex items-center justify-center">
+                                  <span className="text-sm font-bold text-rose-500">
+                                    {clamp(
+                                      toNumber(suggestedOrders.sell.confidence, 0),
+                                      0,
+                                      100
+                                    )}
+                                    %
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="mb-4">
+                            <div className="text-xs text-gray-500 mb-1">
+                              Entry price
+                            </div>
+                            <div className="flex items-baseline gap-2">
+                              <span
+                                className={`text-3xl font-bold ${
+                                  isDarkMode ? "text-gray-200" : "text-gray-900"
+                                }`}
+                              >
+                                {formatVNDCurrency(toNumber(suggestedOrders.sell.price, 0))}
+                              </span>
+                              <span className="text-sm text-gray-400">VND</span>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-3 mb-4">
+                            <div
+                              className={`text-center p-2 rounded-lg border ${
+                                isDarkMode
+                                  ? "bg-gray-800/50 border-gray-700"
+                                  : "bg-gray-50 border-gray-200"
+                              }`}
+                            >
+                              <div className="text-xs text-gray-500">
+                                Win rate
+                              </div>
+                              <div className="text-lg font-bold text-rose-500">
+                                {toNumber(suggestedOrders.sell.winRate, 0)}%
+                              </div>
+                            </div>
+                            <div
+                              className={`text-center p-2 rounded-lg border ${
+                                isDarkMode
+                                  ? "bg-gray-800/50 border-gray-700"
+                                  : "bg-gray-50 border-gray-200"
+                              }`}
+                            >
+                              <div className="text-xs text-gray-500">
+                                Position size
+                              </div>
+                              <div className="text-lg font-bold text-blue-500">
+                                {toNumber(suggestedOrders.sell.quantity, 0)}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="mb-4">
+                            <div className="text-xs text-gray-500 mb-2">
+                              Risk / reward
+                            </div>
+                            <div className="grid grid-cols-2 gap-3">
+                              <div
+                                className={`p-2 rounded-lg border ${
+                                  isDarkMode
+                                    ? "border-rose-500/30"
+                                    : "border-rose-200"
+                                }`}
+                              >
+                                <div className="text-xs text-gray-500">
+                                  Take profit
+                                </div>
+                                <div className="text-sm font-bold text-rose-500">
+                                  {formatVND(toNumber(suggestedOrders.sell.takeProfit, 0))}
+                                </div>
+                                <div className="text-xs text-rose-400">
+                                  +{toNumber(suggestedOrders.sell.expectedProfit, 0).toLocaleString()}{" "}
+                                  VND
+                                </div>
+                              </div>
+                              <div
+                                className={`p-2 rounded-lg border ${
+                                  isDarkMode
+                                    ? "border-emerald-500/30"
+                                    : "border-emerald-200"
+                                }`}
+                              >
+                                <div className="text-xs text-gray-500">
+                                  Stop loss
+                                </div>
+                                <div className="text-sm font-bold text-emerald-500">
+                                  {formatVNDCurrency(
+                                    toNumber(suggestedOrders.sell.stopLoss, 0)
+                                  )}
+                                </div>
+                                <div className="text-xs text-emerald-400">
+                                  -{toNumber(suggestedOrders.sell.expectedLoss, 0).toLocaleString()}{" "}
+                                  VND
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="mb-4">
+                            <div className="text-xs text-gray-500 mb-1">
+                              Signal explanation
+                            </div>
+                            <p className="text-sm text-gray-700 dark:text-gray-300">
+                              {suggestedOrders.sell.reason}
+                            </p>
+                          </div>
+
+                          <button className="w-full py-3 bg-gradient-to-r from-rose-500 to-rose-600 hover:from-rose-600 hover:to-rose-700 text-white font-bold rounded-lg transition-all duration-300 transform hover:scale-[1.02] shadow-lg">
+                            Open SELL order • Qty:{" "}
+                            {toNumber(suggestedOrders.sell.quantity, 0)}
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div
+                        className={`rounded-xl border-2 border-dashed p-8 flex flex-col items-center justify-center text-center ${
+                          isDarkMode
+                            ? "border-gray-700 bg-gray-900/30"
+                            : "border-gray-300 bg-gray-50"
+                        }`}
+                      >
+                        <div
+                          className={`p-3 rounded-full mb-4 ${
+                            isDarkMode ? "bg-gray-800" : "bg-gray-200"
+                          }`}
+                        >
+                          <svg
+                            className="w-8 h-8 text-gray-500"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth="2"
+                              d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
+                            />
+                          </svg>
+                        </div>
+                        <h4
+                          className={`font-bold mb-2 ${
+                            isDarkMode ? "text-gray-300" : "text-gray-700"
+                          }`}
+                        >
+                          Waiting for short signal
+                        </h4>
+                        <p className="text-xs text-gray-500">
+                          AI is monitoring for a potential short setup with
+                          attractive risk/reward.
+                        </p>
+                        {process.env.NODE_ENV === "development" &&
+                          debugInfo && (
+                            <p className="text-xs text-yellow-600 mt-2">
+                              {debugInfo}
+                            </p>
+                          )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* ORDER BOOK DEPTH TABLES */}
+                <div className="p-4">
+                  <div className="grid grid-cols-1 gap-1">
+                    {/* BIDS */}
+                    <div
+                      className={`rounded-t-lg border-x border-t overflow-hidden ${
+                        isDarkMode
+                          ? "bg-[#0f1219] border-gray-800"
+                          : "bg-white border-gray-200"
+                      }`}
+                    >
+                      <div
+                        className={`px-3 py-2 text-[10px] font-bold uppercase flex justify-between ${
+                          isDarkMode
+                            ? "bg-[#1a1d29] text-emerald-400"
+                            : "bg-gray-50 text-emerald-700"
+                        }`}
+                      >
+                        <span>BID (Buy orders)</span>
+                        <span>Price - Volume - Orders</span>
+                      </div>
+                      <table className="w-full text-xs table-fixed">
+                        <colgroup>
+                          <col className="w-[38%]" />
+                          <col className="w-[42%]" />
+                          <col className="w-[20%]" />
+                        </colgroup>
+                        <thead>
+                          <tr
+                            className={`text-left ${
+                              isDarkMode
+                                ? "bg-[#1a1d29] text-gray-400"
+                                : "bg-gray-100 text-gray-600"
+                            }`}
+                          >
+                            <th className="py-2 px-3 font-medium">Price</th>
+                            <th className="py-2 px-3 font-medium text-right">
+                              Volume
+                            </th>
+                            <th className="py-2 px-3 font-medium text-right">
+                              Order count
+                            </th>
+                          </tr>
+                        </thead>
+
+                        <tbody>
+                          {orderBook?.bids.map((level, i) => {
+                            const vols =
+                              orderBook?.bids?.map((b) =>
+                                toNumber((b as any)?.totalQuantity, 0)
+                              ) || [];
+                            const maxVol = Math.max(...vols, 1);
+
+                            const widthPercent = clamp(
+                              (toNumber((level as any)?.totalQuantity, 0) / maxVol) * 100,
+                              0,
+                              100
+                            );
+
+                            return (
+                              <tr
+                                key={i}
+                                onClick={() =>
+                                  onOpenOrderPanel &&
+                                  onOpenOrderPanel("buy", toNumber((level as any)?.price, 0))
+                                }
+                                className="cursor-pointer hover:opacity-90 transition-all group"
+                              >
+                                <td colSpan={3} className="relative p-0">
+                                  <div
+                                    className="absolute right-0 top-0 bottom-0 bg-emerald-500/10 z-0 group-hover:bg-emerald-500/20"
+                                    style={{ width: `${widthPercent}%` }}
+                                  />
+                                  <div className="relative z-10 grid grid-cols-[38%_42%_20%]">
+                                    <div className="py-1.5 px-3 font-mono text-emerald-400 font-medium">
+                                      {formatVNDCurrency(toNumber((level as any)?.price, 0))}
+                                    </div>
+                                    <div className="py-1.5 px-3 text-right font-mono text-gray-300">
+                                      {toNumber((level as any)?.totalQuantity, 0).toLocaleString()}
+                                    </div>
+                                    <div className="py-1.5 px-3 text-right font-mono text-gray-300">
+                                      {toNumber((level as any)?.orderCount, 0)}
+                                    </div>
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                          {(!orderBook || orderBook.bids.length === 0) && (
+                            <tr>
+                              <td
+                                colSpan={3}
+                                className="py-4 text-center text-xs text-gray-500"
+                              >
+                                No buy orders
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* ASKS */}
+                    <div
+                      className={`rounded-b-lg border overflow-hidden ${
+                        isDarkMode
+                          ? "bg-[#0f1219] border-gray-800"
+                          : "bg-white border-gray-200"
+                      }`}
+                    >
+                      <div
+                        className={`px-3 py-2 text-[10px] font-bold uppercase flex justify-between ${
+                          isDarkMode
+                            ? "bg-[#1a1d29] text-rose-400"
+                            : "bg-gray-50 text-rose-700"
+                        }`}
+                      >
+                        <span>ASK (Sell orders)</span>
+                        <span>Price - Volume - Orders</span>
+                      </div>
+                      <table className="w-full text-xs table-fixed">
+                        <colgroup>
+                          <col className="w-[38%]" />
+                          <col className="w-[42%]" />
+                          <col className="w-[20%]" />
+                        </colgroup>
+                        <thead>
+                          <tr
+                            className={`text-left ${
+                              isDarkMode
+                                ? "bg-[#1a1d29] text-gray-400"
+                                : "bg-gray-100 text-gray-600"
+                            }`}
+                          >
+                            <th className="py-2 px-3 font-medium">Price</th>
+                            <th className="py-2 px-3 font-medium text-right">
+                              Volume
+                            </th>
+                            <th className="py-2 px-3 font-medium text-right">
+                              Order count
+                            </th>
+                          </tr>
+                        </thead>
+
+                        <tbody>
+                          {orderBook?.asks.map((level, i) => {
+                            const vols =
+                              orderBook?.asks?.map((b) =>
+                                toNumber((b as any)?.totalQuantity, 0)
+                              ) || [];
+                            const maxVol = Math.max(...vols, 1);
+
+                            const widthPercent = clamp(
+                              (toNumber((level as any)?.totalQuantity, 0) / maxVol) * 100,
+                              0,
+                              100
+                            );
+
+                            return (
+                              <tr
+                                key={i}
+                                onClick={() =>
+                                  onOpenOrderPanel &&
+                                  onOpenOrderPanel("sell", toNumber((level as any)?.price, 0))
+                                }
+                                className="cursor-pointer hover:opacity-90 transition-all group"
+                              >
+                                <td colSpan={3} className="relative p-0">
+                                  <div
+                                    className="absolute right-0 top-0 bottom-0 bg-rose-500/10 z-0 group-hover:bg-rose-500/20"
+                                    style={{ width: `${widthPercent}%` }}
+                                  />
+                                  <div className="relative z-10 grid grid-cols-[38%_42%_20%]">
+                                    <div className="py-1.5 px-3 font-mono text-rose-400 font-medium">
+                                      {formatVNDCurrency(toNumber((level as any)?.price, 0))}
+                                    </div>
+                                    <div className="py-1.5 px-3 text-right font-mono text-gray-300">
+                                      {toNumber((level as any)?.totalQuantity, 0).toLocaleString()}
+                                    </div>
+                                    <div className="py-1.5 px-3 text-right font-mono text-gray-300">
+                                      {toNumber((level as any)?.orderCount, 0)}
+                                    </div>
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                          {(!orderBook || orderBook.asks.length === 0) && (
+                            <tr>
+                              <td
+                                colSpan={3}
+                                className="py-4 text-center text-xs text-gray-500"
+                              >
+                                No sell orders
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ORDER HISTORY TAB (KẾT NỐI BACKEND) */}
             {activeTab === "Order History" && (
               <div className="h-full overflow-auto trading-scrollbar p-4">
-                <div className="rounded-lg border overflow-hidden">
+                <div
+                  className={`rounded-lg border overflow-hidden ${
+                    isDarkMode
+                      ? "bg-[#0f1219] border-gray-800"
+                      : "bg-white border-gray-200"
+                  }`}
+                >
                   <table className="w-full text-xs">
                     <thead>
-                      <tr className={`text-left ${isDarkMode ? "bg-gray-800 text-gray-400" : "bg-gray-100 text-gray-600"}`}>
-                        <th className="py-3 px-4 font-medium">Order ID</th>
+                      <tr
+                        className={`text-left ${
+                          isDarkMode
+                            ? "bg-[#1a1d29] text-gray-400"
+                            : "bg-gray-100 text-gray-600"
+                        }`}
+                      >
+                        <th className="py-3 px-4 font-medium">Time</th>
                         <th className="py-3 px-4 font-medium">Symbol</th>
-                        <th className="py-3 px-4 font-medium">Type</th>
-                        <th className="py-3 px-4 font-medium">Order Type</th>
-                        <th className="py-3 px-4 font-medium text-right">Size</th>
-                        <th className="py-3 px-4 font-medium text-right">Price (VND)</th>
+                        <th className="py-3 px-4 font-medium">Side</th>
+                        <th className="py-3 px-4 font-medium text-right">
+                          Filled Price
+                        </th>
                         <th className="py-3 px-4 font-medium">Status</th>
-                        <th className="py-3 px-4 font-medium">Date</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {/* Show all orders including from order book service */}
-                      {orderBookService.getAllOrders().map((order: Order) => (
-                        <tr
-                          key={order.id}
-                          className={`border-t ${isDarkMode ? "border-gray-800 hover:bg-gray-800/50" : "border-gray-200 hover:bg-gray-50"}`}
-                        >
-                          <td className="py-3 px-4 font-mono">{order.id}</td>
-                          <td className="py-3 px-4 font-mono">{order.symbol}</td>
-                          <td className="py-3 px-4">
-                            <span
-                              className={`px-2.5 py-1 rounded text-xs font-medium ${
-                                order.type === "buy"
-                                  ? "bg-green-900/30 text-green-400"
-                                  : "bg-red-900/30 text-red-400"
-                              }`}
-                            >
-                              {order.type === "buy" ? "Buy" : "Sell"}
-                            </span>
-                          </td>
-                          <td className="py-3 px-4">{order.orderType}</td>
-                          <td className="py-3 px-4 text-right font-mono">{order.quantity}</td>
-                          <td className="py-3 px-4 text-right font-mono">
-                            {order.price ? `${formatVND(order.price)} VND` : "Market"}
-                          </td>
-                          <td className="py-3 px-4">
-                            <span
-                              className={`px-2.5 py-1 rounded text-xs font-medium ${
-                                order.status === "FILLED"
-                                  ? "bg-green-900/30 text-green-400"
-                                  : order.status === "CANCELED"
-                                    ? "bg-gray-900/30 text-gray-400"
-                                    : order.status === "REJECTED"
-                                      ? "bg-red-900/30 text-red-400"
-                                      : "bg-yellow-900/30 text-yellow-400"
-                              }`}
-                            >
-                              {order.status}
-                            </span>
-                          </td>
-                          <td className="py-3 px-4 text-gray-500">
-                            {order.timestamp.toLocaleDateString()}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-            
-            {activeTab === "Order Book" && (
-              <div className="h-full overflow-auto trading-scrollbar p-4">
-                <div className="rounded-lg border overflow-hidden mb-4">
-                  <div className={`p-3 text-sm font-medium ${isDarkMode ? "bg-gray-800 text-gray-200" : "bg-gray-100 text-gray-700"}`}>
-                    Order Book - BID (Buy Orders)
-                  </div>
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className={`text-left ${isDarkMode ? "bg-gray-800 text-gray-400" : "bg-gray-100 text-gray-600"}`}>
-                        <th className="py-2 px-3 font-medium">Price (VND)</th>
-                        <th className="py-2 px-3 font-medium text-right">Total Quantity</th>
-                        <th className="py-2 px-3 font-medium text-right">Order Count</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {orderBook ? orderBook.bids.map((level: OrderBookLevel, index: number) => (
-                        <tr
-                          key={index}
-                          className={`border-t ${isDarkMode ? "border-gray-800 hover:bg-gray-800/50" : "border-gray-200 hover:bg-gray-50"} cursor-pointer`}
-                          onClick={() => onOpenOrderPanel && onOpenOrderPanel('buy', level.price)}
-                        >
-                          <td className="py-2 px-3 font-mono text-green-500">{formatVND(level.price)}</td>
-                          <td className="py-2 px-3 text-right font-mono">{level.totalQuantity}</td>
-                          <td className="py-2 px-3 text-right font-mono">{level.orderCount}</td>
-                        </tr>
-                      )) : (
+                      {loadingOrderHistory && (
                         <tr>
-                          <td colSpan={3} className="py-4 text-center text-gray-500">
-                            Loading order book...
+                          <td
+                            colSpan={5}
+                            className="py-6 text-center text-gray-500"
+                          >
+                            Loading order history...
                           </td>
                         </tr>
                       )}
-                    </tbody>
-                  </table>
-                </div>
-                
-                <div className="rounded-lg border overflow-hidden mb-4">
-                  <div className={`p-3 text-sm font-medium ${isDarkMode ? "bg-gray-800 text-gray-200" : "bg-gray-100 text-gray-700"}`}>
-                    Order Book - ASK (Sell Orders)
-                  </div>
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className={`text-left ${isDarkMode ? "bg-gray-800 text-gray-400" : "bg-gray-100 text-gray-600"}`}>
-                        <th className="py-2 px-3 font-medium">Price (VND)</th>
-                        <th className="py-2 px-3 font-medium text-right">Total Quantity</th>
-                        <th className="py-2 px-3 font-medium text-right">Order Count</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {orderBook ? orderBook.asks.map((level: OrderBookLevel, index: number) => (
-                        <tr
-                          key={index}
-                          className={`border-t ${isDarkMode ? "border-gray-800 hover:bg-gray-800/50" : "border-gray-200 hover:bg-gray-50"} cursor-pointer`}
-                          onClick={() => onOpenOrderPanel && onOpenOrderPanel('sell', level.price)}
-                        >
-                          <td className="py-2 px-3 font-mono text-red-500">{formatVND(level.price)}</td>
-                          <td className="py-2 px-3 text-right font-mono">{level.totalQuantity}</td>
-                          <td className="py-2 px-3 text-right font-mono">{level.orderCount}</td>
-                        </tr>
-                      )) : (
-                        <tr>
-                          <td colSpan={3} className="py-4 text-center text-gray-500">
-                            Loading order book...
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-                
 
-              </div>
-            )}
-            
-            {activeTab === "Balance History" && (
-              <div className="h-full overflow-auto trading-scrollbar p-4">
-                <div className="text-center py-8 text-gray-500">
-                  Balance History data would be displayed here
+                      {!loadingOrderHistory && orderHistoryError && (
+                        <tr>
+                          <td
+                            colSpan={5}
+                            className="py-6 text-center text-red-400 text-xs"
+                          >
+                            {orderHistoryError}
+                          </td>
+                        </tr>
+                      )}
+
+                      {!loadingOrderHistory &&
+                        !orderHistoryError &&
+                        orderHistory.length === 0 &&
+                        orders.length === 0 && (
+                          <tr>
+                            <td
+                              colSpan={5}
+                              className="py-8 text-center text-gray-500"
+                            >
+                              No order history found. Place some orders to see
+                              them here.
+                            </td>
+                          </tr>
+                        )}
+
+                      {!loadingOrderHistory &&
+                        !orderHistoryError &&
+                        orderHistory.length === 0 &&
+                        orders.length > 0 &&
+                        orders.map((order) => (
+                          <tr
+                            key={order.id}
+                            className={`border-t ${
+                              isDarkMode
+                                ? "border-gray-800 hover:bg-gray-800/50"
+                                : "border-gray-200 hover:bg-gray-50"
+                            }`}
+                          >
+                            <td className="py-3 px-4 text-gray-500">
+                              {order.timestamp.toLocaleString()}
+                            </td>
+                            <td className="py-3 px-4 font-mono text-gray-200">
+                              {order.symbol}
+                            </td>
+                            <td
+                              className={`py-3 px-4 ${
+                                order.type === "buy"
+                                  ? "text-emerald-400"
+                                  : "text-rose-400"
+                              }`}
+                            >
+                              {order.type.toUpperCase()}
+                            </td>
+                            <td className="py-3 px-4 text-right font-mono text-gray-300">
+                              {formatVNDCurrency(toNumber(order.price, 0))}
+                            </td>
+                            <td className="py-3 px-4">
+                              <span
+                                className={`px-2 py-0.5 rounded text-[10px] inline-flex items-center ${getStatusBadge(
+                                  order.status
+                                )}`}
+                              >
+                                {order.status}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+
+                      {!loadingOrderHistory &&
+                        !orderHistoryError &&
+                        orderHistory.length > 0 &&
+                        orderHistory.map((order) => (
+                          <tr
+                            key={order.id}
+                            className={`border-t ${
+                              isDarkMode
+                                ? "border-gray-800 hover:bg-gray-800/50"
+                                : "border-gray-200 hover:bg-gray-50"
+                            }`}
+                          >
+                            <td className="py-3 px-4 text-gray-500">
+                              {new Date(order.createdAt).toLocaleString()}
+                            </td>
+                            <td className="py-3 px-4 font-mono text-gray-200">
+                              {order.stockSymbol}
+                            </td>
+                            <td
+                              className={`py-3 px-4 ${
+                                order.side === "buy"
+                                  ? "text-emerald-400"
+                                  : "text-rose-400"
+                              }`}
+                            >
+                              {order.side.toUpperCase()}
+                            </td>
+                            <td className="py-3 px-4 text-right font-mono text-gray-300">
+                              {order.price
+                                ? formatVNDCurrency(toNumber(order.price, 0))
+                                : "Market"}
+                            </td>
+                            <td className="py-3 px-4">
+                              <span
+                                className={`px-2 py-0.5 rounded text-[10px] inline-flex items-center ${getStatusBadge(
+                                  order.status
+                                )}`}
+                              >
+                                {order.status}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
                 </div>
               </div>
             )}
+
+            {/* AI INSIGHTS TAB */}
+            {activeTab === "AI Insights" && (
+              <div className="h-full overflow-auto trading-scrollbar p-4">
+                {/* Market Analysis Overview */}
+                {marketAnalysis && (
+                  <div
+                    className={`rounded-xl p-5 mb-6 ${
+                      isDarkMode
+                        ? "bg-gradient-to-br from-gray-900/50 to-gray-800/50 border border-gray-800"
+                        : "bg-gradient-to-br from-gray-50 to-white border border-gray-200"
+                    }`}
+                  >
+                    <h3
+                      className={`text-lg font-bold mb-4 ${
+                        isDarkMode ? "text-gray-200" : "text-gray-900"
+                      }`}
+                    >
+                      📊 Market analysis
+                    </h3>
+
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                      <div
+                        className={`text-center p-3 rounded-lg border ${
+                          isDarkMode
+                            ? "bg-gray-800/50 border-gray-700"
+                            : "bg-gray-50 border-gray-200"
+                        }`}
+                      >
+                        <div className="text-xs text-gray-500 mb-1">
+                          Trend strength
+                        </div>
+                        <div
+                          className={`text-lg font-bold ${
+                            toNumber(marketAnalysis.trendStrength, 0) > 0
+                              ? "text-emerald-500"
+                              : "text-rose-500"
+                          }`}
+                        >
+                          {toNumber(marketAnalysis.trendStrength, 0) > 0 ? "+" : ""}
+                          {toNumber(marketAnalysis.trendStrength, 0).toFixed(2)}
+                        </div>
+                        <div className="text-xs mt-1">
+                          {toNumber(marketAnalysis.trendStrength, 0) > 0.2
+                            ? "Strong uptrend"
+                            : toNumber(marketAnalysis.trendStrength, 0) < -0.2
+                            ? "Strong downtrend"
+                            : "Sideways / range"}
+                        </div>
+                      </div>
+
+                      <div
+                        className={`text-center p-3 rounded-lg border ${
+                          isDarkMode
+                            ? "bg-gray-800/50 border-gray-700"
+                            : "bg-gray-50 border-gray-200"
+                        }`}
+                      >
+                        <div className="text-xs text-gray-500 mb-1">
+                          Volatility
+                        </div>
+                        <div className="text-lg font-bold text-sky-500">
+                          {(toNumber(marketAnalysis.volatility, 0) * 100).toFixed(1)}%
+                        </div>
+                        <div className="text-xs mt-1">
+                          {toNumber(marketAnalysis.volatility, 0) > 0.03
+                            ? "High"
+                            : toNumber(marketAnalysis.volatility, 0) > 0.01
+                            ? "Medium"
+                            : "Low"}
+                        </div>
+                      </div>
+
+                      <div
+                        className={`text-center p-3 rounded-lg border ${
+                          isDarkMode
+                            ? "bg-gray-800/50 border-gray-700"
+                            : "bg-gray-50 border-gray-200"
+                        }`}
+                      >
+                        <div className="text-xs text-gray-500 mb-1">
+                          Liquidity
+                        </div>
+                        <div className="text-lg font-bold text-violet-500">
+                          {Math.round(toNumber(marketAnalysis.liquidityScore, 0))}
+                        </div>
+                        <div className="text-xs mt-1">
+                          {marketAnalysis.volumeAnalysis === "HIGH"
+                            ? "High volume"
+                            : marketAnalysis.volumeAnalysis === "NORMAL"
+                            ? "Normal volume"
+                            : "Low volume"}
+                        </div>
+                      </div>
+
+                      <div
+                        className={`text-center p-3 rounded-lg border ${
+                          isDarkMode
+                            ? "bg-gray-800/50 border-gray-700"
+                            : "bg-gray-50 border-gray-200"
+                        }`}
+                      >
+                        <div className="text-xs text-gray-500 mb-1">RSI</div>
+                        <div
+                          className={`text-lg font-bold ${
+                            marketAnalysis.rsi === null
+                              ? "text-gray-500"
+                              : marketAnalysis.rsi < 35
+                              ? "text-emerald-500"
+                              : marketAnalysis.rsi > 65
+                              ? "text-rose-500"
+                              : "text-sky-500"
+                          }`}
+                        >
+                          {marketAnalysis.rsi === null
+                            ? "--"
+                            : toNumber(marketAnalysis.rsi, 0).toFixed(1)}
+                        </div>
+                        <div className="text-xs mt-1">
+                          {marketAnalysis.rsi === null
+                            ? "N/A"
+                            : marketAnalysis.rsi < 35
+                            ? "Oversold"
+                            : marketAnalysis.rsi > 65
+                            ? "Overbought"
+                            : "Neutral"}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Support & Resistance */}
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <h4
+                          className={`text-sm font-bold mb-2 ${
+                            isDarkMode ? "text-emerald-400" : "text-emerald-700"
+                          }`}
+                        >
+                          🛡️ Key support levels
+                        </h4>
+                        <div className="space-y-1">
+                          {marketAnalysis.supportLevels
+                            .slice(0, 3)
+                            .map((level, idx) => (
+                              <div
+                                key={idx}
+                                className="flex justify-between items-center text-sm"
+                              >
+                                <span
+                                  className={
+                                    isDarkMode
+                                      ? "text-gray-400"
+                                      : "text-gray-600"
+                                  }
+                                >
+                                  Level {idx + 1}
+                                </span>
+                                <span className="font-mono font-bold text-emerald-500">
+                                  {formatVNDCurrency(toNumber(level, 0))}
+                                </span>
+                              </div>
+                            ))}
+                          {marketAnalysis.supportLevels.length === 0 && (
+                            <div className="text-xs text-gray-500">
+                              No strong support detected
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div>
+                        <h4
+                          className={`text-sm font-bold mb-2 ${
+                            isDarkMode ? "text-rose-400" : "text-rose-700"
+                          }`}
+                        >
+                          🚧 Key resistance levels
+                        </h4>
+                        <div className="space-y-1">
+                          {marketAnalysis.resistanceLevels
+                            .slice(0, 3)
+                            .map((level, idx) => (
+                              <div
+                                key={idx}
+                                className="flex justify-between items-center text-sm"
+                              >
+                                <span
+                                  className={
+                                    isDarkMode
+                                      ? "text-gray-400"
+                                      : "text-gray-600"
+                                  }
+                                >
+                                  Level {idx + 1}
+                                </span>
+                                <span className="font-mono font-bold text-rose-500">
+                                  {formatVNDCurrency(toNumber(level, 0))}
+                                </span>
+                              </div>
+                            ))}
+                          {marketAnalysis.resistanceLevels.length === 0 && (
+                            <div className="text-xs text-gray-500">
+                              No strong resistance detected
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Suggestion History */}
+                <div
+                  className={`rounded-xl p-5 ${
+                    isDarkMode
+                      ? "bg-gradient-to-br from-gray-900/50 to-gray-800/50 border border-gray-800"
+                      : "bg-gradient-to-br from-gray-50 to-white border border-gray-200"
+                  }`}
+                >
+                  <h3
+                    className={`text-lg font-bold mb-4 ${
+                      isDarkMode ? "text-gray-200" : "text-gray-900"
+                    }`}
+                  >
+                    📈 Recent AI suggestions
+                  </h3>
+
+                  {suggestionHistory.length > 0 ? (
+                    <div className="space-y-3">
+                      {suggestionHistory.slice(0, 5).map((suggestion, idx) => (
+                        <div
+                          key={idx}
+                          className={`p-3 rounded-lg cursor-pointer transition-all hover:scale-[1.02] border ${
+                            toNumber(suggestion.winRate, 0) > 50
+                              ? isDarkMode
+                                ? "bg-emerald-900/20 border-emerald-800/50"
+                                : "bg-emerald-50 border-emerald-200"
+                              : isDarkMode
+                              ? "bg-rose-900/20 border-rose-800/50"
+                              : "bg-rose-50 border-rose-200"
+                          }`}
+                          onClick={() =>
+                            onOpenOrderPanel &&
+                            onOpenOrderPanel(
+                              toNumber(suggestion.winRate, 0) > 50 ? "buy" : "sell",
+                              toNumber(suggestion.price, 0)
+                            )
+                          }
+                        >
+                          <div className="flex justify-between items-center">
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={`text-xs px-2 py-0.5 rounded-full border ${
+                                  toNumber(suggestion.winRate, 0) > 50
+                                    ? isDarkMode
+                                      ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30"
+                                      : "bg-emerald-100 text-emerald-700 border-emerald-200"
+                                    : isDarkMode
+                                    ? "bg-rose-500/20 text-rose-400 border-rose-500/30"
+                                    : "bg-rose-100 text-rose-700 border-rose-200"
+                                }`}
+                              >
+                                {toNumber(suggestion.winRate, 0) > 50 ? "BUY" : "SELL"}
+                              </span>
+                              <span
+                                className={`text-xs px-2 py-0.5 rounded-full border ${getRiskColor(
+                                  suggestion.riskLevel
+                                )}`}
+                              >
+                                {suggestion.riskLevel}
+                              </span>
+                            </div>
+                            <span className="text-sm font-bold">
+                              {formatVNDCurrency(toNumber(suggestion.price, 0))}
+                            </span>
+                          </div>
+
+                          <div className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                            {suggestion.reason}
+                          </div>
+
+                          <div className="flex justify-between items-center mt-2">
+                            <div className="text-xs">
+                              <span
+                                className={
+                                  isDarkMode ? "text-gray-400" : "text-gray-600"
+                                }
+                              >
+                                Win rate:{" "}
+                              </span>
+                              <span
+                                className={`font-bold ${
+                                  toNumber(suggestion.winRate, 0) > 60
+                                    ? "text-emerald-500"
+                                    : toNumber(suggestion.winRate, 0) > 40
+                                    ? "text-amber-500"
+                                    : "text-rose-500"
+                                }`}
+                              >
+                                {toNumber(suggestion.winRate, 0)}%
+                              </span>
+                            </div>
+                            <div className="text-xs">
+                              <span
+                                className={
+                                  isDarkMode ? "text-gray-400" : "text-gray-600"
+                                }
+                              >
+                                Confidence:{" "}
+                              </span>
+                              <span className="font-bold">
+                                {clamp(toNumber(suggestion.confidence, 0), 0, 100)}%
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-center py-8 text-gray-500">
+                      <svg
+                        className="w-12 h-12 mx-auto mb-3 text-gray-400"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth="2"
+                          d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                        />
+                      </svg>
+                      <p>No AI suggestions recorded yet</p>
+                      <p className="text-sm mt-1">
+                        AI will display suggestions as soon as strong signals
+                        appear.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* STRATEGY TESTER TAB (placeholder) */}
           </div>
         </div>
       )}

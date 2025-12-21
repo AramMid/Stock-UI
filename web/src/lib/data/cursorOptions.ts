@@ -30,3 +30,8 @@ export const cursorOptions = [
     cursor: 'move'
   }
 ];
+
+// Initialize cursor options globally when the module loads
+if (typeof window !== 'undefined') {
+  (window as any).cursorOptions = cursorOptions;
+}

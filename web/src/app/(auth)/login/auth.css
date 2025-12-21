@@ -1,0 +1,285 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+@import url('https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css');
+
+:root {
+  /* Bảng màu Trading Modern */
+  --trading-bg: #0b0e11;        /* Nền đen sâu */
+  --trading-surface: #1e2329;   /* Màu bề mặt các khối */
+  --trading-primary: #00ffc2;   /* Màu xanh neon điểm nhấn (Buy/Profit) */
+  --trading-accent: #2962ff;    /* Màu xanh dương TradingView */
+  --trading-text: #eaecef;      /* Màu chữ trắng sáng */
+  --trading-text-dim: #848e9c;  /* Màu chữ xám mờ */
+  --glass-border: rgba(255, 255, 255, 0.1);
+}
+
+/* 1. Wrapper bao ngoài: Tạo nền không gian tối */
+.auth-wrapper {
+  background-color: var(--trading-bg);
+  /* Tạo nền gradient tối tạo chiều sâu */
+  background: radial-gradient(circle at top right, #1f2b3e 0%, #0b0e11 60%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  min-height: 100vh;
+  width: 100vw;
+  font-family: 'Inter', sans-serif; /* Đổi sang font Inter cho hiện đại */
+  color: var(--trading-text);
+}
+
+/* 2. Container chính: To hơn, bo góc nhỏ hơn, hiệu ứng kính */
+.auth-container {
+  background-color: var(--trading-surface);
+  border-radius: 16px; /* Bo góc ít hơn để trông cứng cáp */
+  /* Hiệu ứng đổ bóng phát sáng nhẹ */
+  box-shadow: 0 0 40px rgba(0, 0, 0, 0.6), 0 0 0 1px var(--glass-border);
+  position: relative;
+  overflow: hidden;
+  
+  /* --- TĂNG KÍCH THƯỚC TẠI ĐÂY --- */
+  width: 1100px;  /* Rộng hơn (Cũ: 768px) */
+  max-width: 95%;
+  min-height: 650px; /* Cao hơn (Cũ: 480px) */
+}
+
+/* Typography & Elements */
+.auth-container h1 {
+  font-weight: 700;
+  margin-bottom: 10px;
+  letter-spacing: -0.5px;
+}
+
+.auth-container p {
+  font-size: 15px;
+  line-height: 24px;
+  letter-spacing: 0.3px;
+  margin: 20px 0 30px;
+  color: var(--trading-text-dim);
+}
+
+.auth-container span {
+  font-size: 13px;
+  color: var(--trading-text-dim);
+  margin-bottom: 10px;
+}
+
+.auth-container a {
+  color: var(--trading-text);
+  font-size: 13px;
+  text-decoration: none;
+  margin: 15px 0 10px;
+  transition: color 0.3s;
+}
+.auth-container a:hover {
+  color: var(--trading-primary);
+  text-decoration: underline;
+}
+
+/* BUTTON STYLES: Gradient Neon */
+.auth-container button {
+  background: linear-gradient(90deg, var(--trading-accent), #0039cb);
+  color: #fff;
+  font-size: 14px; /* Chữ to hơn */
+  padding: 14px 50px; /* Nút to hơn */
+  border: 1px solid transparent;
+  border-radius: 8px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  margin-top: 15px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  box-shadow: 0 4px 15px rgba(41, 98, 255, 0.4); /* Glow effect */
+}
+
+.auth-container button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(41, 98, 255, 0.6);
+}
+
+/* GHOST BUTTON (Nút trong suốt) */
+.auth-container button.ghost {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  box-shadow: none;
+}
+.auth-container button.ghost:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: #fff;
+}
+
+/* INPUT FIELDS: Dark theme styles */
+.auth-container form {
+  background-color: var(--trading-surface); /* Nền form tối */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  padding: 0 60px; /* Padding rộng hơn */
+  height: 100%;
+}
+
+.auth-container input {
+  background-color: #0b0e11; /* Input nền đen */
+  border: 1px solid #2b3139; /* Viền xám tối */
+  margin: 8px 0;
+  padding: 14px 18px; /* Input cao hơn */
+  font-size: 14px;
+  color: #fff;
+  border-radius: 8px;
+  width: 100%;
+  outline: none;
+  transition: all 0.3s;
+}
+
+.auth-container input:focus {
+  border-color: var(--trading-accent); /* Focus màu xanh */
+  box-shadow: 0 0 0 2px rgba(41, 98, 255, 0.2);
+}
+.auth-container input::placeholder {
+  color: #474d57;
+}
+
+/* --- ANIMATION LOGIC (Giữ nguyên logic cũ nhưng thêm !important) --- */
+
+.form-container {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  transition: transform 0.6s ease-in-out !important;
+}
+
+.sign-in {
+  left: 0;
+  width: 50%;
+  z-index: 2;
+}
+
+.auth-container.active .sign-in {
+  transform: translateX(100%);
+}
+
+.sign-up {
+  left: 0;
+  width: 50%;
+  opacity: 0;
+  z-index: 1;
+}
+
+.auth-container.active .sign-up {
+  transform: translateX(100%);
+  opacity: 1;
+  z-index: 5;
+  animation: move 0.6s forwards;
+}
+
+@keyframes move {
+  0%, 49.99% { opacity: 0; z-index: 1; }
+  50%, 100% { opacity: 1; z-index: 5; }
+}
+
+/* SOCIAL ICONS */
+.social-icons { margin: 20px 0; }
+.social-icons a {
+  border: 1px solid #474d57;
+  color: var(--trading-text);
+  border-radius: 50%; /* Icon tròn */
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  margin: 0 6px;
+  width: 44px;
+  height: 44px;
+  transition: all 0.3s;
+  background: rgba(255,255,255,0.05);
+}
+.social-icons a:hover {
+  background: var(--trading-accent);
+  border-color: var(--trading-accent);
+  color: #fff;
+}
+
+/* --- TOGGLE PANEL (PHẦN CHUYỂN ĐỘNG) --- */
+
+.toggle-container {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 50%;
+  height: 100%;
+  overflow: hidden;
+  transition: all 0.6s ease-in-out !important;
+  /* Bo góc ít hơn cho hiện đại */
+  border-radius: 100px 0 0 100px; 
+  z-index: 1000;
+}
+
+.auth-container.active .toggle-container {
+  transform: translateX(-100%);
+  border-radius: 0 100px 100px 0;
+}
+
+.toggle {
+  position: relative;
+  overflow: hidden;
+  height: 100%;
+  width: 200%;
+  left: -100%;
+  transform: translateX(0);
+  transition: all 0.6s ease-in-out !important;
+}
+
+/* 🔥 Video nền toàn phần */
+.toggle-video {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;     /* Giúp video fill toàn nền */
+  z-index: 0;
+  opacity: 0.85;         /* Giảm opacity để lộ nội dung */
+}
+
+/* Nội dung nằm trên video */
+.toggle-panel {
+  position: relative;
+  z-index: 2;            /* Đè lên video */
+}
+
+
+/* Thêm họa tiết nền dạng lưới (Grid) cho phần Toggle để trông Tech hơn */
+.toggle::before {
+  content: '';
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  background-image: 
+    linear-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+  background-size: 30px 30px;
+  opacity: 0.5;
+}
+
+.auth-container.active .toggle { transform: translateX(50%); }
+
+.toggle-panel {
+  position: absolute;
+  width: 50%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  padding: 0 30px;
+  text-align: center;
+  top: 0;
+  transform: translateX(0);
+  transition: all 0.6s ease-in-out !important;
+  z-index: 2; /* Đè lên lớp lưới nền */
+}
+
+.toggle-left { transform: translateX(-200%); }
+.auth-container.active .toggle-left { transform: translateX(0); }
+.toggle-right { right: 0; transform: translateX(0); }
+.auth-container.active .toggle-right { transform: translateX(200%); }

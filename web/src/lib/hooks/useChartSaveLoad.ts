@@ -100,7 +100,7 @@ export default function useChartSaveLoad(): UseChartSaveLoadReturn {
 
       return parsed;
     } catch (error) {
-      console.error("Error reading saved charts:", error);
+      // Error reading saved charts handling
       return { charts: [], lastUpdated: Date.now() };
     }
   }, []);
@@ -113,7 +113,7 @@ export default function useChartSaveLoad(): UseChartSaveLoadReturn {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(chartsList));
         return true;
       } catch (error) {
-        console.error("Error saving charts:", error);
+        // Error saving charts handling
         return false;
       }
     },
@@ -330,7 +330,7 @@ export default function useChartSaveLoad(): UseChartSaveLoadReturn {
       const timer = setInterval(async () => {
         // This would be called by the component using this hook
         // The component should trigger an update with current chart state
-        console.log(`Auto-save triggered for chart ${chartId}`);
+        // Auto-save triggered for chart
       }, interval);
 
       autoSaveTimers.set(chartId, timer);

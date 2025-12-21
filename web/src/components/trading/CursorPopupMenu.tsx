@@ -6,20 +6,32 @@ interface CursorPopupMenuProps {
   isDarkMode?: boolean;
   isOpen: boolean;
   onClose: () => void;
-  onCursorSelect: (cursorType: 'diagonal' | 'dot' | 'arrow' | 'illustration') => void;
+  onCursorSelect: (
+    cursorType: "diagonal" | "dot" | "arrow" | "illustration"
+  ) => void;
   position?: { x: number; y: number };
 }
 
-
-export default function CursorPopupMenu({ 
-  isDarkMode = true, 
-  isOpen, 
-  onClose, 
+export default function CursorPopupMenu({
+  isDarkMode = true,
+  isOpen,
+  onClose,
   onCursorSelect,
-  position = { x: 0, y: 0 }
+  position = { x: 0, y: 0 },
 }: CursorPopupMenuProps) {
-  const [selectedCursor, setSelectedCursor] = useState<'diagonal' | 'dot' | 'arrow' | 'illustration'>('dot');
+  const [selectedCursor, setSelectedCursor] = useState<
+    "diagonal" | "dot" | "arrow" | "illustration"
+  >("arrow");
   const menuRef = useRef<HTMLDivElement>(null);
+
+  // Update selected cursor when popup opens to match current drawing service cursor
+  useEffect(() => {
+    if (isOpen) {
+      // Get the current cursor type from drawing service
+      const currentCursorType = (window as any).currentCursorType || "arrow";
+      setSelectedCursor(currentCursorType);
+    }
+  }, [isOpen]);
 
   // Close menu when clicking outside
   useEffect(() => {
@@ -30,33 +42,34 @@ export default function CursorPopupMenu({
     };
 
     if (isOpen) {
-      document.addEventListener('mousedown', handleClickOutside);
+      document.addEventListener("mousedown", handleClickOutside);
     }
 
     return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener("mousedown", handleClickOutside);
     };
   }, [isOpen, onClose]);
 
   // Close menu on Escape key
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
+      if (event.key === "Escape") {
         onClose();
       }
     };
 
     if (isOpen) {
-      document.addEventListener('keydown', handleKeyDown);
+      document.addEventListener("keydown", handleKeyDown);
     }
 
     return () => {
-      document.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener("keydown", handleKeyDown);
     };
   }, [isOpen, onClose]);
 
-  const handleCursorSelect = (cursorType: 'diagonal' | 'dot' | 'arrow' | 'illustration') => {
-    console.log('CursorPopupMenu: Selecting cursor type:', cursorType);
+  const handleCursorSelect = (
+    cursorType: "diagonal" | "dot" | "arrow" | "illustration"
+  ) => {
     setSelectedCursor(cursorType);
     onCursorSelect(cursorType);
     // Close menu after a short delay to ensure cursor selection is processed
@@ -68,7 +81,7 @@ export default function CursorPopupMenu({
   if (!isOpen) return null;
 
   const menuStyle = {
-    position: 'fixed' as const,
+    position: "fixed" as const,
     left: `${position.x}px`,
     top: `${position.y}px`,
     zIndex: 1000,
@@ -78,14 +91,14 @@ export default function CursorPopupMenu({
     <>
       {/* Backdrop */}
       <div className="fixed inset-0 z-40" onClick={onClose} />
-      
+
       {/* Popup Menu */}
       <div
         ref={menuRef}
         style={menuStyle}
         className={`w-48 rounded shadow-lg border z-50 ${
-          isDarkMode 
-            ? "bg-[#2a2e39] border-gray-600" 
+          isDarkMode
+            ? "bg-[#2a2e39] border-gray-600"
             : "bg-white border-gray-200"
         }`}
       >
@@ -95,19 +108,19 @@ export default function CursorPopupMenu({
             {cursorOptions.map((option) => {
               const IconComponent = option.icon;
               const isSelected = selectedCursor === option.id;
-              
+
               return (
                 <button
                   key={option.id}
                   onClick={() => handleCursorSelect(option.id)}
                   className={`w-full flex items-center gap-2 p-2 rounded transition-all ${
                     isSelected
-                      ? isDarkMode 
-                        ? "bg-gray-600 text-white" 
+                      ? isDarkMode
+                        ? "bg-gray-600 text-white"
                         : "bg-gray-200 text-black"
-                      : isDarkMode 
-                        ? "hover:bg-gray-600 text-gray-300" 
-                        : "hover:bg-gray-100 text-gray-700"
+                      : isDarkMode
+                      ? "hover:bg-gray-600 text-gray-300"
+                      : "hover:bg-gray-100 text-gray-700"
                   }`}
                 >
                   <IconComponent className="w-4 h-4" />

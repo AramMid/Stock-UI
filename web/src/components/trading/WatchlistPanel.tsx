@@ -14,12 +14,14 @@ interface WatchlistPanelProps {
   onSymbolSelect: (symbol: string) => void;
   selectedSymbol: string;
   isDarkMode?: boolean;
+  positions?: Map<string, number>; // symbol -> quantity mapping
 }
 
 export default function WatchlistPanel({
   onSymbolSelect,
   selectedSymbol,
   isDarkMode = true,
+  positions = new Map(),
 }: WatchlistPanelProps) {
   const [activeTab, setActiveTab] = useState<"STOCKS" | "FOREX">("STOCKS");
 
@@ -130,8 +132,9 @@ export default function WatchlistPanel({
       {/* Watchlist Items */}
       <div className="flex-1 overflow-y-auto">
         {/* Column Headers */}
-        <div className="grid grid-cols-3 gap-2 px-4 py-2 text-xs text-slate-400 border-b border-slate-700">
+        <div className="grid grid-cols-4 gap-2 px-4 py-2 text-xs text-slate-400 border-b border-slate-700">
           <span>Symbol</span>
+          <span className="text-right">Pos</span>
           <span className="text-right">Last</span>
           <span className="text-right">Chg</span>
           <span className="text-right">Chg%</span>
@@ -142,7 +145,7 @@ export default function WatchlistPanel({
           <div
             key={item.symbol}
             onClick={() => onSymbolSelect(item.symbol)}
-            className={`grid grid-cols-3 gap-2 px-4 py-3 text-xs cursor-pointer hover:bg-slate-800 transition-colors border-b border-slate-800 ${
+            className={`grid grid-cols-4 gap-2 px-4 py-3 text-xs cursor-pointer hover:bg-slate-800 transition-colors border-b border-slate-800 ${
               selectedSymbol === item.symbol ? "bg-slate-800" : ""
             }`}
           >
@@ -152,6 +155,14 @@ export default function WatchlistPanel({
               <span className="text-slate-400 text-xs truncate">
                 {item.name}
               </span>
+            </div>
+
+            {/* Position (shares owned) */}
+            <div className="text-right">
+              <span className="text-white font-mono">
+                {(positions.get(item.symbol) || 0).toLocaleString()}
+              </span>
+              <span className="text-slate-400 text-xs block">Shares</span>
             </div>
 
             {/* Price */}
@@ -231,7 +242,7 @@ export default function WatchlistPanel({
 
               <div className="grid grid-cols-2 gap-4 text-xs">
                 <div>
-                  <span className="text-slate-400">DAY'S RANGE</span>
+                  <span className="text-slate-400">DAY&apos;S RANGE</span>
                   <div className="text-white font-mono">
                     <span>
                       {selectedSymbol === "AAPL" ? "240.21" : "242.50"}

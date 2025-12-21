@@ -266,10 +266,8 @@ export default function ChartToolbar({
           <h3 className="text-sm font-semibold mb-3">Technical Indicators</h3>
           <div className="grid grid-cols-2 gap-2">
             {[
-              "Moving Average",
               "RSI",
               "MACD",
-              "Bollinger Bands",
               "Stochastic",
               "Williams %R",
               "CCI",

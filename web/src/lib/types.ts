@@ -65,6 +65,10 @@ export interface OrderBook {
   asks: OrderBookLevel[]; // Sell orders - sorted by price ascending
   lastTradedPrice: number;
   timestamp: Date;
+  symbol?: string;
+  spread?: number;
+  totalBidVolume?: number;
+  totalAskVolume?: number;
 }
 
 export interface Trade {
@@ -73,6 +77,7 @@ export interface Trade {
   quantity: number;
   timestamp: Date;
   side: 'buy' | 'sell';
+  symbol?: string;
 }
 
 export interface OrderBookUpdate {
@@ -80,4 +85,8 @@ export interface OrderBookUpdate {
   asks: OrderBookLevel[];
   lastTradedPrice: number;
   timestamp: Date;
+  symbol?: string;
+  spread?: number;
+  totalBidVolume?: number;
+  totalAskVolume?: number;
 }

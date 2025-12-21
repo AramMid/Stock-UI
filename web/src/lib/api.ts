@@ -2,6 +2,82 @@ import { Time } from "lightweight-charts";
 import { YahooQuoteData, Timeframe } from "./types";
 import { apiCache } from "./cache";
 
+/**
+ * Fetch current market price from Yahoo Finance API
+ * @param symbol Stock symbol (e.g., "VIC.VN")
+ * @returns Current price
+ */
+/**
+ * Fetch current market price from Yahoo Finance API (robust)
+ * - Handles last close = null (common)
+ * - Fallback to meta.regularMarketPrice if needed
+ */
+export async function fetchCurrentPrice(
+  symbol: string = "VIC.VN"
+): Promise<number> {
+  const url = `/api/yahoo?symbol=${encodeURIComponent(
+    symbol
+  )}&interval=1d&range=5d`; // 5d để có nhiều candle hơn
+
+  const res = await fetch(url, {
+    method: "GET",
+    headers: { Accept: "application/json" },
+    cache: "no-store",
+  });
+
+  const text = await res.text();
+
+  // Nếu API proxy của bạn trả HTML / text lạ -> log ra để debug
+  if (!res.ok) {
+    throw new Error(
+      `Failed to fetch price: ${res.status} ${res.statusText} | ${text.slice(
+        0,
+        120
+      )}`
+    );
+  }
+
+  let json: any;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    throw new Error(
+      `Invalid JSON from /api/yahoo | sample: ${text.slice(0, 120)}`
+    );
+  }
+
+  const result = json?.chart?.result?.[0];
+  if (!result) {
+    throw new Error("Invalid Yahoo response: missing chart.result[0]");
+  }
+
+  const quotes = result?.indicators?.quote?.[0];
+  const closes: Array<number | null> | undefined = quotes?.close;
+
+  // 1) Ưu tiên lấy close hợp lệ gần nhất (scan ngược)
+  if (Array.isArray(closes) && closes.length > 0) {
+    for (let i = closes.length - 1; i >= 0; i--) {
+      const v = closes[i];
+      if (typeof v === "number" && Number.isFinite(v) && v > 0) return v;
+    }
+  }
+
+  // 2) Fallback sang meta (hay có regularMarketPrice)
+  const metaPrice =
+    result?.meta?.regularMarketPrice ?? result?.meta?.chartPreviousClose;
+
+  if (
+    typeof metaPrice === "number" &&
+    Number.isFinite(metaPrice) &&
+    metaPrice > 0
+  ) {
+    return metaPrice;
+  }
+
+  throw new Error(
+    "No valid price data available (close[] all null & meta missing)"
+  );
+}
 
 export async function fetchYahooSeries(
   symbol = "FUESSV30.HM",
@@ -9,12 +85,13 @@ export async function fetchYahooSeries(
   isPrivateMode: boolean = false
 ): Promise<YahooQuoteData[]> {
   // Create cache key - include private mode in cache key to separate data
-  const cacheKey = `${symbol}-${timeframe}-${isPrivateMode ? 'private' : 'public'}`;
+  const cacheKey = `${symbol}-${timeframe}-${
+    isPrivateMode ? "private" : "public"
+  }`;
 
   // Check cache first
   const cachedData = apiCache.get(cacheKey);
   if (cachedData) {
-    console.log(`Using cached data for ${cacheKey}`);
     return cachedData;
   }
 
@@ -150,7 +227,7 @@ export async function fetchYahooSeries(
     }
   }
 
-  console.log(`Fetching fresh data for ${cacheKey}`);
+  // Fetching fresh data from API
 
   try {
     const res = await fetch(
@@ -167,17 +244,13 @@ export async function fetchYahooSeries(
     );
 
     if (!res.ok) {
-      console.error(`API request failed: ${res.status} ${res.statusText}`);
-  
       let errorMessage = `Failed to fetch data: ${res.statusText}`;
       try {
         const errorData = await res.json();
         if (errorData.error) {
           errorMessage = errorData.error;
         }
-      } catch (e) {
-
-      }
+      } catch (e) {}
       throw new Error(errorMessage);
     }
 
@@ -213,8 +286,8 @@ export async function fetchYahooSeries(
     if (!isPrivateMode) {
       // Filter data to only include dates from November 2025 onwards
       // Note: This is a simplified approach. In practice, you might want to adjust this based on your needs.
-      const november2025Timestamp = new Date('2025-11-01').getTime() / 1000;
-      data = data.filter(d => (d.time as number) >= november2025Timestamp);
+      const november2025Timestamp = new Date("2025-11-01").getTime() / 1000;
+      data = data.filter((d) => (d.time as number) >= november2025Timestamp);
     }
 
     // Cache the result
@@ -222,12 +295,9 @@ export async function fetchYahooSeries(
 
     return data;
   } catch (error) {
-    console.error(`Error fetching data for ${symbol}:`, error);
-
     // Return cached data if available, even if stale
     const staleData = apiCache.get(cacheKey);
     if (staleData) {
-      console.log(`Using stale cached data for ${cacheKey}`);
       return staleData;
     }
 

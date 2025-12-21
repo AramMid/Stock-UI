@@ -1,4 +1,19 @@
 "use client";
+import { formatVND } from "@/lib/order-management";
+import { getExchangeBySymbol, calculatePriceBands } from "@/lib/position-sizing";
+import { useMarketData } from "@/lib/hooks/useMarketData"; // Import the useMarketData hook
+
+interface StockData {
+  name: string;
+  exchange: string;
+  price: number;
+  change: number;
+  changePercent: number;
+  dayLow: number;
+  dayHigh: number;
+  marketStatus: string;
+  isVN: boolean;
+}
 
 interface StockInfoSectionProps {
   selectedSymbol: string;
@@ -11,6 +26,12 @@ export default function StockInfoSection({
   isDarkMode,
   currentVolume = 0,
 }: StockInfoSectionProps) {
+  // Use the useMarketData hook to get real data
+  const { marketData, loading, error } = useMarketData([selectedSymbol]);
+  
+  // Get the real market data for the selected symbol
+  const realMarketData = marketData[selectedSymbol];
+  
   // Format volume for display
   const formatVolume = (vol: number) => {
     if (vol >= 1000000000) {
@@ -23,129 +44,40 @@ export default function StockInfoSection({
     return vol.toLocaleString();
   };
 
-  // Mock data based on selected symbol
-  const getStockData = (symbol: string) => {
-    const stockData: Record<string, any> = {
-      "VIC.VN": {
-        name: "Vingroup JSC",
-        exchange: "HOSE",
-        price: 45200,
-        change: 800,
-        changePercent: 1.8,
-        dayLow: 44200,
-        dayHigh: 45800,
-        marketStatus: "Market closed",
-        isVN: true,
-      },
-      "VHM.VN": {
-        name: "Vinhomes JSC",
-        exchange: "HOSE",
-        price: 55500,
-        change: -500,
-        changePercent: -0.89,
-        dayLow: 54800,
-        dayHigh: 56200,
-        marketStatus: "Market closed",
-        isVN: true,
-      },
-      "VCB.VN": {
-        name: "Vietcombank",
-        exchange: "HOSE",
-        price: 82700,
-        change: 1200,
-        changePercent: 1.47,
-        dayLow: 81200,
-        dayHigh: 83500,
-        marketStatus: "Market closed",
-        isVN: true,
-      },
-      "TCB.VN": {
-        name: "Techcombank",
-        exchange: "HOSE",
-        price: 22950,
-        change: 350,
-        changePercent: 1.55,
-        dayLow: 22400,
-        dayHigh: 23200,
-        marketStatus: "Market closed",
-        isVN: true,
-      },
-      "FPT.VN": {
-        name: "FPT Corporation",
-        exchange: "HOSE",
-        price: 123500,
-        change: -1500,
-        changePercent: -1.2,
-        dayLow: 122000,
-        dayHigh: 125000,
-        marketStatus: "Market closed",
-        isVN: true,
-      },
-      "VNM.VN": {
-        name: "Vietnam Dairy Products",
-        exchange: "HOSE",
-        price: 48200,
-        change: 600,
-        changePercent: 1.26,
-        dayLow: 47400,
-        dayHigh: 48800,
-        marketStatus: "Market closed",
-        isVN: true,
-      },
-      "HPG.VN": {
-        name: "Hoa Phat Group",
-        exchange: "HOSE",
-        price: 18850,
-        change: -250,
-        changePercent: -1.31,
-        dayLow: 18500,
-        dayHigh: 19200,
-        marketStatus: "Market closed",
-        isVN: true,
-      },
-      "MSN.VN": {
-        name: "Masan Group",
-        exchange: "HOSE",
-        price: 67800,
-        change: 2100,
-        changePercent: 3.2,
-        dayLow: 65200,
-        dayHigh: 68500,
-        marketStatus: "Market closed",
-        isVN: true,
-      },
-      AAPL: {
-        name: "Apple Inc.",
-        exchange: "NASDAQ",
-        price: 245.5,
-        change: 7.62,
-        changePercent: 3.2,
-        dayLow: 240.21,
-        dayHigh: 246.3,
-        marketStatus: "Market closed",
-        isVN: false,
-      },
-      default: {
-        name: "Vingroup JSC",
-        exchange: "HOSE",
-        price: 45200,
-        change: 800,
-        changePercent: 1.8,
-        dayLow: 44200,
-        dayHigh: 45800,
-        marketStatus: "Market closed",
-        isVN: true,
-      },
-    };
-    return stockData[symbol] || stockData.default;
-  };
+  // Use real data if available, otherwise show loading state
+  const stockData: StockData = realMarketData 
+    ? {
+        name: realMarketData.symbol, // Will be updated with real name if needed
+        exchange: getExchangeBySymbol(realMarketData.symbol),
+        price: realMarketData.price,
+        change: realMarketData.change,
+        changePercent: realMarketData.changePercent,
+        dayLow: realMarketData.price * 0.99, // Approximate values
+        dayHigh: realMarketData.price * 1.01,
+        marketStatus: "Market open", // Default status
+        isVN: realMarketData.symbol.includes(".VN"),
+      }
+    : {
+        name: selectedSymbol,
+        exchange: getExchangeBySymbol(selectedSymbol),
+        price: 0,
+        change: 0,
+        changePercent: 0,
+        dayLow: 0,
+        dayHigh: 0,
+        marketStatus: "Loading...",
+        isVN: selectedSymbol.includes(".VN"),
+      };
 
-  const stockData = getStockData(selectedSymbol);
   const isPositive = stockData.change >= 0;
   const rangePercentage =
-    ((stockData.price - stockData.dayLow) /
-      (stockData.dayHigh - stockData.dayLow)) *
-    100;
+    stockData.dayHigh !== stockData.dayLow
+      ? ((stockData.price - stockData.dayLow) /
+          (stockData.dayHigh - stockData.dayLow)) *
+        100
+      : 50;
+
+  const priceBands = calculatePriceBands(stockData.price, getExchangeBySymbol(selectedSymbol));
 
   return (
     <div
@@ -197,7 +129,7 @@ export default function StockInfoSection({
             }`}
           >
             {stockData.isVN
-              ? stockData.price.toLocaleString("vi-VN")
+              ? formatVND(stockData.price)
               : stockData.price.toFixed(2)}
           </div>
           <div
@@ -208,7 +140,7 @@ export default function StockInfoSection({
             <span className="font-medium">
               {isPositive ? "+" : ""}
               {stockData.isVN
-                ? stockData.change.toLocaleString("vi-VN")
+                ? formatVND(stockData.change)
                 : stockData.change.toFixed(2)}
             </span>
             <span className="font-medium">
@@ -233,7 +165,7 @@ export default function StockInfoSection({
                 isDarkMode ? "text-gray-400" : "text-gray-600"
               }`}
             >
-              DAY'S RANGE
+              DAY&apos;S RANGE
             </span>
             <span
               className={`text-xs transition-colors duration-200 ${
@@ -241,7 +173,7 @@ export default function StockInfoSection({
               }`}
             >
               {stockData.isVN
-                ? stockData.dayHigh.toLocaleString("vi-VN")
+                ? formatVND(stockData.dayHigh)
                 : stockData.dayHigh.toFixed(2)}
             </span>
           </div>
@@ -269,13 +201,41 @@ export default function StockInfoSection({
           <div className="flex justify-between">
             <span className="text-gray-400 text-xs">
               {stockData.isVN
-                ? stockData.dayLow.toLocaleString("vi-VN")
+                ? formatVND(stockData.dayLow)
                 : stockData.dayLow.toFixed(2)}
             </span>
             <span className="text-gray-400 text-xs">
               {stockData.isVN
-                ? stockData.dayHigh.toLocaleString("vi-VN")
+                ? formatVND(stockData.dayHigh)
                 : stockData.dayHigh.toFixed(2)}
+            </span>
+          </div>
+        </div>
+
+        {/* Price Bands */}
+        <div className="space-y-2 mb-4">
+          <div className="flex justify-between items-center">
+            <span className={`text-xs font-medium ${isDarkMode ? "text-gray-400" : "text-gray-600"}`}>
+              REF
+            </span>
+            <span className={`font-medium ${isDarkMode ? "text-yellow-400" : "text-yellow-600"}`}>
+              {stockData.isVN ? formatVND(priceBands.reference) : priceBands.reference.toFixed(2)}
+            </span>
+          </div>
+          <div className="flex justify-between items-center">
+            <span className={`text-xs font-medium ${isDarkMode ? "text-gray-400" : "text-gray-600"}`}>
+              CEIL
+            </span>
+            <span className={`font-medium ${isDarkMode ? "text-purple-400" : "text-purple-600"}`}>
+              {stockData.isVN ? formatVND(priceBands.ceiling) : priceBands.ceiling.toFixed(2)}
+            </span>
+          </div>
+          <div className="flex justify-between items-center">
+            <span className={`text-xs font-medium ${isDarkMode ? "text-gray-400" : "text-gray-600"}`}>
+              FLOOR
+            </span>
+            <span className={`font-medium ${isDarkMode ? "text-cyan-400" : "text-cyan-600"}`}>
+              {stockData.isVN ? formatVND(priceBands.floor) : priceBands.floor.toFixed(2)}
             </span>
           </div>
         </div>
@@ -296,7 +256,7 @@ export default function StockInfoSection({
               }`}
             >
               {stockData.isVN
-                ? (stockData.dayLow + 800).toLocaleString("vi-VN")
+                ? formatVND(stockData.dayLow + 800)
                 : (stockData.dayLow + 1.2).toFixed(2)}
             </span>
           </div>

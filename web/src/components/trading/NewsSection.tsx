@@ -1,42 +1,82 @@
 "use client";
 
+interface NewsItem {
+  time: string;
+  source: string;
+  title: string;
+  isBreaking: boolean;
+  category?: string;
+  url: string; // Required URL for news article
+}
+
 interface NewsSectionProps {
   isDarkMode: boolean;
 }
 
 export default function NewsSection({ isDarkMode }: NewsSectionProps) {
-  const newsItems = [
+  const englishStockNews: NewsItem[] = [
     {
-      time: "08:40 • Sep 20",
-      source: "TradingView",
-      title: "Nikkei Futures Gain in Holiday-Thinned Session vs Polls, Stocks",
-      isBreaking: false,
-    },
-    {
-      time: "07:30 • Sep 20",
-      source: "Reuters",
-      title: "Technology Stocks Rally as Federal Reserve Signals Rate Cuts",
+      time: "22:21 • 10/12/2025",
+      source: "NLĐ",
+      title: "Vietnamese stocks show no bubble, probability of market rise in December at 75%",
       isBreaking: true,
+      category: "Analysis",
+      url: "https://nld.com.vn/chung-khoan-viet-nam-khong-co-bong-bong-xac-suat-tang-diem-thang-12-toi-75-196251210222120889.htm"
     },
     {
-      time: "06:15 • Sep 20",
-      source: "MarketWatch",
-      title: "Analysts Upgrade Apple Stock Following Strong Quarterly Results",
+      time: "Live Updates",
+      source: "VnExpress",
+      title: "Stock Market - VnExpress Business",
       isBreaking: false,
+      category: "News",
+      url: "https://vnexpress.net/kinh-doanh/chung-khoan"
     },
     {
-      time: "05:45 • Sep 20",
-      source: "CNBC",
-      title: "Market Opens Higher as Investors Digest Economic Data",
-      isBreaking: false,
+      time: "22:19 • 10/12/2025",
+      source: "Báo Mới",
+      title: "Stock market on 10/12/2025: VN-Index drops 28.19 points to 1,718.98 points",
+      isBreaking: true,
+      category: "Market",
+      url: "https://baomoi.com/thi-truong-chung-khoan-ngay-10-12-2025-vn-index-giam-28-19-diem-xuong-1-718-98-diem-c53976379.epi"
     },
     {
-      time: "04:30 • Sep 20",
-      source: "Bloomberg",
-      title: "Fed Officials Signal Potential Policy Shift in Coming Months",
+      time: "15:30 • 10/12/2025",
+      source: "KT&TC Magazine",
+      title: "Capital withdrawal surge, stock market in December reaches peak",
       isBreaking: false,
+      category: "Analysis",
+      url: "https://tapchikinhtetaichinh.vn/thoai-von-don-dap-thi-truong-chung-khoan-thang-12-vao-cao-diem-127432.html"
     },
+    {
+      time: "10:45 • 10/12/2025",
+      source: "Vietstock",
+      title: "Market Analysis",
+      isBreaking: false,
+      category: "Analysis",
+      url: "https://vietstock.vn/nhan-dinh-thi-truong.htm"
+    },
+    {
+      time: "Live Updates",
+      source: "Cafef",
+      title: "Stock Market",
+      isBreaking: false,
+      category: "News",
+      url: "https://cafef.vn/thi-truong-chung-khoan.chn"
+    },
+    {
+      time: "09:15 • 10/12/2025",
+      source: "VnEconomy",
+      title: "Stock Market Forecast",
+      isBreaking: false,
+      category: "Analysis",
+      url: "https://vneconomy.vn/tag/nhan-dinh-chung-khoan"
+    }
   ];
+
+  // Function to open news article in new tab
+  const openNewsArticle = (url: string) => {
+    window.open(url, '_blank', 'noopener,noreferrer');
+  };
 
   return (
     <div
@@ -58,15 +98,16 @@ export default function NewsSection({ isDarkMode }: NewsSectionProps) {
               isDarkMode ? "text-white" : "text-gray-900"
             }`}
           >
-            Top News Stories
+            Vietnamese Stock Market News
           </h4>
         </div>
 
         {/* News List */}
         <div className="flex-1 overflow-y-auto right-section-scrollbar">
-          {newsItems.map((item, index) => (
+          {englishStockNews.map((item, index) => (
             <div
               key={index}
+              onClick={() => openNewsArticle(item.url)}
               className={`px-4 py-3 border-b cursor-pointer transition-colors duration-200 ${
                 isDarkMode
                   ? "border-[#2a2e39] hover:bg-[#1e222d]"
@@ -98,7 +139,16 @@ export default function NewsSection({ isDarkMode }: NewsSectionProps) {
                 </span>
                 {item.isBreaking && (
                   <span className="bg-red-600 text-white text-[10px] px-1.5 py-0.5 rounded font-medium">
-                    BREAKING
+                    NEW
+                  </span>
+                )}
+                {item.category && (
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                    isDarkMode 
+                      ? "bg-blue-900/50 text-blue-300" 
+                      : "bg-blue-100 text-blue-800"
+                  }`}>
+                    {item.category}
                   </span>
                 )}
               </div>
@@ -125,7 +175,7 @@ export default function NewsSection({ isDarkMode }: NewsSectionProps) {
                   : "text-gray-600 hover:text-gray-900"
               }`}
             >
-              Load more stories...
+              Load more news...
             </button>
           </div>
         </div>

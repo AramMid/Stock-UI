@@ -1,6 +1,8 @@
   "use client";
   import { useState, useEffect } from "react";
   import { ChevronDown, X, Grid, MoreHorizontal, Plus } from "lucide-react";
+  import { formatVND, formatVNDCurrency } from "@/lib/order-management";
+  import { calculateMaxPositionSize, roundDownToLotSize, sharesToLots, getExchangeBySymbol, calculatePriceBands } from "@/lib/position-sizing";
 
   interface OrderPanelProps {
     symbol: string;
@@ -27,7 +29,7 @@
   }: OrderPanelProps) {
     const [activeTab, setActiveTab] = useState<"order" | "dom">("order");
     const [orderType, setOrderType] = useState<OrderType>("Market");
-    const [quantity, setQuantity] = useState(0.01);
+    const [quantity, setQuantity] = useState(100); // Default to 1 lot (100 shares)
     const [price, setPrice] = useState(currentPrice);
     
     // Exit states
@@ -39,6 +41,10 @@
     const priceStep = 100;
     const bidPrice = Math.floor((currentPrice - priceStep) / priceStep) * priceStep;
     const askPrice = Math.ceil((currentPrice + priceStep) / priceStep) * priceStep;
+    
+    // Calculate price bands
+    const exchange = getExchangeBySymbol(symbol);
+    const priceBands = calculatePriceBands(currentPrice, exchange);
 
     // Defaults for VND
     const defaultTP = 65100; 
@@ -49,14 +55,18 @@
     const [stopLossPrice, setStopLossPrice] = useState(defaultSL);
     const [stopLossTicks, setStopLossTicks] = useState(17);
 
-    const tradeValue = quantity * currentPrice;
+    // Ensure quantity is always a multiple of lot size (100 shares)
+    const validQuantity = roundDownToLotSize(quantity);
+    const tradeValue = validQuantity * currentPrice;
 
     const handleAction = () => {
+      // Ensure quantity is always a multiple of lot size (100 shares)
+      const validQuantity = roundDownToLotSize(quantity);
       const orderPrice = orderType === "Market" ? currentPrice : price;
       if (side === "buy") {
-        onBuy(quantity, orderPrice);
+        onBuy(validQuantity, orderPrice);
       } else {
-        onSell(quantity, orderPrice);
+        onSell(validQuantity, orderPrice);
       }
     };
 
@@ -68,10 +78,7 @@
       onSideChange("sell");
     };
 
-    // Format VND currency
-    const formatVND = (value: number) => {
-      return value.toLocaleString('vi-VN');
-    };
+
 
     // Dynamic Theme Classes
     const bgClass = isDarkMode ? "bg-gray-900" : "bg-white";
@@ -154,7 +161,7 @@ return (
                 <span className={`text-lg font-bold transition-colors ${
                   side === "sell" ? sellTextColor : (side === "buy" ? subTextClass : sellTextColor)
                 }`}>
-                  {formatVND(bidPrice)}
+                  {formatVNDCurrency(bidPrice)}
                 </span>
               </button>
 
@@ -173,9 +180,25 @@ return (
                 <span className={`text-lg font-bold transition-colors ${
                   side === "buy" ? buyTextColor : (side === "sell" ? subTextClass : buyTextColor)
                 }`}>
-                  {formatVND(askPrice)}
+                  {formatVNDCurrency(askPrice)}
                 </span>
               </button>
+            </div>
+
+            {/* --- PRICE BANDS --- */}
+            <div className={`flex justify-between text-xs px-2 py-1 rounded ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`}>
+              <div className="flex items-center">
+                <span className={`mr-1 ${isDarkMode ? "text-gray-400" : "text-gray-600"}`}>REF:</span>
+                <span className="font-medium text-yellow-500">{formatVNDCurrency(priceBands.reference)}</span>
+              </div>
+              <div className="flex items-center">
+                <span className={`mr-1 ${isDarkMode ? "text-gray-400" : "text-gray-600"}`}>CEIL:</span>
+                <span className="font-medium text-purple-500">{formatVNDCurrency(priceBands.ceiling)}</span>
+              </div>
+              <div className="flex items-center">
+                <span className={`mr-1 ${isDarkMode ? "text-gray-400" : "text-gray-600"}`}>FLOOR:</span>
+                <span className="font-medium text-cyan-500">{formatVNDCurrency(priceBands.floor)}</span>
+              </div>
             </div>
 
             {/* --- ORDER TYPE TABS --- */}
@@ -205,8 +228,8 @@ return (
                     value={quantity}
                     onChange={(e) => setQuantity(parseFloat(e.target.value))}
                     className={inputBaseClasses}
-                    step="0.01"
-                    min="0.01"
+                    step="100"
+                    min="100"
                   />
                 </div>
               </div>
@@ -338,7 +361,7 @@ return (
             <div className="space-y-1.5 pt-2 pb-2">
               <div className="flex justify-between text-[13px]">
                 <span className={subTextClass}>Trade value</span>
-                <span className={`${textClass} font-mono`}>{formatVND(tradeValue)} <span className="text-[10px] text-gray-500">VND</span></span>
+                <span className={`${textClass} font-mono`}>{formatVNDCurrency(tradeValue)}</span>
               </div>
               <div className="flex justify-between text-[13px]">
                 <span className={subTextClass}>Leverage</span>
@@ -360,7 +383,7 @@ return (
                 {side === "buy" ? "Buy" : "Sell"} {symbol.split('.')[0]}
               </div>
               <div className="text-[11px] font-normal opacity-90 mt-0.5">
-                {quantity} @ {orderType === 'Market' ? 'MKT' : price}
+                {validQuantity} @ {orderType === 'Market' ? 'MKT' : price}
               </div>
             </button>
             

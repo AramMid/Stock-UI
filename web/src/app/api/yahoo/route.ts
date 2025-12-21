@@ -11,10 +11,6 @@ export async function GET(request: NextRequest) {
     const interval = searchParams.get("interval") || "1d";
     const range = searchParams.get("range") || "1y";
 
-    console.log(
-      `API Request - Symbol: ${symbol}, Interval: ${interval}, Range: ${range}`
-    );
-
     // Handle special symbols like FUESSV30.HM
     let yahooSymbol = symbol;
     if (symbol === "FUESSV30.HM") {
@@ -24,8 +20,6 @@ export async function GET(request: NextRequest) {
 
     // Yahoo Finance API endpoint
     const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=${interval}&range=${range}`;
-
-    console.log(`Fetching data from Yahoo Finance: ${yahooUrl}`);
 
     const response = await fetch(yahooUrl, {
       method: "GET",
@@ -41,40 +35,34 @@ export async function GET(request: NextRequest) {
       },
     });
 
-    // if (!response.ok) {
-    //   console.error(
-    //     `Yahoo Finance API error: ${response.status} ${response.statusText}`
-    //   );
-
-    //   // Return mock data for development instead of error
-    //   console.log("Returning mock data due to API error");
-    //   const mockData = generateMockData(symbol);
-    //   return NextResponse.json(mockData, {
-    //     headers: {
-    //       "Access-Control-Allow-Origin": "*",
-    //       "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-    //       "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    //     },
-    //   });
-    // }
-
+    if (!response.ok) {
+      // Yahoo Finance API error handling
+      // Return mock data for development instead of error
+      const mockData = generateMockData(symbol);
+      return NextResponse.json(mockData, {
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type, Authorization",
+        },
+      });
+    }
     const data = await response.json();
 
-    // // Validate the response structure
-    // if (!data.chart || !data.chart.result || data.chart.result.length === 0) {
-    //   console.error("Invalid Yahoo Finance response structure:", data);
+    // Validate the response structure
+    if (!data.chart || !data.chart.result || data.chart.result.length === 0) {
+      // Invalid Yahoo Finance response structure handling
 
-    //   // Return mock data instead of error
-    //   console.log("Returning mock data due to invalid response structure");
-    //   const mockData = generateMockData(symbol);
-    //   return NextResponse.json(mockData, {
-    //     headers: {
-    //       "Access-Control-Allow-Origin": "*",
-    //       "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-    //       "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    //     },
-    //   });
-    // }
+      // Return mock data instead of error
+      const mockData = generateMockData(symbol);
+      return NextResponse.json(mockData, {
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type, Authorization",
+        },
+      });
+    }
 
     // Add CORS headers for development
     const headers = {
@@ -83,24 +71,22 @@ export async function GET(request: NextRequest) {
       "Access-Control-Allow-Headers": "Content-Type, Authorization",
     };
 
-    console.log(`Successfully fetched data for ${symbol}`);
     return NextResponse.json(data, { headers });
   } catch (error) {
-    console.error("Yahoo Finance API route error:", error);
+    // Yahoo Finance API route error handling
 
     // Return mock data if Yahoo Finance is unavailable
-    // const mockData = generateMockData();
+    const mockData = generateMockData();
 
-    // return NextResponse.json(mockData, {
-    //   headers: {
-    //     "Access-Control-Allow-Origin": "*",
-    //     "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-    //     "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    //   },
-    // });
+    return NextResponse.json(mockData, {
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization",
+      },
+    });
   }
 }
-
 
 export async function OPTIONS() {
   return new NextResponse(null, {
@@ -113,124 +99,134 @@ export async function OPTIONS() {
   });
 }
 
+function generateMockData(symbol = "MOCK") {
+  const now = Math.floor(Date.now() / 1000);
+  const dayInSeconds = 24 * 60 * 60;
+  const timestamps: number[] = [];
+  const opens: number[] = [];
+  const highs: number[] = [];
+  const lows: number[] = [];
+  const closes: number[] = [];
+  const volumes: number[] = [];
 
-// function generateMockData(symbol = "MOCK") {
-//   const now = Math.floor(Date.now() / 1000);
-//   const dayInSeconds = 24 * 60 * 60;
-//   const timestamps: number[] = [];
-//   const opens: number[] = [];
-//   const highs: number[] = [];
-//   const lows: number[] = [];
-//   const closes: number[] = [];
-//   const volumes: number[] = [];
+  // Set different base prices for different symbols
+  let currentPrice = 100;
+  if (symbol === "FUESSV30.HM") {
+    currentPrice = 245.3;
+  } else if (symbol === "AAPL") {
+    currentPrice = 245.5;
+  } else if (symbol === "MSFT") {
+    currentPrice = 517.93;
+  }
 
-//   // Set different base prices for different symbols
-//   let currentPrice = 100;
-//   if (symbol === "FUESSV30.HM") {
-//     currentPrice = 245.3;
-//   } else if (symbol === "AAPL") {
-//     currentPrice = 245.5;
-//   } else if (symbol === "MSFT") {
-//     currentPrice = 517.93;
-//   }
+  // Generate 30 days of mock data with more realistic variations
+  let basePrice = currentPrice;
+  for (let i = 29; i >= 0; i--) {
+    const timestamp = now - i * dayInSeconds;
+    timestamps.push(timestamp);
 
-//   // Generate 30 days of mock data
-//   for (let i = 29; i >= 0; i--) {
-//     const timestamp = now - i * dayInSeconds;
-//     timestamps.push(timestamp);
+    // Add more realistic price movements
+    const trend = (Math.random() - 0.5) * 0.02; // -1% to +1% trend
+    const volatility = 0.02 + Math.random() * 0.03; // 2% to 5% volatility
 
-//     const open = +(currentPrice + (Math.random() - 0.5) * 2).toFixed(2);
-//     const changePercent = (Math.random() - 0.5) * 0.08; // -4% to +4%
-//     const close = +(open * (1 + changePercent)).toFixed(2);
-//     const high = +(Math.max(open, close) * (1 + Math.random() * 0.03)).toFixed(
-//       2
-//     );
-//     const low = +(Math.min(open, close) * (1 - Math.random() * 0.03)).toFixed(
-//       2
-//     );
-//     const volume = Math.floor(500000 + Math.random() * 2000000);
+    const open = basePrice;
+    const changePercent = trend + (Math.random() - 0.5) * volatility;
+    const close = +(open * (1 + changePercent)).toFixed(2);
 
-//     opens.push(open);
-//     highs.push(high);
-//     lows.push(low);
-//     closes.push(close);
-//     volumes.push(volume);
+    // Ensure high and low are realistic
+    const high = +(Math.max(open, close) * (1 + Math.random() * 0.01)).toFixed(
+      2
+    );
+    const low = +(Math.min(open, close) * (1 - Math.random() * 0.01)).toFixed(
+      2
+    );
 
-//     currentPrice = close;
-//   }
+    // Volume with realistic variations
+    const volume = Math.floor(
+      (500000 + Math.random() * 2000000) * (0.8 + Math.random() * 0.4)
+    );
 
-//   return {
-//     chart: {
-//       result: [
-//         {
-//           meta: {
-//             currency: symbol === "FUESSV30.HM" ? "VND" : "USD",
-//             symbol: symbol,
-//             exchangeName: symbol === "FUESSV30.HM" ? "HCMC" : "NASDAQ",
-//             instrumentType: "EQUITY",
-//             firstTradeDate: timestamps[0],
-//             regularMarketTime: now,
-//             gmtoffset: 0,
-//             timezone: "GMT",
-//             exchangeTimezoneName: "GMT",
-//             regularMarketPrice: closes[closes.length - 1],
-//             chartPreviousClose: closes[closes.length - 2],
-//             currentTradingPeriod: {
-//               pre: {
-//                 timezone: "GMT",
-//                 start: now - 3600,
-//                 end: now,
-//                 gmtoffset: 0,
-//               },
-//               regular: {
-//                 timezone: "GMT",
-//                 start: now,
-//                 end: now + 3600,
-//                 gmtoffset: 0,
-//               },
-//               post: {
-//                 timezone: "GMT",
-//                 start: now + 3600,
-//                 end: now + 7200,
-//                 gmtoffset: 0,
-//               },
-//             },
-//             dataGranularity: "1d",
-//             range: "1mo",
-//             validRanges: [
-//               "1d",
-//               "5d",
-//               "1mo",
-//               "3mo",
-//               "6mo",
-//               "1y",
-//               "2y",
-//               "5y",
-//               "10y",
-//               "ytd",
-//               "max",
-//             ],
-//           },
-//           timestamp: timestamps,
-//           indicators: {
-//             quote: [
-//               {
-//                 open: opens,
-//                 high: highs,
-//                 low: lows,
-//                 close: closes,
-//                 volume: volumes,
-//               },
-//             ],
-//             adjclose: [
-//               {
-//                 adjclose: closes,
-//               },
-//             ],
-//           },
-//         },
-//       ],
-//       error: null,
-//     },
-//   };
-// }
+    opens.push(open);
+    highs.push(high);
+    lows.push(low);
+    closes.push(close);
+    volumes.push(volume);
+
+    basePrice = close;
+  }
+
+  return {
+    chart: {
+      result: [
+        {
+          meta: {
+            currency: symbol === "FUESSV30.HM" ? "VND" : "USD",
+            symbol: symbol,
+            exchangeName: symbol === "FUESSV30.HM" ? "HCMC" : "NASDAQ",
+            instrumentType: "EQUITY",
+            firstTradeDate: timestamps[0],
+            regularMarketTime: now,
+            gmtoffset: 0,
+            timezone: "GMT",
+            exchangeTimezoneName: "GMT",
+            regularMarketPrice: closes[closes.length - 1],
+            chartPreviousClose: closes[closes.length - 2],
+            currentTradingPeriod: {
+              pre: {
+                timezone: "GMT",
+                start: now - 3600,
+                end: now,
+                gmtoffset: 0,
+              },
+              regular: {
+                timezone: "GMT",
+                start: now,
+                end: now + 3600,
+                gmtoffset: 0,
+              },
+              post: {
+                timezone: "GMT",
+                start: now + 3600,
+                end: now + 7200,
+                gmtoffset: 0,
+              },
+            },
+            dataGranularity: "1d",
+            range: "1mo",
+            validRanges: [
+              "1d",
+              "5d",
+              "1mo",
+              "3mo",
+              "6mo",
+              "1y",
+              "2y",
+              "5y",
+              "10y",
+              "ytd",
+              "max",
+            ],
+          },
+          timestamp: timestamps,
+          indicators: {
+            quote: [
+              {
+                open: opens,
+                high: highs,
+                low: lows,
+                close: closes,
+                volume: volumes,
+              },
+            ],
+            adjclose: [
+              {
+                adjclose: closes,
+              },
+            ],
+          },
+        },
+      ],
+      error: null,
+    },
+  };
+}

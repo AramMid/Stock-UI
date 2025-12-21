@@ -1,25 +1,49 @@
-// File: app/trading/page.tsx - DEBUG VERSION
 "use client";
-import { useRef, useState, useCallback, useEffect } from "react";
+import { useRef, useState, useCallback, useEffect, useMemo } from "react";
+import { useRouter } from "next/navigation";
 import { Timeframe } from "@/lib/types";
 import { useChart } from "@/lib/hooks/useChart";
 import { useTradingPosition } from "@/lib/hooks/useTradingPosition";
+import { useUserData } from "@/lib/hooks/useUserData";
 import { useTheme } from "@/contexts/ThemeContext";
 import { DrawingProvider, useDrawing } from "@/contexts/DrawingContext";
 import { useLayoutManager } from "@/lib/hooks/useLayoutManager";
 import { useChartResize } from "@/lib/hooks/useChartResize";
-import { Order } from "../../lib/order-management";
-import { MarketSimulationService, SimulatedMarketData } from "@/lib/services/marketSimulationService";
+import { Order } from "@/lib/order-management";
+import { OrderStatus } from "@/lib/services/orderService";
+import {
+  MarketSimulationService,
+  SimulatedMarketData,
+} from "@/lib/services/marketSimulationService";
+import { orderBookService } from "@/lib/services/orderBookService";
+import { WebSocketService } from "@/lib/services/webSocketService";
+import { NotificationService } from "@/lib/services/notificationService";
+import { BlackSwanService } from "@/lib/services/blackSwanService";
+import { splitOrderForExchangeLimit } from "@/lib/position-sizing";
+
+// Import cursor configurations to ensure they're loaded
+import "@/lib/data/cursorOptions";
+import "@/lib/data/toolCursors";
+
 import TopNavigation from "@/components/trading/TopNavigation";
 import StockInfoBar from "@/components/trading/StockInfoBar";
 import LeftSidebar from "@/components/trading/LeftSidebar";
 import ChartSection from "@/components/trading/ChartSection";
 import AccountManagerSection from "@/components/trading/AccountManagerSection";
+import StrategyTester from "@/components/trading/StrategyTester";
 import WatchlistSection from "@/components/trading/WatchlistSection";
 import StockInfoSection from "@/components/trading/StockInfoSection";
 import NewsSection from "@/components/trading/NewsSection";
 import ResizableDivider from "@/components/trading/ResizableDivider";
 import OrderPanel from "@/components/trading/OrderPanel";
+
+import {
+  createOrder,
+  CreateOrderDto,
+  getOrders,
+} from "@/lib/services/orderApiService";
+
+import { useWatchlistPositions } from "@/lib/hooks/useWatchlistPositions";
 
 interface TradingPageProps {
   symbol?: string;
@@ -28,13 +52,16 @@ interface TradingPageProps {
 export default function TradingPlatformWrapper(props: TradingPageProps) {
   return (
     <DrawingProvider>
-      <TradingPlatform {...props} />
+      <Home {...props} />
     </DrawingProvider>
   );
 }
 
-function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
-  const containerRef = useRef<HTMLDivElement | null>(null);
+function Home({ symbol = "VIC.VN" }: TradingPageProps) {
+  const router = useRouter();
+  const containerRef = useRef<HTMLDivElement>(null);
+  const marketSimulationRef = useRef<MarketSimulationService | null>(null);
+  const hasManuallyResizedOrderPanel = useRef(false);
 
   // Core state
   const [timeframe, setTimeframe] = useState<Timeframe>("1D");
@@ -47,75 +74,241 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
     change: number;
     changePercent: number;
   } | null>(null);
-  const [currentVolume, setCurrentVolume] = useState<number>(0);
-  const [chartType, setChartType] = useState<"candlestick" | "line" | "area">("candlestick");
+
+  // Chart state
+  const [currentVolume, setCurrentVolume] = useState(0);
+  const [chartType, setChartType] = useState<"candlestick" | "line" | "area">(
+    "candlestick"
+  );
   const [showRSI, setShowRSI] = useState(false);
   const [showMACD, setShowMACD] = useState(false);
+
+  const lastPriceRef = useRef(0);
+  // ✅ FIX: store last price per symbol so unrealized can update correctly
+  const lastPriceBySymbolRef = useRef<Record<string, number>>({});
+
+  const [chartData, setChartData] = useState<{ time: number; value: number }[]>(
+    []
+  );
+
+  // UI state
   const [isPrivateMode, setIsPrivateMode] = useState(false);
-  const [enableTrendlineDrawing, setEnableTrendlineDrawing] = useState(false); // Separate state for trendline
-  const [enableBrushDrawing, setEnableBrushDrawing] = useState(false); // Separate state for brush
-  const [showOrderPanel, setShowOrderPanel] = useState(false); // State for order panel
-  const [isOrderPanelDragging, setIsOrderPanelDragging] = useState(false); // State for order panel resize dragging
-  const hasManuallyResizedOrderPanel = useRef(false); // Track if user has manually resized order panel
-  const [orderPanelSide, setOrderPanelSide] = useState<"buy" | "sell">("buy"); // Track which side to show in order panel
-  
+  const [enableTrendlineDrawing, setEnableTrendlineDrawing] = useState(false);
+  const [enableBrushDrawing, setEnableBrushDrawing] = useState(false);
+  const [showOrderPanel, setShowOrderPanel] = useState(false);
+  const [isOrderPanelDragging, setIsOrderPanelDragging] = useState(false);
+  const [orderPanelSide, setOrderPanelSide] = useState<"buy" | "sell">("buy");
+  const [isBlackSwanActive, setIsBlackSwanActive] = useState(false);
+  const [bestBidPrice, setBestBidPrice] = useState<number | undefined>(
+    undefined
+  );
+  const [bestAskPrice, setBestAskPrice] = useState<number | undefined>(
+    undefined
+  );
+
+  // User data
+  const {
+    userDetail,
+    userBalance,
+    loading: userDataLoading,
+    error: userDataError,
+    refreshUserData,
+  } = useUserData();
+
   // Orders state
   const [orders, setOrders] = useState<Order[]>([]);
 
-  // Market simulation
-  const marketSimulationRef = useRef<MarketSimulationService | null>(null);
-  const lastPriceRef = useRef<number>(45200); // Initial price
+  // ===== Orders refs (tránh stale closure) =====
+  const ordersRef = useRef<Order[]>([]);
+  useEffect(() => {
+    ordersRef.current = orders;
+  }, [orders]);
+
+  // ===== Prevent double-apply filled qty (WS có thể bắn nhiều lần) =====
+  const appliedFilledQtyRef = useRef<Record<string, number>>({});
+
+  // ===== Ledger để tính cost-basis & realized PnL theo FIFO =====
+  type Lot = { qty: number; price: number };
+  const lotsRef = useRef<Map<string, Lot[]>>(new Map()); // key = symbol
+
+  // ===== P&L state =====
+  const [realizedPnl, setRealizedPnl] = useState(0);
+  const [unrealizedPnl, setUnrealizedPnl] = useState(0);
+  const [equity, setEquity] = useState(0);
+
+  // Market simulation / positions
+  const {
+    tradingPosition,
+    handleBuy,
+    handleSell,
+    updateLastPrice,
+    getAllPositions,
+  } = useTradingPosition();
 
   // Custom hooks
   const { theme } = useTheme();
-  const { tradingPosition, handleBuy, handleSell, updateLastPrice } = useTradingPosition();
   const { activeTool, setActiveTool } = useDrawing();
   const { triggerChartResize } = useChartResize(containerRef);
   const layoutManager = useLayoutManager();
-
   const isDarkMode = true;
 
-  // Initialize market simulation service
+  // Watchlist symbols
+  const watchlistStocks = useMemo(
+    () => [
+      "VIC.VN",
+      "VHM.VN",
+      "VCB.VN",
+      "TCB.VN",
+      "FPT.VN",
+      "VNM.VN",
+      "HPG.VN",
+      "MSN.VN",
+    ],
+    []
+  );
+
+  const { positions, refreshWatchlistPositions, loadingPositions } =
+    useWatchlistPositions(watchlistStocks);
+
+  // Effect to refresh positions on mount
   useEffect(() => {
-    marketSimulationRef.current = new MarketSimulationService();
-    
-    // Start simulation
-    marketSimulationRef.current.startSimulation((data: SimulatedMarketData) => {
-      // Update price data
-      const newOhlc = {
-        open: lastPriceRef.current,
-        high: Math.max(lastPriceRef.current, data.price),
-        low: Math.min(lastPriceRef.current, data.price),
-        close: data.price,
-        change: data.price - lastPriceRef.current,
-        changePercent: ((data.price - lastPriceRef.current) / lastPriceRef.current) * 100,
-      };
-      
-      setOhlcData(newOhlc);
-      setCurrentVolume(data.volume);
-      updateLastPrice(data.price);
-      lastPriceRef.current = data.price;
+    const timer = setTimeout(() => {
+      refreshWatchlistPositions();
+    }, 100);
+    return () => clearTimeout(timer);
+  }, [refreshWatchlistPositions]);
+
+  // Effect to initialize lots from existing positions (placeholder avgPrice)
+  useEffect(() => {
+    if (loadingPositions || !positions) return;
+
+    lotsRef.current.clear();
+
+    positions.forEach((shares, sym) => {
+      if (shares > 0) {
+        const avgPrice = 10000; // Placeholder - ideally load avgPrice/cost basis from backend
+        lotsRef.current.set(sym, [{ qty: shares, price: avgPrice }]);
+      }
     });
 
-    // Cleanup on unmount
+    markToMarketAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [positions, loadingPositions]);
+
+  // ✅ MarketSimulation initialization
+  useEffect(() => {
+    // Initialize MarketSimulationService
+    marketSimulationRef.current = new MarketSimulationService();
+
+    // Make market simulation service available globally for testing
+    (window as any).marketSimulationRef = marketSimulationRef;
+
+    marketSimulationRef.current.startSimulation((data: SimulatedMarketData) => {
+      if (data.symbol === selectedSymbol) {
+        updateLastPrice(data.symbol, data.price);
+      }
+    });
+
     return () => {
-      if (marketSimulationRef.current) {
-        marketSimulationRef.current.stopSimulation();
+      marketSimulationRef.current?.stopSimulation();
+      // Clean up global reference
+      delete (window as any).marketSimulationRef;
+    };
+  }, [updateLastPrice, selectedSymbol]);
+
+  // ✅ BlackSwanService initialization
+useEffect(() => {
+  const blackSwanService = BlackSwanService.getInstance();
+
+  // Register position checker (giữ nguyên)
+  blackSwanService.registerPositionChecker((symbol: string) => {
+    const position = getAllPositions().find((pos: any) => pos.symbol === symbol);
+    return position ? position.position : 0;
+  });
+
+  blackSwanService.startMonitoring();
+  blackSwanService.stopAutomaticTriggering();
+  blackSwanService.startAutomaticTriggering(selectedSymbol);
+
+  // ✅ LISTEN TRỰC TIẾP EVENT TỪ BlackSwanService
+  const onBlackSwan = (event: any) => {
+    if (event?.symbol !== selectedSymbol) return;
+
+    setIsBlackSwanActive(true);
+
+    // nếu bạn muốn nhấp nháy nhanh theo event service
+    blackSwanService.startFlashing();
+
+    setTimeout(() => {
+      setIsBlackSwanActive(false);
+      // nếu không còn event nào active thì tắt nhấp nháy
+      if (!blackSwanService.hasActiveEvents()) {
+        blackSwanService.stopFlashing();
+      }
+    }, 10000);
+  };
+
+  blackSwanService.addEventListener(onBlackSwan);
+
+  return () => {
+    blackSwanService.removeEventListener(onBlackSwan);
+    blackSwanService.stopMonitoring();
+    blackSwanService.stopAutomaticTriggering();
+  };
+}, [selectedSymbol, getAllPositions]);
+
+
+  // Strategy Tester fullscreen toggle
+  useEffect(() => {
+    const handleToggleFullscreen = () => {
+      if (isPrivateMode) {
+        if (layoutManager.chartAccountLayout.split > 50) {
+          layoutManager.chartAccountLayout.setSplit(20);
+        } else {
+          layoutManager.chartAccountLayout.setSplit(50);
+        }
+      } else {
+        if (layoutManager.isAccountMaximized) {
+          layoutManager.handleRestorePanel();
+        } else {
+          layoutManager.handleMaximizePanel();
+        }
       }
     };
-  }, [updateLastPrice]);
 
-  // DEBUG: Log to see if useChart is being called
-  console.log("🔍 TradingPlatform render - enableTrendlineDrawing:", enableTrendlineDrawing);
-  console.log("🔍 TradingPlatform render - enableBrushDrawing:", enableBrushDrawing);
-  console.log("🔍 containerRef.current:", containerRef.current);
+    window.addEventListener(
+      "toggleStrategyTesterFullscreen",
+      handleToggleFullscreen
+    );
+    return () => {
+      window.removeEventListener(
+        "toggleStrategyTesterFullscreen",
+        handleToggleFullscreen
+      );
+    };
+  }, [layoutManager, isPrivateMode]);
 
-  // Chart management with drawing
+  // ✅ Re-mark-to-market whenever latest chart price changes
+  useEffect(() => {
+    if (!ohlcData?.close) return;
+    markToMarketAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ohlcData?.close]);
+
+  // Wrap price update for chart
+  const handlePriceUpdate = useCallback(
+    (price: number) => {
+      updateLastPrice(selectedSymbol, price);
+    },
+    [selectedSymbol, updateLastPrice]
+  );
+
+  // Chart
   const chartResult = useChart({
     containerRef,
     symbol: selectedSymbol,
     timeframe,
-    onPriceUpdate: updateLastPrice,
+    onPriceUpdate: handlePriceUpdate,
     onOHLCUpdate: setOhlcData,
     onVolumeUpdate: setCurrentVolume,
     isDarkMode,
@@ -123,32 +316,178 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
     showMACD,
     chartType,
     isPrivateMode,
-    enableTrendlineDrawing: enableTrendlineDrawing,
-    enableBrushDrawing: enableBrushDrawing,
-    activeTool: activeTool,
+    enableTrendlineDrawing,
+    enableBrushDrawing,
+    activeTool,
     onDrawingComplete: () => {
-      // Khi hoàn thành vẽ, đặt lại công cụ đang hoạt động về chế độ chọn và tắt enableDrawing
       setActiveTool("selection");
       setEnableTrendlineDrawing(false);
     },
   });
 
-  // DEBUG: Check what useChart returns
-  console.log("🔍 chartResult:", chartResult);
-  console.log("🔍 chartResult.drawing:", chartResult?.drawing);
-
-  // Safe access to drawing object
   const drawing = chartResult?.drawing || {
     isEnabled: false,
     isDrawing: false,
     trendlines: [],
-    startDrawing: () => { },
-    cancelDrawing: () => { },
-    clearAll: () => { },
-    undo: () => { },
+    startDrawing: () => {},
+    cancelDrawing: () => {},
+    clearAll: () => {},
+    undo: () => {},
   };
 
-  // Effect to handle split changes
+  const FEE_RATE = 0.0015; // 0.15%
+  const TAX_RATE = 0.001; // 0.1% chỉ bán
+
+  function getLastPrice(sym: string) {
+    const p = lastPriceBySymbolRef.current[sym];
+    if (Number.isFinite(p) && p > 0) return p;
+
+    if (sym === selectedSymbol && ohlcData?.close != null)
+      return Number(ohlcData.close);
+
+    return Number(lastPriceRef.current || 0);
+  }
+
+  function markToMarketAll() {
+    let u = 0;
+    for (const [sym, lots] of lotsRef.current.entries()) {
+      const p = getLastPrice(sym);
+      if (!Number.isFinite(p) || p <= 0) continue;
+      for (const lot of lots) u += (p - lot.price) * lot.qty;
+    }
+    setUnrealizedPnl(u);
+
+    let mv = 0;
+    for (const [sym, lots] of lotsRef.current.entries()) {
+      const p = getLastPrice(sym);
+      if (!Number.isFinite(p) || p <= 0) continue;
+      for (const lot of lots) mv += p * lot.qty;
+    }
+
+    const cash = Number(userBalance?.balance?.availableBalance ?? 0);
+    setEquity(cash + mv);
+  }
+
+  // ✅ Bid / Ask từ close (ohlcData.close)
+  useEffect(() => {
+    if (!ohlcData?.close) return;
+
+    const closePrice = Number(ohlcData.close);
+    lastPriceRef.current = closePrice;
+    lastPriceBySymbolRef.current[selectedSymbol] = closePrice;
+
+    const bidPrice = closePrice - 100;
+    const askPrice = closePrice + 100;
+
+    setBestBidPrice(bidPrice);
+    setBestAskPrice(askPrice);
+
+    markToMarketAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ohlcData?.close, selectedSymbol]);
+
+  function applyFillFIFO(params: {
+    symbol: string;
+    side: "buy" | "sell";
+    qty: number;
+    price: number;
+  }) {
+    const { symbol, side, qty, price } = params;
+    if (!Number.isFinite(price) || price <= 0 || qty <= 0) return;
+
+    const lots = lotsRef.current.get(symbol) ?? [];
+
+    if (side === "buy") {
+      const effectiveBuyPrice = price * (1 + FEE_RATE);
+      lots.push({ qty, price: effectiveBuyPrice });
+      lotsRef.current.set(symbol, lots);
+      return;
+    }
+
+    let remaining = qty;
+    let cost = 0;
+    let executed = 0;
+
+    while (remaining > 0 && lots.length > 0) {
+      const lot = lots[0];
+      const used = Math.min(remaining, lot.qty);
+
+      cost += used * lot.price;
+      executed += used;
+
+      lot.qty -= used;
+      remaining -= used;
+
+      if (lot.qty === 0) lots.shift();
+    }
+
+    lotsRef.current.set(symbol, lots);
+
+    if (executed <= 0) return;
+
+    const grossProceeds = executed * price;
+    const sellFee = grossProceeds * FEE_RATE;
+    const sellTax = grossProceeds * TAX_RATE;
+    const netProceeds = grossProceeds - sellFee - sellTax;
+
+    const realized = netProceeds - cost;
+    setRealizedPnl((prev) => prev + realized);
+  }
+
+  const isFinal = (s: string) =>
+    ["FILLED", "REJECTED", "CANCELED"].includes(String(s).toUpperCase());
+
+  const handleTimeframeChange = useCallback((newTimeframe: Timeframe) => {
+    setTimeframe(newTimeframe);
+  }, []);
+
+  const handleSymbolChange = useCallback((newSymbol: string) => {
+    setSelectedSymbol(newSymbol);
+  }, []);
+
+  const handleScreenshot = useCallback(async () => {
+    // Screenshot functionality not implemented yet
+  }, [selectedSymbol, timeframe]);
+
+  const handleToolSelect = useCallback(
+    (toolId: string) => {
+      if (toolId === "trendline") {
+        const newDrawingState = !enableTrendlineDrawing;
+        setEnableTrendlineDrawing(newDrawingState);
+        setEnableBrushDrawing(false);
+
+        if (newDrawingState && drawing.startDrawing) {
+          drawing.startDrawing();
+        } else if (!newDrawingState && drawing.cancelDrawing) {
+          drawing.cancelDrawing();
+        }
+      } else if (toolId === "brush") {
+        const newBrushState = !enableBrushDrawing;
+        setEnableBrushDrawing(newBrushState);
+        setEnableTrendlineDrawing(false);
+      } else {
+        setEnableTrendlineDrawing(false);
+        setEnableBrushDrawing(false);
+      }
+
+      setActiveTool(toolId as Parameters<typeof setActiveTool>[0]);
+    },
+    [enableTrendlineDrawing, enableBrushDrawing, drawing, setActiveTool]
+  );
+
+  const handleGroupToggle = useCallback((groupId: string) => {
+    // Group toggled: groupId
+  }, []);
+
+  const handleMenuOpen = useCallback(() => {
+    // Menu opened
+  }, []);
+
+  const handleCloseOrderPanel = useCallback(() => {
+    setShowOrderPanel(false);
+  }, []);
+
+  // Resize handling
   useEffect(() => {
     const isAnyDragging =
       layoutManager.chartAccountLayout.isDragging ||
@@ -176,159 +515,229 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
     triggerChartResize,
   ]);
 
-  // Effect to update order panel height when panel first appears or container resizes (only if not manually resized)
+  // Auto height for order panel
   useEffect(() => {
     if (showOrderPanel && layoutManager.rightSectionRef.current) {
       const updateOrderPanelHeight = () => {
-        // Don't auto-update if user has manually resized
         if (hasManuallyResizedOrderPanel.current) return;
-        
+
         const container = layoutManager.rightSectionRef.current;
         if (container) {
-          // Calculate 3/4 of available height for order panel
           const containerHeight = container.clientHeight;
-          // Estimate the available height for the order panel
-          // (container height - dividers - other sections)
-          const availableHeight = containerHeight - 12 - 12 - 12 - 12; // 4 dividers of 12px each
-          const estimatedOrderHeight = availableHeight * 0.75; // 3/4 of available height
+          const availableHeight = containerHeight - 12 - 12 - 12 - 12;
+          const estimatedOrderHeight = availableHeight * 0.75;
           layoutManager.handleOrderPanelResize(estimatedOrderHeight);
         }
       };
-      
-      // Set initial height when panel first appears
+
       updateOrderPanelHeight();
-      
-      // Add resize observer for container resize
+
       const resizeObserver = new ResizeObserver(updateOrderPanelHeight);
-      if (layoutManager.rightSectionRef.current) {
-        resizeObserver.observe(layoutManager.rightSectionRef.current);
-      }
-      
+      resizeObserver.observe(layoutManager.rightSectionRef.current);
+
       return () => {
         resizeObserver.disconnect();
       };
     }
   }, [showOrderPanel, layoutManager]);
-  
-  // Reset manual resize flag when panel is closed
+
   useEffect(() => {
     if (!showOrderPanel) {
       hasManuallyResizedOrderPanel.current = false;
     }
   }, [showOrderPanel]);
 
-  // Event handlers
-  const handleTimeframeChange = useCallback((newTimeframe: Timeframe) => {
-    setTimeframe(newTimeframe);
-  }, []);
+  // ✅ IMPORTANT: Normalize filledQty & filledPrice so FILLED never results in 0-delta
+  const normalizeFill = (
+    update: {
+      status: any;
+      filledQuantity?: any;
+      filledPrice?: any;
+    },
+    fallbackQty: number,
+    fallbackPrice: number
+  ) => {
+    const upperStatus = String(update.status).toUpperCase();
 
-  const handleSymbolChange = useCallback((newSymbol: string) => {
-    setSelectedSymbol(newSymbol);
-  }, []);
+    const qty = Number(update.filledQuantity);
+    const price = Number(update.filledPrice);
 
-  const handleScreenshot = useCallback(async () => {
-    try {
-      console.log("Screenshot functionality not implemented yet");
-    } catch (error) {
-      console.error("Screenshot error:", error);
-    }
-  }, [selectedSymbol, timeframe]);
+    const normalizedFilledQty =
+      upperStatus === "FILLED"
+        ? Number.isFinite(qty) && qty > 0
+          ? qty
+          : fallbackQty
+        : Number.isFinite(qty) && qty > 0
+        ? qty
+        : 0;
 
-  const handleToolSelect = useCallback((toolId: string) => {
-    console.log("Selected tool:", toolId);
+    const normalizedFilledPrice =
+      Number.isFinite(price) && price > 0
+        ? price
+        : Number.isFinite(Number(fallbackPrice)) && Number(fallbackPrice) > 0
+        ? Number(fallbackPrice)
+        : 0;
 
-    if (toolId === 'trendline') {
-      const newDrawingState = !enableTrendlineDrawing;
-      console.log("🎨 Toggling trendline drawing mode:", newDrawingState);
-      setEnableTrendlineDrawing(newDrawingState);
-      setEnableBrushDrawing(false); // Disable brush when enabling trendline
+    return { upperStatus, normalizedFilledQty, normalizedFilledPrice };
+  };
 
-      if (newDrawingState && drawing.startDrawing) {
-        drawing.startDrawing();
-      } else if (!newDrawingState && drawing.cancelDrawing) {
-        drawing.cancelDrawing();
-      }
-    }
-    
-    // Handle brush tool
-    else if (toolId === 'brush') {
-      const newBrushState = !enableBrushDrawing;
-      console.log("🎨 Toggling brush drawing mode:", newBrushState);
-      setEnableBrushDrawing(newBrushState);
-      setEnableTrendlineDrawing(false); // Disable trendline when enabling brush
-    }
-    
-    // For all other tools, disable both drawing modes
-    else {
-      setEnableTrendlineDrawing(false);
-      setEnableBrushDrawing(false);
-    }
+  const handleOrderSubmit = useCallback(
+    (side: "buy" | "sell", quantity: number, price: number) => {
+      const orderQuantities = splitOrderForExchangeLimit(quantity);
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    setActiveTool(toolId as any);
-  }, [enableTrendlineDrawing, enableBrushDrawing, drawing, setActiveTool]);
+      const webSocketService = WebSocketService.getInstance();
+      const notificationService = NotificationService.getInstance();
 
-  const handleGroupToggle = useCallback((groupId: string) => {
-    console.log("Group toggled:", groupId);
-  }, []);
+      orderQuantities.forEach((orderQty, index) => {
+        const orderSymbol = selectedSymbol;
 
-  const handleMenuOpen = useCallback(() => {
-    console.log("Menu opened");
-  }, []);
+        const order: Order = {
+          id: `ORD${Date.now()}-${index}`,
+          symbol: orderSymbol,
+          type: side,
+          orderType: "Market",
+          quantity: orderQty,
+          price,
+          status: "NEW",
+          timestamp: new Date(),
+        };
 
-  const handleSettingsOpen = useCallback(() => {
-    console.log("Settings opened");
-  }, []);
+        // reset applied tracker for this order id
+        appliedFilledQtyRef.current[order.id] = 0;
 
-  const handleCloseOrderPanel = useCallback(() => {
-    setShowOrderPanel(false);
-  }, []);
+        // 1) Add to UI first
+        setOrders((prev) => [order, ...prev]);
 
-  const handleOrderSubmit = useCallback((side: 'buy' | 'sell', quantity: number, price: number) => {
-    console.log(`Order submitted: ${side} ${quantity} shares at ${price}`);
-    
-    // Create order object
-    const order: Order = {
-      id: `ORD${Date.now()}`,
-      symbol: selectedSymbol,
-      type: side,
-      orderType: "Market", // Default to market order for immediate execution
-      quantity: quantity,
-      price: price,
-      status: "NEW", // Only NEW or FILLED states
-      timestamp: new Date()
-    };
-    
-    // Process order against simulated market
-    let executionResult: { success: boolean; filledPrice?: number; filledQuantity?: number } = { success: false };
-    if (marketSimulationRef.current) {
-      executionResult = marketSimulationRef.current.processUserOrder(order);
-    }
-    
-    // Execute the trade if order was filled
-    let success = false;
-    if (executionResult.success && executionResult.filledPrice) {
-      if (side === 'buy') {
-        success = handleBuy(quantity, executionResult.filledPrice);
-      } else {
-        success = handleSell(quantity, executionResult.filledPrice);
-      }
-    }
-    
-    // Update order status - only Pending or Filled states
-    const updatedOrder: Order = {
-      ...order,
-      orderType: "Market",
-      status: executionResult.success ? "FILLED" : "NEW", // Only these two states
-      filledPrice: executionResult.filledPrice,
-      filledQuantity: executionResult.filledQuantity
-    };
-    
-    // Add order to state
-    setOrders(prevOrders => [updatedOrder, ...prevOrders]);
-    
-    setShowOrderPanel(false);
-  }, [handleBuy, handleSell, selectedSymbol, tradingPosition]);
+        // 2) Subscribe BEFORE sending
+        const unsubscribe = webSocketService.subscribe(order.id, (update) => {
+          const { upperStatus, normalizedFilledQty, normalizedFilledPrice } =
+            normalizeFill(update, orderQty, price);
+
+          // --- Sync orderBookService ---
+          orderBookService.updateOrder(update.orderId, {
+            status: update.status,
+            filledPrice: normalizedFilledPrice || update.filledPrice,
+            filledQuantity: normalizedFilledQty || update.filledQuantity,
+          });
+
+          // --- Sync React state ---
+          setOrders((prev) =>
+            prev.map((o) =>
+              o.id === update.orderId
+                ? {
+                    ...o,
+                    status: update.status,
+                    filledPrice: normalizedFilledPrice || update.filledPrice,
+                    filledQuantity:
+                      normalizedFilledQty || update.filledQuantity,
+                  }
+                : o
+            )
+          );
+
+          // ✅ Update position on FILLED using normalized qty/price
+          if (upperStatus === "FILLED" && normalizedFilledPrice > 0) {
+            const success =
+              side === "buy"
+                ? handleBuy(
+                    orderSymbol,
+                    normalizedFilledQty,
+                    normalizedFilledPrice
+                  )
+                : handleSell(
+                    orderSymbol,
+                    normalizedFilledQty,
+                    normalizedFilledPrice
+                  );
+
+            if (success) {
+              notificationService.showSuccess(
+                `Order ${update.orderId} filled successfully`
+              );
+              refreshUserData();
+              setTimeout(() => refreshWatchlistPositions(), 1000);
+            }
+          }
+
+          // ✅ Apply P&L only for NEW delta filled qty
+          const prevApplied = appliedFilledQtyRef.current[update.orderId] ?? 0;
+          const totalFilled = normalizedFilledQty;
+          const deltaQty = totalFilled - prevApplied;
+
+          if (deltaQty > 0 && normalizedFilledPrice > 0) {
+            appliedFilledQtyRef.current[update.orderId] = totalFilled;
+
+            applyFillFIFO({
+              symbol: orderSymbol,
+              side,
+              qty: deltaQty,
+              price: normalizedFilledPrice,
+            });
+
+            markToMarketAll();
+          }
+
+          // Final status → sync backend 1 lần + unsubscribe
+          if (isFinal(upperStatus)) {
+            try {
+              const calledKey = `order_api_called_${order.id}`;
+              if (!sessionStorage.getItem(calledKey)) {
+                sessionStorage.setItem(calledKey, "true");
+
+                let dbStatus: "filled" | "cancelled" | null = null;
+                if (upperStatus === "FILLED") dbStatus = "filled";
+                if (upperStatus === "REJECTED" || upperStatus === "CANCELED")
+                  dbStatus = "cancelled";
+
+                if (dbStatus) {
+                  const payload: CreateOrderDto = {
+                    stockSymbol: orderSymbol,
+                    side,
+                    quantity: orderQty,
+                    orderType: "market",
+                    price,
+                    status: dbStatus,
+                    filledQuantity:
+                      normalizedFilledQty > 0 ? normalizedFilledQty : undefined,
+                    filledPrice:
+                      normalizedFilledPrice > 0 ? normalizedFilledPrice : price,
+                    commission: 0,
+                    filledAt: new Date().toISOString(),
+                  };
+
+                  createOrder(payload)
+                    .then(() => {
+                      refreshUserData();
+                      setTimeout(() => refreshWatchlistPositions(), 600);
+                    })
+                    .catch((err) => console.error("[OrderSync] Error:", err));
+                }
+              }
+            } finally {
+              unsubscribe?.();
+            }
+          }
+        });
+
+        // 3) Send order into the engine
+        orderBookService.addOrder(order);
+
+        notificationService.showSuccess(
+          "Order submitted. Waiting for execution...",
+          3000
+        );
+      });
+
+      setShowOrderPanel(false);
+    },
+    [
+      selectedSymbol,
+      handleBuy,
+      handleSell,
+      refreshUserData,
+      refreshWatchlistPositions,
+    ]
+  );
 
   const handleBuyClick = useCallback(() => {
     setOrderPanelSide("buy");
@@ -341,19 +750,7 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
   }, []);
 
   return (
-    <div
-      className={`h-screen flex flex-col transition-colors duration-200 bg-[#131722]`}
-    >
-      {/* DEBUG INFO */}
-      <div className="fixed top-20 right-4 z-50 bg-red-900 text-white p-2 text-xs rounded">
-        <div>Chart Container: {containerRef.current ? '✅' : '❌'}</div>
-        <div>Trendline Drawing: {enableTrendlineDrawing ? '✅' : '❌'}</div>
-        <div>Brush Drawing: {enableBrushDrawing ? '✅' : '❌'}</div>
-        <div>Drawing Object: {drawing ? '✅' : '❌'}</div>
-        <div>Trendlines: {drawing.trendlines?.length || 0}</div>
-      </div>
-
-      {/* Top Navigation Bar */}
+    <div className="h-screen flex flex-col transition-colors duration-200 bg-[#131722]">
       <TopNavigation
         symbol={selectedSymbol}
         timeframe={timeframe}
@@ -368,47 +765,48 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
         onToggleMACD={() => setShowMACD(!showMACD)}
         isPrivateMode={isPrivateMode}
         onTogglePrivateMode={() => setIsPrivateMode(!isPrivateMode)}
+        isBlackSwanActive={isBlackSwanActive}
       />
 
-      {/* Stock Info Bar */}
       <StockInfoBar
         symbol={selectedSymbol}
         ohlcData={ohlcData}
         isDarkMode={isDarkMode}
       />
 
-      {/* Main Content Area */}
       <div className="flex-1 flex relative overflow-hidden">
-        {/* Left Sidebar */}
         <LeftSidebar
           onToolSelect={handleToolSelect}
           onGroupToggle={handleGroupToggle}
           onMenuOpen={handleMenuOpen}
-          onSettingsOpen={handleSettingsOpen}
         />
 
-        {/* Main Grid Area */}
-        <div ref={layoutManager.mainContainerRef} className="flex-1 flex gap-2 p-2">
-          {/* Left Section - Chart and Account Manager */}
+        <div
+          ref={layoutManager.mainContainerRef}
+          className="flex-1 flex gap-2 p-2"
+        >
           <div
             ref={layoutManager.leftColumnRef}
             className="grid gap-2 transition-none relative"
             style={{
               width: `${layoutManager.horizontalLayout.split}%`,
-              gridTemplateRows: `${layoutManager.chartAccountLayout.split}fr 12px ${100 - layoutManager.chartAccountLayout.split
-                }fr`,
+              gridTemplateRows: `${
+                layoutManager.chartAccountLayout.split
+              }fr 12px ${100 - layoutManager.chartAccountLayout.split}fr`,
             }}
           >
-            {/* Chart Panel */}
             <ChartSection
               containerRef={containerRef}
               ohlcData={ohlcData}
               selectedSymbol={selectedSymbol}
               isDarkMode={isDarkMode}
               timeframe={timeframe}
-              onTimeframeChange={handleTimeframeChange}
-              onBuyClick={handleBuyClick}
-              onSellClick={handleSellClick}
+              onTimeframeChange={setTimeframe}
+              onBuyClick={() => setShowOrderPanel(true)}
+              onSellClick={() => {
+                setOrderPanelSide("sell");
+                setShowOrderPanel(true);
+              }}
               currentPrice={ohlcData?.close || lastPriceRef.current}
               change={ohlcData?.change || 0}
               changePercent={ohlcData?.changePercent || 0}
@@ -423,16 +821,24 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
                 high: ohlcData?.high || lastPriceRef.current * 1.01,
               }}
               fiftyTwoWeekRange={{
-                low: selectedSymbol.includes(".VN") ? lastPriceRef.current * 0.8 : lastPriceRef.current * 0.7,
-                high: selectedSymbol.includes(".VN") ? lastPriceRef.current * 1.2 : lastPriceRef.current * 1.3,
+                low: selectedSymbol.includes(".VN")
+                  ? lastPriceRef.current * 0.8
+                  : lastPriceRef.current * 0.7,
+                high: selectedSymbol.includes(".VN")
+                  ? lastPriceRef.current * 1.2
+                  : lastPriceRef.current * 1.3,
               }}
+              isPrivateMode={isPrivateMode}
+              bestBidPrice={bestBidPrice}
+              bestAskPrice={bestAskPrice}
             />
 
-            {/* Vertical Divider */}
             <ResizableDivider
               isVertical={true}
               isDragging={layoutManager.chartAccountLayout.isDragging}
-              onMouseDown={(e) => layoutManager.chartAccountLayout.handleMouseDown(e, true)}
+              onMouseDown={(e) =>
+                layoutManager.chartAccountLayout.handleMouseDown(e, true)
+              }
               title={
                 layoutManager.isAccountCollapsed
                   ? "Account Manager is collapsed"
@@ -443,167 +849,254 @@ function TradingPlatform({ symbol = "VIC.VN" }: TradingPageProps) {
               isDarkMode={isDarkMode}
             />
 
-            {/* Account Manager Section */}
-            <AccountManagerSection
-              tradingPosition={tradingPosition}
-              isDarkMode={isDarkMode}
-              isDragging={layoutManager.chartAccountLayout.isDragging}
-              isAccountCollapsed={layoutManager.isAccountCollapsed}
-              isAccountMaximized={layoutManager.isAccountMaximized}
-              chartAccountSplit={layoutManager.chartAccountLayout.split}
-              onCollapsePanel={layoutManager.handleCollapsePanel}
-              onOpenPanel={layoutManager.handleOpenPanel}
-              onMaximizePanel={layoutManager.handleMaximizePanel}
-              onRestorePanel={layoutManager.handleRestorePanel}
-              orders={orders}
-              onOpenOrderPanel={(side, price) => {
-                setShowOrderPanel(true);
-                setOrderPanelSide(side);
-                // In a real implementation, you might want to set a specific price
-              }}
-            />
+            {isPrivateMode ? (
+              <div
+                className="border rounded overflow-hidden relative flex flex-col transition-colors duration-200"
+                style={{
+                  willChange: layoutManager.chartAccountLayout.isDragging
+                    ? "height"
+                    : "auto",
+                  transform: "translateZ(0)",
+                  height: "100%",
+                }}
+              >
+                <div className="flex-none flex items-center justify-between px-4 py-3 border-b select-none">
+                  <div className="flex items-center gap-2 text-sm opacity-80">
+                    <span className="font-bold bg-gradient-to-r from-blue-500 to-cyan-400 bg-clip-text text-transparent">
+                      BACKTEST MODE
+                    </span>
+                    <span className="text-gray-500">•</span>
+                    <span>{selectedSymbol}</span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => {
+                        const event = new CustomEvent(
+                          "toggleStrategyTesterFullscreen"
+                        );
+                        window.dispatchEvent(event);
+                      }}
+                      className="p-1.5 rounded hover:bg-gray-700/50"
+                    >
+                      <svg
+                        width="18"
+                        height="18"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                      >
+                        <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path>
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+                <div className="flex-1 overflow-hidden relative">
+                  <StrategyTester
+                    isDarkMode={isDarkMode}
+                    tradingPosition={tradingPosition}
+                    selectedSymbol={selectedSymbol}
+                    marketSimulation={marketSimulationRef.current}
+                  />
+                </div>
+              </div>
+            ) : (
+              <AccountManagerSection
+                tradingPosition={tradingPosition}
+                isDarkMode={isDarkMode}
+                isDragging={layoutManager.chartAccountLayout.isDragging}
+                isAccountCollapsed={layoutManager.isAccountCollapsed}
+                isAccountMaximized={layoutManager.isAccountMaximized}
+                chartAccountSplit={layoutManager.chartAccountLayout.split}
+                onCollapsePanel={layoutManager.handleCollapsePanel}
+                onOpenPanel={layoutManager.handleOpenPanel}
+                onMaximizePanel={layoutManager.handleMaximizePanel}
+                onRestorePanel={layoutManager.handleRestorePanel}
+                orders={orders}
+                marketSimulation={marketSimulationRef.current}
+                selectedSymbol={selectedSymbol}
+                onOpenOrderPanel={(side, price) => {
+                  setShowOrderPanel(true);
+                  setOrderPanelSide(side);
+                }}
+                userBalance={userBalance?.balance?.availableBalance}
+                userName={
+                  userDetail?.first_name
+                    ? `${userDetail.first_name} ${userDetail.last_name}`
+                    : userDetail?.email?.split("@")[0] || "User"
+                }
+                realizedPnl={realizedPnl}
+                unrealizedPnl={unrealizedPnl}
+              />
+            )}
           </div>
 
-          {/* Horizontal Divider */}
           <ResizableDivider
             isVertical={false}
             isDragging={layoutManager.horizontalLayout.isDragging}
-            onMouseDown={(e) => layoutManager.horizontalLayout.handleMouseDown(e, false)}
+            onMouseDown={(e) =>
+              layoutManager.horizontalLayout.handleMouseDown(e, false)
+            }
             onDoubleClick={layoutManager.horizontalLayout.resetSplit}
             title="Drag left/right to resize sections | Double-click to reset"
             splitPercentage={layoutManager.horizontalLayout.split}
             isDarkMode={isDarkMode}
           />
 
-          {/* Right Section - Balanced layout with working resize */}
           <div
             ref={layoutManager.rightSectionRef}
             className="grid gap-2 transition-none"
             style={{
               width: `${100 - layoutManager.horizontalLayout.split}%`,
-              gridTemplateRows: showOrderPanel 
-                ? `1fr 12px ${layoutManager.orderPanelHeight}px 12px 1fr 12px 1fr`
-                : `1fr 12px 1fr 12px 1fr`,
+              gridTemplateRows: showOrderPanel
+                ? `${Math.max(
+                    15,
+                    layoutManager.watchlistLayout.split
+                  )}fr 12px ${layoutManager.orderPanelHeight}px 12px ${Math.max(
+                    20,
+                    layoutManager.stockInfoLayout.split
+                  )}fr 12px ${Math.max(
+                    20,
+                    100 -
+                      layoutManager.watchlistLayout.split -
+                      layoutManager.stockInfoLayout.split
+                  )}fr`
+                : `${Math.max(
+                    20,
+                    layoutManager.watchlistLayout.split
+                  )}fr 12px ${Math.max(
+                    25,
+                    layoutManager.stockInfoLayout.split
+                  )}fr 12px ${Math.max(
+                    25,
+                    100 -
+                      layoutManager.watchlistLayout.split -
+                      layoutManager.stockInfoLayout.split
+                  )}fr`,
             }}
           >
-            {/* Watchlist Section */}
-            <WatchlistSection
-              selectedSymbol={selectedSymbol}
-              onSymbolSelect={handleSymbolChange}
+            <div className="rounded-lg overflow-hidden bg-[#131722] h-full">
+              <WatchlistSection
+                selectedSymbol={selectedSymbol}
+                onSymbolSelect={handleSymbolChange}
+                isDarkMode={isDarkMode}
+                positions={positions}
+                isPrivateMode={isPrivateMode}
+                marketSimulation={marketSimulationRef.current || undefined}
+              />
+            </div>
+
+            <ResizableDivider
+              isVertical={true}
+              isDragging={layoutManager.watchlistLayout.isDragging}
+              onMouseDown={(e: React.MouseEvent) =>
+                layoutManager.watchlistLayout.handleMouseDown(e, true)
+              }
+              title="Drag up/down to resize watchlist and other sections"
+              splitPercentage={layoutManager.watchlistLayout.split}
               isDarkMode={isDarkMode}
             />
 
-            {/* Divider and Order Panel - Only shown when buy/sell is clicked */}
             {showOrderPanel && (
               <>
+                <div className="rounded-lg overflow-hidden bg-[#131722] h-full">
+                  <OrderPanel
+                    symbol={selectedSymbol}
+                    currentPrice={ohlcData?.close || lastPriceRef.current}
+                    onClose={handleCloseOrderPanel}
+                    onBuy={(quantity: number, price: number) =>
+                      handleOrderSubmit("buy", quantity, price)
+                    }
+                    onSell={(quantity: number, price: number) =>
+                      handleOrderSubmit("sell", quantity, price)
+                    }
+                    isDarkMode={isDarkMode}
+                    side={orderPanelSide}
+                    onSideChange={setOrderPanelSide}
+                  />
+                </div>
+
                 <ResizableDivider
                   isVertical={true}
                   isDragging={isOrderPanelDragging}
                   onMouseDown={(e: React.MouseEvent) => {
                     e.preventDefault();
                     e.stopPropagation();
-                    
+
                     setIsOrderPanelDragging(true);
-                    
-                    // Get initial position and height
+
                     const startY = e.clientY;
                     const startHeight = layoutManager.orderPanelHeight;
                     const container = layoutManager.rightSectionRef.current;
-                    
+
                     if (!container) {
                       setIsOrderPanelDragging(false);
                       return;
                     }
-                      
+
                     const handleMouseMove = (moveEvent: MouseEvent) => {
                       moveEvent.preventDefault();
-                      
-                      if (!container) return;
-                      
-                      // Mark that user has manually resized
+
                       hasManuallyResizedOrderPanel.current = true;
-                      
-                      // Calculate available space for order panel
+
                       const containerRect = container.getBoundingClientRect();
                       const containerHeight = containerRect.height;
-                      // Reserve space for other sections (watchlist, dividers, stock info, news)
-                      // Each divider is 12px, and we need space for other sections
-                      const reservedSpace = containerHeight * 0.4; // Reserve 40% for other sections
+                      const reservedSpace = containerHeight * 0.3;
                       const maxHeight = containerHeight - reservedSpace;
-                      
+
                       const deltaY = moveEvent.clientY - startY;
-                      // Kéo xuống (deltaY dương) → thu nhỏ (giảm height)
-                      // Kéo lên (deltaY âm) → phóng to (tăng height)
-                      const newHeight = Math.max(100, Math.min(maxHeight, startHeight - deltaY));
+                      const newHeight = Math.max(
+                        150,
+                        Math.min(maxHeight, startHeight - deltaY)
+                      );
                       layoutManager.handleOrderPanelResize(newHeight);
                     };
-                      
+
                     const handleMouseUp = () => {
                       setIsOrderPanelDragging(false);
-                      document.removeEventListener('mousemove', handleMouseMove);
-                      document.removeEventListener('mouseup', handleMouseUp);
-                      document.body.style.cursor = '';
-                      document.body.style.userSelect = '';
+                      document.removeEventListener(
+                        "mousemove",
+                        handleMouseMove
+                      );
+                      document.removeEventListener("mouseup", handleMouseUp);
+                      document.body.style.cursor = "";
+                      document.body.style.userSelect = "";
                     };
-                      
-                    // Set cursor and prevent text selection
-                    document.body.style.cursor = 'row-resize';
-                    document.body.style.userSelect = 'none';
-                    
-                    document.addEventListener('mousemove', handleMouseMove, { passive: false });
-                    document.addEventListener('mouseup', handleMouseUp);
+
+                    document.body.style.cursor = "row-resize";
+                    document.body.style.userSelect = "none";
+                    document.addEventListener("mousemove", handleMouseMove);
+                    document.addEventListener("mouseup", handleMouseUp);
                   }}
                   title="Drag to resize order panel"
-                  splitPercentage={75}
+                  splitPercentage={0}
                   isDarkMode={isDarkMode}
                 />
-                <div className="rounded-lg overflow-hidden bg-[#131722] h-full">
-                  <OrderPanel
-                    symbol={selectedSymbol}
-                    currentPrice={ohlcData?.close || lastPriceRef.current}
-                    onClose={handleCloseOrderPanel}
-                    onBuy={(quantity: number, price: number) => handleOrderSubmit('buy', quantity, price)}
-                    onSell={(quantity: number, price: number) => handleOrderSubmit('sell', quantity, price)}
-                    isDarkMode={isDarkMode}
-                    side={orderPanelSide} // Pass the side that was clicked
-                    onSideChange={setOrderPanelSide} // Handle side changes from within the panel
-                  />
-                </div>
               </>
             )}
 
-            {/* Stock Info Divider */}
+            <div className="rounded-lg overflow-hidden bg-[#131722] h-full">
+              <StockInfoSection
+                selectedSymbol={selectedSymbol}
+                isDarkMode={isDarkMode}
+              />
+            </div>
+
             <ResizableDivider
               isVertical={true}
               isDragging={layoutManager.stockInfoLayout.isDragging}
-              onMouseDown={(e: React.MouseEvent) => layoutManager.stockInfoLayout.handleMouseDown(e, true)}
-              title="Drag up/down to resize stock info and news sections"
-              splitPercentage={layoutManager.stockInfoLayout.split + layoutManager.watchlistLayout.split}
+              onMouseDown={(e: React.MouseEvent) =>
+                layoutManager.stockInfoLayout.handleMouseDown(e, true)
+              }
+              title="Drag up/down to resize stock info and news"
+              splitPercentage={layoutManager.stockInfoLayout.split}
               isDarkMode={isDarkMode}
             />
 
-            {/* Stock Info Section */}
-            <StockInfoSection
-              selectedSymbol={selectedSymbol}
-              isDarkMode={isDarkMode}
-              currentVolume={currentVolume}
-            />
-
-            {/* Stock Info to News Divider */}
-            <ResizableDivider
-              isVertical={true}
-              isDragging={layoutManager.stockInfoLayout.isDragging}
-              onMouseDown={(e: React.MouseEvent) => layoutManager.stockInfoLayout.handleMouseDown(e, true)}
-              title="Drag up/down to resize stock info and news sections"
-              splitPercentage={layoutManager.stockInfoLayout.split + layoutManager.watchlistLayout.split}
-              isDarkMode={isDarkMode}
-            />
-
-            {/* News Section */}
-            <NewsSection isDarkMode={isDarkMode} />
+            <div className="rounded-lg overflow-hidden bg-[#131722] h-full">
+              <NewsSection isDarkMode={isDarkMode} />
+            </div>
           </div>
-
-          {/* Remove any modal overlay for order panel */}
         </div>
       </div>
     </div>

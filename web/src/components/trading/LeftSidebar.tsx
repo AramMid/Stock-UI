@@ -4,6 +4,7 @@ import { useDrawing } from "@/contexts/DrawingContext";
 import { drawingService } from "@/lib/drawing-service";
 import { tools, ToolItem } from "@/lib/data/tools";
 import CursorPopupMenu from "./CursorPopupMenu";
+import { useRouter } from "next/navigation";
 
 interface LeftSidebarProps {
   onToolSelect?: (toolId: string) => void;
@@ -12,12 +13,13 @@ interface LeftSidebarProps {
   onSettingsOpen?: () => void;
 }
 
-export default function LeftSidebar({ 
+export default function LeftSidebar({
   onToolSelect,
   onGroupToggle,
   onMenuOpen,
-  onSettingsOpen
+  onSettingsOpen,
 }: LeftSidebarProps) {
+  const router = useRouter();
   const { activeTool, setActiveTool } = useDrawing();
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
   const [cursorMenuOpen, setCursorMenuOpen] = useState(false);
@@ -39,16 +41,17 @@ export default function LeftSidebar({
   }, [onToolSelect, setActiveTool]);
 
   const toggleGroup = (groupName: string) => {
-    setOpenGroups(prev => ({
+    setOpenGroups((prev) => ({
       ...prev,
-      [groupName]: !prev[groupName]
+      [groupName]: !prev[groupName],
     }));
-    
+
     if (onGroupToggle) onGroupToggle(groupName);
   };
 
-  const handleCursorSelect = (cursorType: 'diagonal' | 'dot' | 'arrow' | 'illustration') => {
-    console.log('LeftSidebar: Setting cursor type:', cursorType);
+  const handleCursorSelect = (
+    cursorType: "diagonal" | "dot" | "arrow" | "illustration"
+  ) => {
     drawingService.setCursorType(cursorType);
     setActiveTool("selection");
     if (onToolSelect) onToolSelect("selection");
@@ -60,53 +63,39 @@ export default function LeftSidebar({
   };
 
   const handleToolSelect = (toolId: string) => {
+    // Handle settings button click
+    if (toolId === "settings") {
+      router.push("/setting");
+      return;
+    }
+
+    // Handle other tool selections
     if (toolId === "menu") {
       if (onMenuOpen) onMenuOpen();
       return;
     }
-    
-    if (toolId === "settings") {
-      if (onSettingsOpen) onSettingsOpen();
-      return;
-    }
-    
+
+    // Handle selection tool - open cursor popup menu
     if (toolId === "selection") {
-      const sidebarWidth = 280;
-      const popupX = sidebarWidth + 20;
-      const popupY = 100;
-      
-      setCursorMenuPosition({ x: popupX, y: popupY });
-      setCursorMenuOpen(true);
-      setActiveTool("selection");
-      if (onToolSelect) onToolSelect("selection");
-      return;
+      // Get position of the selection tool button to position the popup menu
+      const toolButton = document.querySelector(`[data-tool-id="${toolId}"]`);
+      if (toolButton) {
+        const rect = toolButton.getBoundingClientRect();
+        setCursorMenuPosition({
+          x: rect.right + 10, // Position to the right of the button
+          y: rect.top,
+        });
+        setCursorMenuOpen(true);
+      } else {
+        // Fallback position if we can't find the button
+        setCursorMenuPosition({ x: 50, y: 50 });
+        setCursorMenuOpen(true);
+      }
     }
-    
-    // Handle brush tool specifically
-    if (toolId === "brush") {
-      setActiveTool("brush" as never);
-      if (onToolSelect) onToolSelect("brush");
-      return;
-    }
-    
-    switch (toolId) {
-      case "delete":
-        drawingService.clearAllDrawings();
-        if (onToolSelect) onToolSelect(toolId);
-        return;
-      case "lock":
-        drawingService.lockAllDrawings();
-        if (onToolSelect) onToolSelect(toolId);
-        return;
-      case "visibility":
-        drawingService.toggleVisibility();
-        if (onToolSelect) onToolSelect(toolId);
-        return;
-      default:
-        // For all other tools, set the active tool but don't enable any drawing modes
-        setActiveTool(toolId as never);
-        if (onToolSelect) onToolSelect(toolId);
-    }
+
+    // Set the active tool and notify listeners
+    setActiveTool(toolId as never);
+    if (onToolSelect) onToolSelect(toolId);
   };
 
   // Hàm helper để xác định màu sắc cho icon
@@ -115,7 +104,7 @@ export default function LeftSidebar({
       // Khi tool đang active, luôn dùng màu trắng để đảm bảo độ tương phản với bg-blue-600
       return "text-white";
     }
-    
+
     // Khi không active, luôn dùng màu gray-400 cho dark mode
     return "text-gray-400";
   };
@@ -130,7 +119,7 @@ export default function LeftSidebar({
           const Icon = tool.icon;
           const isOpen = openGroups[tool.id] || false;
           const isActive = activeTool === tool.id;
-          
+
           if (tool.type === "group") {
             return (
               <div key={tool.id} className="w-full flex flex-col items-center">
@@ -139,8 +128,12 @@ export default function LeftSidebar({
                   title={tool.label}
                   onClick={() => toggleGroup(tool.id)}
                 >
-                  <Icon className={`w-4 h-4 transition-transform ${isOpen ? 'rotate-180' : ''} ${getIconColor(false)}`} />
-                  
+                  <Icon
+                    className={`w-4 h-4 transition-transform ${
+                      isOpen ? "rotate-180" : ""
+                    } ${getIconColor(false)}`}
+                  />
+
                   {/* Group Tooltip */}
                   <div
                     className={`absolute left-full ml-2 px-2 py-1 text-xs rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-50 pointer-events-none bg-gray-900 text-white`}
@@ -148,25 +141,25 @@ export default function LeftSidebar({
                   >
                     <div className="font-medium">{tool.label}</div>
                     {tool.description && (
-                      <div className="text-[10px] opacity-75 mt-1 whitespace-pre-line">{tool.description}</div>
+                      <div className="text-[10px] opacity-75 mt-1 whitespace-pre-line">
+                        {tool.description}
+                      </div>
                     )}
                   </div>
                 </button>
-                
+
                 {/* Submenu items */}
                 {isOpen && tool.submenu && (
                   <div className="flex flex-col items-center mt-1 space-y-1">
                     {tool.submenu.map((subItem) => {
                       const SubIcon = subItem.icon;
                       const isSubActive = activeTool === subItem.id;
-                      
+
                       return (
                         <button
                           key={subItem.id}
                           className={`w-6 h-6 flex items-center justify-center rounded transition-colors ${
-                            isSubActive
-                              ? "bg-blue-600"
-                              : "hover:bg-gray-800"
+                            isSubActive ? "bg-blue-600" : "hover:bg-gray-800"
                           } border border-current border-opacity-30`}
                           title={subItem.label}
                           onClick={(e) => {
@@ -177,8 +170,10 @@ export default function LeftSidebar({
                             }
                           }}
                         >
-                          <SubIcon className={`w-3 h-3 ${getIconColor(isSubActive)}`} />
-                          
+                          <SubIcon
+                            className={`w-3 h-3 ${getIconColor(isSubActive)}`}
+                          />
+
                           {/* Submenu Tooltip */}
                           <div
                             className={`absolute left-full ml-2 px-2 py-1 text-xs rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-50 pointer-events-none bg-gray-900 text-white`}
@@ -194,21 +189,19 @@ export default function LeftSidebar({
               </div>
             );
           }
-          
+
           return (
             <button
               key={tool.id}
               className={`w-8 h-8 flex items-center justify-center rounded transition-colors group relative ${
-                isActive
-                  ? "bg-blue-600"
-                  : "hover:bg-gray-800"
+                isActive ? "bg-blue-600" : "hover:bg-gray-800"
               }`}
-              title={`${tool.label}${tool.hotkey ? ` (${tool.hotkey})` : ''}`}
+              title={`${tool.label}${tool.hotkey ? ` (${tool.hotkey})` : ""}`}
               data-tool-id={tool.id}
               onClick={() => handleToolSelect(tool.id)}
             >
               <Icon className={`w-4 h-4 ${getIconColor(isActive)}`} />
-              
+
               {/* Tooltip */}
               <div
                 className={`absolute left-full ml-2 px-2 py-1 text-xs rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-50 pointer-events-none bg-gray-900 text-white`}
@@ -216,10 +209,14 @@ export default function LeftSidebar({
               >
                 <div className="font-medium">{tool.label}</div>
                 {tool.hotkey && (
-                  <div className="text-[10px] opacity-75 mt-1">Hotkey: {tool.hotkey}</div>
+                  <div className="text-[10px] opacity-75 mt-1">
+                    Hotkey: {tool.hotkey}
+                  </div>
                 )}
                 {tool.description && (
-                  <div className="text-[10px] opacity-75 mt-1 whitespace-pre-line">{tool.description}</div>
+                  <div className="text-[10px] opacity-75 mt-1 whitespace-pre-line">
+                    {tool.description}
+                  </div>
                 )}
               </div>
             </button>
