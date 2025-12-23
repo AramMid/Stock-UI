@@ -24,7 +24,6 @@ import { CandlestickWithVolume, Timeframe } from "../types";
 import { fetchYahooSeries } from "../api";
 import { generateNextBarRealistic } from "../trading-utils";
 import {
-  calculateSMA,
   calculateEMA,
   calculateRSI,
   calculateMACD,
@@ -251,8 +250,8 @@ export function useChart({
       | ISeriesApi<"Area">
       | null;
     volumeSeries: ISeriesApi<"Histogram"> | null;
-    smaSeries: ISeriesApi<"Line"> | null;
-    emaSeries: ISeriesApi<"Line"> | null;
+    ema20Series: ISeriesApi<"Line"> | null;
+    ema10Series: ISeriesApi<"Line"> | null;
     bbUpperSeries: ISeriesApi<"Line"> | null;
     bbLowerSeries: ISeriesApi<"Line"> | null;
     bbMiddleSeries: ISeriesApi<"Line"> | null;
@@ -261,8 +260,8 @@ export function useChart({
   }>({
     priceSeries: null,
     volumeSeries: null,
-    smaSeries: null,
-    emaSeries: null,
+    ema20Series: null,
+    ema10Series: null,
     bbUpperSeries: null,
     bbLowerSeries: null,
     bbMiddleSeries: null,
@@ -957,8 +956,8 @@ export function useChart({
       .priceScale()
       .applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
 
-    const smaSeries = addLineSeries({ color: isDarkMode ? "#3b82f6" : "blue" });
-    const emaSeries = addLineSeries({
+    const ema20Series = addLineSeries({ color: isDarkMode ? "#3b82f6" : "blue" });
+    const ema10Series = addLineSeries({
       color: isDarkMode ? "#f97316" : "orange",
     });
     const bbUpperSeries = addLineSeries({
@@ -1021,8 +1020,8 @@ export function useChart({
     seriesRef.current = {
       priceSeries,
       volumeSeries,
-      smaSeries,
-      emaSeries,
+      ema20Series,
+      ema10Series,
       bbUpperSeries,
       bbLowerSeries,
       bbMiddleSeries,
@@ -1042,8 +1041,8 @@ export function useChart({
     try {
       seriesRef.current.priceSeries?.setData([]);
       seriesRef.current.volumeSeries?.setData([]);
-      seriesRef.current.smaSeries?.setData([]);
-      seriesRef.current.emaSeries?.setData([]);
+      seriesRef.current.ema20Series?.setData([]);
+      seriesRef.current.ema10Series?.setData([]);
       seriesRef.current.bbUpperSeries?.setData([]);
       seriesRef.current.bbMiddleSeries?.setData([]);
       seriesRef.current.bbLowerSeries?.setData([]);
@@ -1068,8 +1067,8 @@ export function useChart({
       const {
         priceSeries,
         volumeSeries,
-        smaSeries,
-        emaSeries,
+        ema20Series,
+        ema10Series,
         bbUpperSeries,
         bbLowerSeries,
         bbMiddleSeries,
@@ -1077,7 +1076,7 @@ export function useChart({
         macdLineSeries,
       } = seriesRef.current;
 
-      if (!priceSeries || !volumeSeries || !smaSeries || !emaSeries) return;
+      if (!priceSeries || !volumeSeries || !ema20Series || !ema10Series) return;
 
       dataRef.current.bars = data.slice();
       dataRef.current.closes = data.map((b) => b.close);
@@ -1128,8 +1127,8 @@ export function useChart({
       }
 
       const closes = dataRef.current.closes;
-      const sma = calculateSMA(closes, 14);
-      const ema = calculateEMA(closes, 14);
+      const ema20 = calculateEMA(closes, 20);
+      const ema10 = calculateEMA(closes, 10);
       const rsi = calculateRSI(closes, 14);
       const macdObj = calculateMACD(closes);
       const bb = calculateBollingerBands(closes, 20);
@@ -1150,11 +1149,11 @@ export function useChart({
         )
       );
 
-      smaSeries.setData(
-        safeMap(data.map((b, i) => ({ time: b.time as Time, value: sma[i] })))
+      ema20Series.setData(
+        safeMap(data.map((b, i) => ({ time: b.time as Time, value: ema20[i] })))
       );
-      emaSeries.setData(
-        safeMap(data.map((b, i) => ({ time: b.time as Time, value: ema[i] })))
+      ema10Series.setData(
+        safeMap(data.map((b, i) => ({ time: b.time as Time, value: ema10[i] })))
       );
 
       rsiSeries?.setData(
@@ -1213,8 +1212,8 @@ export function useChart({
           const closesArr = dataRef.current.closes;
 
           // SMA / EMA
-          const smaArr = calculateSMA(closesArr, 14);
-          const emaArr = calculateEMA(closesArr, 14);
+          const ema20Arr = calculateEMA(closesArr, 20);
+          const ema10Arr = calculateEMA(closesArr, 10);
 
           // RSI
           const rsiArr = calculateRSI(closesArr, 14);
@@ -1229,14 +1228,14 @@ export function useChart({
           const t = next.time as Time;
 
           // --- SMA / EMA ---
-          seriesRef.current.smaSeries?.update({
+          seriesRef.current.ema20Series?.update({
             time: t,
-            value: smaArr[idx],
+            value: ema20Arr[idx],
           });
 
-          seriesRef.current.emaSeries?.update({
+          seriesRef.current.ema10Series?.update({
             time: t,
-            value: emaArr[idx],
+            value: ema10Arr[idx],
           });
 
           // --- RSI ---
@@ -1480,8 +1479,8 @@ export function useChart({
         seriesRef.current = {
           priceSeries: null,
           volumeSeries: null,
-          smaSeries: null,
-          emaSeries: null,
+          ema20Series: null,
+          ema10Series: null,
           bbUpperSeries: null,
           bbLowerSeries: null,
           bbMiddleSeries: null,

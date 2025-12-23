@@ -217,46 +217,47 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
   }, [updateLastPrice, selectedSymbol]);
 
   // ✅ BlackSwanService initialization
-useEffect(() => {
-  const blackSwanService = BlackSwanService.getInstance();
+  useEffect(() => {
+    const blackSwanService = BlackSwanService.getInstance();
 
-  // Register position checker (giữ nguyên)
-  blackSwanService.registerPositionChecker((symbol: string) => {
-    const position = getAllPositions().find((pos: any) => pos.symbol === symbol);
-    return position ? position.position : 0;
-  });
+    // Register position checker (giữ nguyên)
+    blackSwanService.registerPositionChecker((symbol: string) => {
+      const position = getAllPositions().find(
+        (pos: any) => pos.symbol === symbol
+      );
+      return position ? position.position : 0;
+    });
 
-  blackSwanService.startMonitoring();
-  blackSwanService.stopAutomaticTriggering();
-  blackSwanService.startAutomaticTriggering(selectedSymbol);
-
-  // ✅ LISTEN TRỰC TIẾP EVENT TỪ BlackSwanService
-  const onBlackSwan = (event: any) => {
-    if (event?.symbol !== selectedSymbol) return;
-
-    setIsBlackSwanActive(true);
-
-    // nếu bạn muốn nhấp nháy nhanh theo event service
-    blackSwanService.startFlashing();
-
-    setTimeout(() => {
-      setIsBlackSwanActive(false);
-      // nếu không còn event nào active thì tắt nhấp nháy
-      if (!blackSwanService.hasActiveEvents()) {
-        blackSwanService.stopFlashing();
-      }
-    }, 10000);
-  };
-
-  blackSwanService.addEventListener(onBlackSwan);
-
-  return () => {
-    blackSwanService.removeEventListener(onBlackSwan);
-    blackSwanService.stopMonitoring();
+    blackSwanService.startMonitoring();
     blackSwanService.stopAutomaticTriggering();
-  };
-}, [selectedSymbol, getAllPositions]);
+    blackSwanService.startAutomaticTriggering(selectedSymbol);
 
+    // ✅ LISTEN TRỰC TIẾP EVENT TỪ BlackSwanService
+    const onBlackSwan = (event: any) => {
+      if (event?.symbol !== selectedSymbol) return;
+
+      setIsBlackSwanActive(true);
+
+      // nếu bạn muốn nhấp nháy nhanh theo event service
+      blackSwanService.startFlashing();
+
+      setTimeout(() => {
+        setIsBlackSwanActive(false);
+        // nếu không còn event nào active thì tắt nhấp nháy
+        if (!blackSwanService.hasActiveEvents()) {
+          blackSwanService.stopFlashing();
+        }
+      }, 10000);
+    };
+
+    blackSwanService.addEventListener(onBlackSwan);
+
+    return () => {
+      blackSwanService.removeEventListener(onBlackSwan);
+      blackSwanService.stopMonitoring();
+      blackSwanService.stopAutomaticTriggering();
+    };
+  }, [selectedSymbol, getAllPositions]);
 
   // Strategy Tester fullscreen toggle
   useEffect(() => {

@@ -296,11 +296,12 @@ const SYMBOLS = {
 };
 
 // ===== Tick/Price helpers =====
-const isVnSymbol = (symbol: string) => symbol.includes('.VN');
+const isVnSymbol = (symbol: string) => symbol.includes(".VN");
 
 const getTickSize = (symbol: string): number => {
   const cfg = (SYMBOLS as Record<string, { tickSize: number }>)[symbol];
-  if (cfg && Number.isFinite(cfg.tickSize) && cfg.tickSize > 0) return cfg.tickSize;
+  if (cfg && Number.isFinite(cfg.tickSize) && cfg.tickSize > 0)
+    return cfg.tickSize;
   return isVnSymbol(symbol) ? 100 : 0.01;
 };
 
@@ -310,7 +311,9 @@ const roundToTick = (symbol: string, price: number): number => {
   if (tick <= 0) return price;
   const rounded = Math.round(price / tick) * tick;
   // VN: integer ticks; Non-VN: keep 2 decimals by default
-  return isVnSymbol(symbol) ? Math.max(0, Math.round(rounded)) : Number(rounded.toFixed(2));
+  return isVnSymbol(symbol)
+    ? Math.max(0, Math.round(rounded))
+    : Number(rounded.toFixed(2));
 };
 
 const getFallbackInitialPrice = (symbol: string): number => {
@@ -322,7 +325,6 @@ const getFallbackInitialPrice = (symbol: string): number => {
   return roundToTick(symbol, 100 + Math.random() * 200);
 };
 
-
 export class MarketSimulationService {
   private bots: Bot[] = [];
   private botPositions = new Map<string, BotPosition>();
@@ -333,6 +335,15 @@ export class MarketSimulationService {
   >();
 
   private marketData = new Map<string, SimulatedMarketData>();
+
+  // ✅ Chart anchor prices (provided by UI/chart) to keep simulation aligned with chart display
+  private anchorPrices = new Map<
+    string,
+    { price: number; mode: "hard" | "soft"; updatedAt: number }
+  >();
+
+  // ✅ Last valid price (prevents random re-seeding / wild jumps)
+  private lastValidPrices = new Map<string, number>();
   private priceHistory = new Map<string, number[]>();
   private volumeHistory = new Map<string, number[]>();
   private simulationInterval: NodeJS.Timeout | null = null;
@@ -368,6 +379,89 @@ export class MarketSimulationService {
     this.blackSwanService.addEventListener((event) => {
       this.handleBlackSwanEvent(event);
     });
+  }
+  /**
+   * ✅ Sync chart price into the simulation.
+   * - mode="hard": force simulation price to exactly match the anchor (best for keeping OrderBook/Signals aligned with chart).
+   * - mode="soft": gently mean-revert simulation price towards the anchor.
+   */
+  public setAnchorPrice(
+    symbol: string,
+    price: number,
+    mode: "hard" | "soft" = "hard"
+  ) {
+    const p = Number(price);
+    if (!Number.isFinite(p) || p <= 0) return;
+
+    this.anchorPrices.set(symbol, { price: p, mode, updatedAt: Date.now() });
+    this.lastValidPrices.set(symbol, p);
+
+    const md = this.marketData.get(symbol);
+    if (md) {
+      if (mode === "hard") {
+        md.price = p;
+        // Keep OHLC coherent (avoid “candle vs price” drift)
+        md.open = p;
+        md.high = Math.max(md.high || p, p);
+        md.low = Math.min(md.low || p, p);
+        md.close = p;
+      }
+    }
+  }
+
+  public clearAnchorPrice(symbol: string) {
+    this.anchorPrices.delete(symbol);
+  }
+
+  private getFreshAnchor(
+    symbol: string
+  ): { price: number; mode: "hard" | "soft" } | null {
+    const anchor = this.anchorPrices.get(symbol);
+    if (!anchor) return null;
+
+    const ageMs = Date.now() - anchor.updatedAt;
+    // If UI stops updating anchor for too long, ignore it
+    if (ageMs > 5 * 60 * 1000) return null;
+
+    const p = Number(anchor.price);
+    if (!Number.isFinite(p) || p <= 0) return null;
+
+    return { price: p, mode: anchor.mode };
+  }
+  private applyAnchorPrice(symbol: string, marketData: SimulatedMarketData) {
+    const anchor = this.getFreshAnchor(symbol);
+    if (!anchor) return;
+
+    const a = anchor.price;
+
+    if (anchor.mode === "hard") {
+      marketData.price = a;
+      marketData.close = a;
+      marketData.open = marketData.open > 0 ? marketData.open : a;
+      marketData.high = Math.max(marketData.high || a, a);
+      marketData.low = marketData.low > 0 ? Math.min(marketData.low, a) : a;
+      return;
+    }
+
+    // soft: mean-revert gently towards anchor
+    const cur = Number(marketData.price);
+    if (!Number.isFinite(cur) || cur <= 0) {
+      marketData.price = a;
+      marketData.close = a;
+      return;
+    }
+
+    const deviation = (cur - a) / a;
+    // If deviation too large, snap back (prevents 37k vs 96k situations)
+    if (Math.abs(deviation) > 0.15) {
+      marketData.price = a;
+      marketData.close = a;
+      return;
+    }
+
+    // Otherwise, blend towards anchor
+    marketData.price = cur * 0.9 + a * 0.1;
+    marketData.close = marketData.price;
   }
 
   private initializeBots() {
@@ -507,7 +601,10 @@ export class MarketSimulationService {
 
   private initializeMarketData() {
     Object.entries(SYMBOLS).forEach(([symbol, data]) => {
-      const initialPrice = Number.isFinite(data.price) && data.price > 0 ? roundToTick(symbol, data.price) : getFallbackInitialPrice(symbol);
+      const initialPrice =
+        Number.isFinite(data.price) && data.price > 0
+          ? roundToTick(symbol, data.price)
+          : getFallbackInitialPrice(symbol);
       const marketData: SimulatedMarketData = {
         symbol,
         price: initialPrice,
@@ -575,7 +672,8 @@ export class MarketSimulationService {
       this.performStabilityCheck.bind(this),
       PARAMS.ORDER_BOOK_STABILITY_CHECK_INTERVAL
     );
-    return unsubscribe;  }
+    return unsubscribe;
+  }
 
   public stopSimulation() {
     if (this.simulationInterval) {
@@ -607,16 +705,30 @@ export class MarketSimulationService {
     this.marketData.forEach((marketData, symbol) => {
       const dynamicVolatility = this.calculateDynamicVolatility(symbol);
       marketData.volatility = dynamicVolatility;
+      // ✅ Apply chart anchor BEFORE bots place orders (keeps OrderBook/Signals aligned with chart)
+      this.applyAnchorPrice(symbol, marketData);
 
-      // Safety: if price becomes invalid, re-seed it to avoid broken order books (e.g., 0 => 100/200 levels).
+      const freshAnchor = this.getFreshAnchor(symbol);
+      const isHardAnchored = freshAnchor?.mode === "hard";
+
+      // ✅ Safety: never random re-seed unless we have absolutely no reference
       if (!Number.isFinite(marketData.price) || marketData.price <= 0) {
-        marketData.price = getFallbackInitialPrice(symbol);
-        const hist = this.priceHistory.get(symbol) || [];
-        this.priceHistory.set(symbol, [...hist.slice(-PARAMS.VOLATILITY_WINDOW), marketData.price]);
+        const last = this.lastValidPrices.get(symbol);
+        const anchor = this.anchorPrices.get(symbol)?.price;
+
+        const fallback =
+          Number.isFinite(anchor as any) && (anchor as any) > 0
+            ? (anchor as number)
+            : Number.isFinite(last as any) && (last as any) > 0
+            ? (last as number)
+            : getFallbackInitialPrice(symbol);
+
+        marketData.price = fallback;
+        marketData.close = fallback;
+      } else {
+        this.lastValidPrices.set(symbol, marketData.price);
       }
-
-
-      this.applyTrendEffects(marketData);
+      if (!isHardAnchored) this.applyTrendEffects(marketData);
 
       const symbolBots = this.bots.filter((bot) => bot.symbol === symbol);
 
@@ -649,7 +761,12 @@ export class MarketSimulationService {
 
       this.processBotToBotTrading(marketData);
 
-      this.updatePriceWithTrends(marketData, symbol);
+      if (!isHardAnchored) this.updatePriceWithTrends(marketData, symbol);
+      // Ensure hard-anchored price is never drifted by other steps
+      if (isHardAnchored && freshAnchor) {
+        marketData.price = freshAnchor.price;
+        marketData.close = freshAnchor.price;
+      }
 
       this.updateTechnicalIndicators(marketData, symbol);
 
@@ -680,7 +797,10 @@ export class MarketSimulationService {
             cb(snapshot);
           } catch (err) {
             // Never let a consumer crash the simulation loop
-            console.error('[MarketSimulationService] update listener error', err);
+            console.error(
+              "[MarketSimulationService] update listener error",
+              err
+            );
           }
         });
       }

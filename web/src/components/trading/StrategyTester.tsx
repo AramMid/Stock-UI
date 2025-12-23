@@ -89,7 +89,8 @@ interface BacktestParams {
   symbol: string;
   feeRate: number;
   taxRate: number;
-  priceSource: "HISTORICAL" | "LIVE";
+  // Keep LIVE for backward-compat, but prefer SIM_PRIVATE / SIM_PUBLIC for simulation sources
+  priceSource: "HISTORICAL" | "SIM_PRIVATE" | "SIM_PUBLIC" | "LIVE";
   stopLoss: number; // 0.05 -> 5%
   takeProfit: number; // 0.1  -> 10%
 }
@@ -148,6 +149,39 @@ export default function StrategyTester({
     stopLoss: 0.05,
     takeProfit: 0.1,
   });
+
+  // Track whether user manually edited the Symbol input (to avoid being overridden)
+  const [symbolDirty, setSymbolDirty] = useState(false);
+  const lastPropSymbolRef = useRef<string>(selectedSymbol);
+
+  // Effective symbol used for displaying + sending backtest:
+  // - If user has not manually edited, follow selectedSymbol prop.
+  // - If user edited, use backtestParams.symbol.
+  const effectiveSymbol = useMemo(() => {
+    const cleanProp = (selectedSymbol || "").trim();
+    const cleanLocal = (backtestParams.symbol || "").trim();
+    return (symbolDirty ? cleanLocal : cleanProp) || cleanLocal || cleanProp || "VN30";
+  }, [selectedSymbol, backtestParams.symbol, symbolDirty]);
+
+  // Keep backtestParams.symbol in sync when parent changes selectedSymbol.
+  // Only auto-sync when user hasn't manually edited, OR when local symbol still equals the previous prop symbol.
+  useEffect(() => {
+    const nextProp = (selectedSymbol || "").trim();
+    if (!nextProp) return;
+
+    lastPropSymbolRef.current = nextProp;
+
+    // When the user switches the symbol from outside (dropdown on parent),
+    // we must follow it so the backtest request always uses the correct symbol.
+    setSymbolDirty(false);
+    setBacktestParams((prev) => ({ ...prev, symbol: nextProp }));
+  }, [selectedSymbol]);
+
+  const [strategyMeta, setStrategyMeta] = useState({
+    name: "Custom Strategy",
+    description: "Generated from visual strategy builder",
+  });
+
   const [backtestResult, setBacktestResult] = useState<BacktestResult | null>(
     null
   );
@@ -526,7 +560,7 @@ export default function StrategyTester({
 
     try {
       // 2) Convert strategy sang JSON để gửi lên Nest
-      const strategyData = convertToJSONStrategy();
+      const strategyData = convertToJSONStrategy(effectiveSymbol);
       // Sending strategy data to backend
       const token = localStorage.getItem("access_token");
 
@@ -656,188 +690,341 @@ export default function StrategyTester({
     if (strategyName === "rsi") {
       setBlocks(rsiStrategy.blocks as unknown as Block[]);
       setConnections(rsiStrategy.connections);
+      setStrategyMeta({
+        name: "RSI Strategy",
+        description: "Example: buy/sell signals based on RSI thresholds",
+      });
     } else if (strategyName === "ema") {
       setBlocks(movingAverageCrossoverStrategy.blocks as unknown as Block[]);
       setConnections(movingAverageCrossoverStrategy.connections);
+      setStrategyMeta({
+        name: "Moving Average Crossover",
+        description: "Example: crossover-based signals using moving averages",
+      });
+    } else {
+      setStrategyMeta({
+        name: "Custom Strategy",
+        description: "Generated from visual strategy builder",
+      });
     }
     setSelectedBlock(null);
   };
 
   // Convert blocks and connections to JSON strategy format
-  const convertToJSONStrategy = () => {
-    // Define types for our strategy structure
-    interface StrategyRuleConditionCompareTo {
-      indicator?: string;
-      params?: { period?: number };
-      value?: number;
-    }
-
-    interface StrategyRuleCondition {
-      indicator?: string;
-      params?: { period?: number };
+  const convertToJSONStrategy = (symbolOverride?: string) => {
+        type Condition = {
+      indicator: string;
+      params?: { period?: number; value?: number };
       operator: string;
-      compare_to?: StrategyRuleConditionCompareTo;
-    }
+      compare_to?: { indicator?: string; params?: { period?: number }; value?: number };
+    };
 
-    interface StrategyRule {
+    type Rule = {
       ruleOrder: number;
-      condition: StrategyRuleCondition;
-      action: string;
-    }
+      condition: Condition;
+      action: "BUY" | "SELL" | "CLOSE_POSITION";
+    };
 
-    interface StrategyDefinition {
-      name: string;
-      description: string;
-      rules: StrategyRule[];
-    }
-
-    interface JobConfig {
-      stop_loss: number;
-      take_profit: number;
-    }
-
-    interface StrategyData {
-      strategy: StrategyDefinition;
+    type Payload = {
+      strategy: { name: string; description: string; rules: Rule[] };
       symbol: string;
       dataFrom: string;
       dataTo: string;
       priceSource: string;
-      sessionId: null;
+      sessionId: string | null;
       initialCapital: number;
       commissionRate: number;
-      jobConfig: JobConfig;
-    }
+      jobConfig?: Record<string, unknown>;
+    };
+    const finalSymbol =
+      (symbolOverride ?? backtestParams.symbol ?? selectedSymbol ?? "").trim() ||
+      "VN30";
 
-    // Create rules from connections
-    const rules: StrategyRule[] = [];
 
-    // Find buy and sell action blocks
-    const buyBlocks = blocks.filter((block) => block.type === "buy");
-    const sellBlocks = blocks.filter((block) => block.type === "sell");
+    // --- helpers ---
+    const normalizePriceSource = (
+      src: string
+    ): "HISTORICAL" | "SIM_PRIVATE" | "SIM_PUBLIC" => {
+      if (src === "SIM_PRIVATE" || src === "SIM_PUBLIC") return src;
+      if (src === "LIVE") return "SIM_PRIVATE"; // legacy mapping
+      return "HISTORICAL";
+    };
 
-    // Helper to map a block to indicator/value descriptor
-    const mapBlockToConditionSide = (block: Block | undefined) => {
-      if (!block) return undefined;
+    const cleanObject = <T extends Record<string, any>>(obj: T): T => {
+      const out: Record<string, any> = {};
+      Object.keys(obj).forEach((k) => {
+        const v = (obj as any)[k];
+        if (v === undefined) return;
+        if (v && typeof v === "object" && !Array.isArray(v)) {
+          const nested = cleanObject(v);
+          if (Object.keys(nested).length === 0) return;
+          out[k] = nested;
+          return;
+        }
+        out[k] = v;
+      });
+      return out as T;
+    };
 
+    const mapSide = (block?: Block): { kind: "indicator" | "value"; indicator?: string; params?: { period?: number }; value?: number } | null => {
+      if (!block) return null;
+
+      // Indicators
       if (["rsi", "macd", "ema", "sma", "bollinger"].includes(block.type)) {
         return {
+          kind: "indicator",
           indicator: block.type.toUpperCase(),
           params: { period: block.period || 14 },
         };
       }
 
+      // Price fields
       if (
-        ["price_open", "price_close", "price_high", "price_low"].includes(
+        ["price_open", "price_close", "price_high", "price_low", "volume"].includes(
           block.type
         )
       ) {
-        return {
-          indicator: block.type.replace("price_", "").toUpperCase(),
-          params: {},
-        };
+        const key =
+          block.type === "volume"
+            ? "VOLUME"
+            : block.type.replace("price_", "").toUpperCase();
+        return { kind: "indicator", indicator: key, params: {} };
       }
 
+      // Number literal
       if (block.type === "number") {
-        return {
-          value: block.value || 0,
-        };
+        return { kind: "value", value: Number(block.value ?? 0) };
       }
 
-      return undefined;
+      return null;
     };
 
-    const processActionBlocks = (actionBlocks: Block[], actionName: string) => {
-      actionBlocks.forEach((actionBlock) => {
-        const connectedConditions = connections
-          .filter((conn) => conn.to === actionBlock.id)
-          .map((conn) => blocks.find((b) => b.id === conn.from))
-          .filter(Boolean) as Block[];
+    const invertOperator = (op: string) => {
+      if (op === "<") return ">";
+      if (op === ">") return "<";
+      if (op === "cross_over") return "cross_under";
+      if (op === "cross_under") return "cross_over";
+      return op;
+    };
 
-        connectedConditions.forEach((conditionBlock) => {
-          if (
-            conditionBlock &&
-            ["less_than", "greater_than", "cross_over", "cross_under"].includes(
-              conditionBlock.type
-            )
-          ) {
-            const conditionConnections = connections
-              .filter((conn) => conn.to === conditionBlock.id)
-              .map((conn) => blocks.find((b) => b.id === conn.from))
-              .filter(Boolean) as Block[];
+    // --- build rules from canvas ---
+    // NOTE: some users connect blocks in either direction (A->B or B->A).
+    // To keep this robust, we treat connections as *undirected* when extracting rules.
+    const rules: Rule[] = [];
 
-            if (conditionConnections.length >= 2) {
-              const firstBlock = conditionConnections[0];
-              const secondBlock = conditionConnections[1];
+    const actionBlocks = blocks.filter((b) =>
+      ["buy", "sell", "close_position"].includes(b.type)
+    );
 
-              const condition: StrategyRuleCondition = {
-                operator: "",
-              };
+    // Make output deterministic: sort blocks left-to-right, then top-to-bottom
+    const sortByPos = (a: Block, b: Block) => (a.x - b.x) || (a.y - b.y);
 
-              if (conditionBlock.type === "less_than") condition.operator = "<";
-              else if (conditionBlock.type === "greater_than")
-                condition.operator = ">";
-              else if (conditionBlock.type === "cross_over")
-                condition.operator = "cross_over";
-              else if (conditionBlock.type === "cross_under")
-                condition.operator = "cross_under";
+    const getNeighbors = (id: string): Block[] => {
+      const neighborIds = new Set<string>();
+      connections.forEach((c) => {
+        if (c.to === id) neighborIds.add(c.from);
+        if (c.from === id) neighborIds.add(c.to);
+      });
+      return Array.from(neighborIds)
+        .map((nid) => blocks.find((b) => b.id === nid))
+        .filter(Boolean) as Block[];
+    };
 
-              const left = mapBlockToConditionSide(firstBlock);
-              const right = mapBlockToConditionSide(secondBlock);
+    const isComparator = (t: BlockType) =>
+      ["less_than", "greater_than", "cross_over", "cross_under"].includes(t);
 
-              if (left) {
-                condition.indicator = left.indicator;
-                condition.params = left.params;
-              }
-              if (right) {
-                condition.compare_to = {
-                  indicator: right.indicator,
-                  params: right.params,
-                  value: right.value,
-                };
-              }
+    actionBlocks.sort(sortByPos).forEach((actionBlock) => {
+      const action =
+        actionBlock.type === "buy"
+          ? "BUY"
+          : actionBlock.type === "sell"
+          ? "SELL"
+          : "CLOSE_POSITION";
 
-              rules.push({
-                ruleOrder: rules.length + 1,
-                condition,
-                action: actionName,
-              });
-            }
+      // Comparator blocks connected to this action block (either direction)
+      getNeighbors(actionBlock.id)
+        .filter((b) => isComparator(b.type))
+        .sort(sortByPos)
+        .forEach((condBlock) => {
+          // Inputs connected to the comparator block (either direction)
+          const inputs = getNeighbors(condBlock.id)
+            // exclude the action block itself if it is wired directly
+            .filter((b) => b.id !== actionBlock.id);
+
+          // Need at least 2 inputs
+          if (inputs.length < 2) return;
+
+          // Pick 2 inputs deterministically (left-to-right)
+          const [a, b] = inputs.sort(sortByPos).slice(0, 2);
+
+          let op = "";
+          if (condBlock.type === "less_than") op = "<";
+          else if (condBlock.type === "greater_than") op = ">";
+          else if (condBlock.type === "cross_over") op = "cross_over";
+          else if (condBlock.type === "cross_under") op = "cross_under";
+
+          let left = mapSide(a);
+          let right = mapSide(b);
+
+          if (!left || !right) return;
+
+          // Prefer indicator on the LEFT if possible
+          if (left.kind === "value" && right.kind === "indicator") {
+            const tmp = left;
+            left = right;
+            right = tmp;
+            op = invertOperator(op);
           }
+
+          const condition: Condition = {
+            indicator: left.kind === "indicator" ? (left.indicator as string) : "VALUE",
+            operator: op,
+          };
+
+          if (left.kind === "indicator") {
+            condition.params = left.params;
+          } else {
+            condition.params = { value: left.value ?? 0 };
+          }
+
+          if (right.kind === "indicator") {
+            condition.compare_to = {
+              indicator: right.indicator as string,
+              params: right.params,
+            };
+          } else {
+            condition.compare_to = { value: right.value ?? 0 };
+          }
+
+          rules.push({
+            ruleOrder: rules.length + 1,
+            condition: cleanObject(condition),
+            action,
+          });
+        });
+    });
+
+
+    // --- fallback: if we couldn't derive rules from connections (e.g. connections store port-ids or users wired in an unexpected way),
+    // build rules heuristically based on spatial layout (left inputs -> comparator -> right action).
+    if (rules.length === 0) {
+      const comparatorBlocks = blocks
+        .filter((b) => isComparator(b.type))
+        .sort(sortByPos);
+
+      const nonComparatorNonAction = blocks.filter(
+        (b) => !isComparator(b.type) && !["buy", "sell", "close_position"].includes(b.type)
+      );
+
+      const actionsSorted = actionBlocks.slice().sort(sortByPos);
+
+      const pickTwoNearestLeft = (cmp: Block): Block[] => {
+        const left = nonComparatorNonAction
+          .filter((b) => b.x <= cmp.x)
+          .map((b) => ({ b, dx: Math.abs(cmp.x - b.x), dy: Math.abs(cmp.y - b.y) }))
+          .sort((p, q) => (p.dx - q.dx) || (p.dy - q.dy))
+          .map((p) => p.b);
+        // If not enough on the left, allow anywhere
+        const pool =
+          left.length >= 2
+            ? left
+            : nonComparatorNonAction
+                .map((b) => ({ b, dx: Math.abs(cmp.x - b.x), dy: Math.abs(cmp.y - b.y) }))
+                .sort((p, q) => (p.dx - q.dx) || (p.dy - q.dy))
+                .map((p) => p.b);
+        return pool.slice(0, 2);
+      };
+
+      const pickNearestRightAction = (cmp: Block): Block | undefined => {
+        const right = actionsSorted
+          .filter((a) => a.x >= cmp.x)
+          .map((a) => ({ a, dx: Math.abs(a.x - cmp.x), dy: Math.abs(a.y - cmp.y) }))
+          .sort((p, q) => (p.dx - q.dx) || (p.dy - q.dy))
+          .map((p) => p.a);
+        return right[0] ?? actionsSorted[0];
+      };
+
+      comparatorBlocks.forEach((cmp) => {
+        const actionBlock = pickNearestRightAction(cmp);
+        if (!actionBlock) return;
+
+        const action =
+          actionBlock.type === "buy"
+            ? "BUY"
+            : actionBlock.type === "sell"
+            ? "SELL"
+            : "CLOSE_POSITION";
+
+        const [a, b] = pickTwoNearestLeft(cmp);
+        if (!a || !b) return;
+
+        let op = "";
+        if (cmp.type === "less_than") op = "<";
+        else if (cmp.type === "greater_than") op = ">";
+        else if (cmp.type === "cross_over") op = "cross_over";
+        else if (cmp.type === "cross_under") op = "cross_under";
+
+        let left = mapSide(a);
+        let right = mapSide(b);
+        if (!left || !right) return;
+
+        if (left.kind === "value" && right.kind === "indicator") {
+          const tmp = left;
+          left = right;
+          right = tmp;
+          op = invertOperator(op);
+        }
+
+        const condition: Condition = {
+          indicator: left.kind === "indicator" ? (left.indicator as string) : "VALUE",
+          operator: op,
+        };
+
+        if (left.kind === "indicator") condition.params = left.params;
+        else condition.params = { value: left.value ?? 0 };
+
+        if (right.kind === "indicator") {
+          condition.compare_to = {
+            indicator: right.indicator as string,
+            params: right.params,
+          };
+        } else {
+          condition.compare_to = { value: right.value ?? 0 };
+        }
+
+        rules.push({
+          ruleOrder: rules.length + 1,
+          condition: cleanObject(condition),
+          action,
         });
       });
-    };
-
-    processActionBlocks(buyBlocks, "BUY");
-    processActionBlocks(sellBlocks, "SELL");
-
-    // Create the complete strategy object
-    const strategyData: StrategyData = {
+    }
+    const payload: Payload = {
       strategy: {
-        name: "Custom Strategy",
-        description: "Generated from visual strategy builder",
+        name: strategyMeta.name,
+        description: strategyMeta.description,
         rules,
       },
-      symbol: backtestParams.symbol,
+      symbol: finalSymbol,
       dataFrom: backtestParams.startDate.toISOString().split("T")[0],
       dataTo: backtestParams.endDate.toISOString().split("T")[0],
-      priceSource: backtestParams.priceSource,
+      priceSource: normalizePriceSource(backtestParams.priceSource),
       sessionId: null,
       initialCapital: backtestParams.initialCapital,
       commissionRate: backtestParams.feeRate,
-      jobConfig: {
+      jobConfig: cleanObject({
         stop_loss: backtestParams.stopLoss,
         take_profit: backtestParams.takeProfit,
-      },
+      }),
     };
 
-    // Generated strategy data for backend
-    return strategyData;
+    return cleanObject(payload);
   };
 
   // Gửi thẳng JSON (nếu vẫn dùng nút Send JSON)
   const sendStrategyToBackend = async () => {
     try {
-      const strategyData = convertToJSONStrategy();
+      const strategyData = convertToJSONStrategy(effectiveSymbol);
 
       const response = await fetch("http://localhost:3001/api/backtests", {
         method: "POST",
@@ -961,7 +1148,7 @@ export default function StrategyTester({
                 Kéo thả block để tạo chiến lược &amp; backtest nhanh
                 <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full border border-gray-600/40 text-[10px]">
                   <FiDollarSign className="w-3 h-3" />
-                  {backtestParams.symbol || "VN30"}
+                  {effectiveSymbol}
                 </span>
                 <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full border border-gray-600/40 text-[10px]">
                   {headerSummary.range}
@@ -1261,7 +1448,7 @@ export default function StrategyTester({
                           onClick={() => {
                             const validation = validateStrategy();
                             if (validation.isValid) {
-                              const strategyData = convertToJSONStrategy();
+                              const strategyData = convertToJSONStrategy(effectiveSymbol);
                               const jsonData = JSON.stringify(
                                 strategyData,
                                 null,
@@ -1338,7 +1525,7 @@ export default function StrategyTester({
                     <div className="space-y-3 text-xs">
                       {/* Initial Capital */}
                       <div className="space-y-1.5">
-                        <label className="block text-[11px] text-gray-300">
+                        <label className={`block text-[11px] ${isDarkMode ? "text-gray-300" : "text-slate-700"}`}>
                           Initial Capital (VND)
                         </label>
                         <div className="flex gap-2">
@@ -1383,7 +1570,7 @@ export default function StrategyTester({
                       {/* Date range */}
                       <div className="grid grid-cols-2 gap-2">
                         <div className="space-y-1.5">
-                          <label className="block text-[11px] text-gray-300">
+                          <label className={`block text-[11px] ${isDarkMode ? "text-gray-300" : "text-slate-700"}`}>
                             Start Date
                           </label>
                           <input
@@ -1393,12 +1580,14 @@ export default function StrategyTester({
                                 .toISOString()
                                 .split("T")[0]
                             }
-                            onChange={(e) =>
-                              setBacktestParams((prev) => ({
-                                ...prev,
-                                startDate: new Date(e.target.value),
-                              }))
-                            }
+                            onChange={(e) => {
+                              const d = new Date(e.target.value);
+                              setBacktestParams((prev) => {
+                                const end = prev.endDate;
+                                const nextEnd = d > end ? d : end;
+                                return { ...prev, startDate: d, endDate: nextEnd };
+                              });
+                            }}
                             className={`w-full px-2 py-1.5 rounded-lg border text-xs ${
                               isDarkMode
                                 ? "bg-gray-950 border-gray-700"
@@ -1407,7 +1596,7 @@ export default function StrategyTester({
                           />
                         </div>
                         <div className="space-y-1.5">
-                          <label className="block text-[11px] text-gray-300">
+                          <label className={`block text-[11px] ${isDarkMode ? "text-gray-300" : "text-slate-700"}`}>
                             End Date
                           </label>
                           <input
@@ -1415,12 +1604,14 @@ export default function StrategyTester({
                             value={
                               backtestParams.endDate.toISOString().split("T")[0]
                             }
-                            onChange={(e) =>
-                              setBacktestParams((prev) => ({
-                                ...prev,
-                                endDate: new Date(e.target.value),
-                              }))
-                            }
+                            onChange={(e) => {
+                              const d = new Date(e.target.value);
+                              setBacktestParams((prev) => {
+                                const start = prev.startDate;
+                                const nextStart = d < start ? d : start;
+                                return { ...prev, startDate: nextStart, endDate: d };
+                              });
+                            }}
                             className={`w-full px-2 py-1.5 rounded-lg border text-xs ${
                               isDarkMode
                                 ? "bg-gray-950 border-gray-700"
@@ -1432,7 +1623,7 @@ export default function StrategyTester({
 
                       {/* Symbol */}
                       <div className="space-y-1.5">
-                        <label className="block text-[11px] text-gray-300">
+                        <label className={`block text-[11px] ${isDarkMode ? "text-gray-300" : "text-slate-700"}`}>
                           Symbol
                         </label>
                         <div className="flex items-center gap-1.5">
@@ -1449,12 +1640,13 @@ export default function StrategyTester({
                           <input
                             type="text"
                             value={backtestParams.symbol}
-                            onChange={(e) =>
+                            onChange={(e) => {
+                              setSymbolDirty(true);
                               setBacktestParams((prev) => ({
                                 ...prev,
                                 symbol: e.target.value,
-                              }))
-                            }
+                              }));
+                            }}
                             className={`flex-1 px-2 py-1.5 rounded-lg border text-xs ${
                               isDarkMode
                                 ? "bg-gray-950 border-gray-700"
@@ -1467,7 +1659,7 @@ export default function StrategyTester({
 
                       {/* Price source */}
                       <div className="space-y-1.5">
-                        <label className="block text-[11px] text-gray-300">
+                        <label className={`block text-[11px] ${isDarkMode ? "text-gray-300" : "text-slate-700"}`}>
                           Price Source
                         </label>
                         <select
@@ -1486,14 +1678,16 @@ export default function StrategyTester({
                           }`}
                         >
                           <option value="HISTORICAL">HISTORICAL</option>
-                          <option value="LIVE">LIVE (simulation)</option>
+                          <option value="SIM_PRIVATE">SIM_PRIVATE (your simulation)</option>
+                          <option value="SIM_PUBLIC">SIM_PUBLIC (shared simulation)</option>
+                          <option value="LIVE">LIVE (legacy)</option>
                         </select>
                       </div>
 
                       {/* Fee & Tax */}
                       <div className="grid grid-cols-2 gap-2">
                         <div className="space-y-1.5">
-                          <label className="block text-[11px] text-gray-300">
+                          <label className={`block text-[11px] ${isDarkMode ? "text-gray-300" : "text-slate-700"}`}>
                             Fee Rate (%)
                           </label>
                           <input
@@ -1514,7 +1708,7 @@ export default function StrategyTester({
                           />
                         </div>
                         <div className="space-y-1.5">
-                          <label className="block text-[11px] text-gray-300">
+                          <label className={`block text-[11px] ${isDarkMode ? "text-gray-300" : "text-slate-700"}`}>
                             Tax Rate (%)
                           </label>
                           <input
@@ -1538,7 +1732,7 @@ export default function StrategyTester({
 
                       {/* JobConfig: SL/TP */}
                       <div className="space-y-1.5">
-                        <label className="block text-[11px] text-gray-300">
+                        <label className={`block text-[11px] ${isDarkMode ? "text-gray-300" : "text-slate-700"}`}>
                           Risk Management (SL / TP)
                         </label>
                         <div className="grid grid-cols-2 gap-2">
