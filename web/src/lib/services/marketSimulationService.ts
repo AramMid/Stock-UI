@@ -326,6 +326,7 @@ const getFallbackInitialPrice = (symbol: string): number => {
 };
 
 export class MarketSimulationService {
+  private static chartPriceListenerAttached = false;
   private bots: Bot[] = [];
   private botPositions = new Map<string, BotPosition>();
   private botOrders = new Map<string, BotOrder>();
@@ -375,7 +376,19 @@ export class MarketSimulationService {
     this.lastTrendGenerationTime = Date.now();
     this.lastStabilityCheckTime = Date.now();
 
-    // Listen for Black Swan events
+    
+// ✅ Keep simulation/bots anchored to the EXACT chart price (single source of truth)
+if (typeof window !== "undefined" && !MarketSimulationService.chartPriceListenerAttached) {
+  MarketSimulationService.chartPriceListenerAttached = true;
+  window.addEventListener("chart:price", (ev: any) => {
+    const sym = ev?.detail?.symbol;
+    const p = Number(ev?.detail?.price);
+    if (!sym || !Number.isFinite(p) || p <= 0) return;
+    // Hard anchor so bot orders + depth levels always reference current chart price
+    this.setAnchorPrice(sym, p, "hard");
+  });
+}
+// Listen for Black Swan events
     this.blackSwanService.addEventListener((event) => {
       this.handleBlackSwanEvent(event);
     });
@@ -428,6 +441,24 @@ export class MarketSimulationService {
 
     return { price: p, mode: anchor.mode };
   }
+
+  /**
+   * Reference price used for ALL bot decisions & orderbook levels.
+   * If UI provides an anchor (chart price), we ALWAYS use it.
+   * If not available, we avoid creating new bot orders to prevent "random" prices.
+   */
+  private getReferencePrice(symbol: string, marketData: SimulatedMarketData): number | null {
+    const anchor = this.getFreshAnchor(symbol);
+    if (anchor && anchor.mode === "hard") return anchor.price;
+    if (anchor && anchor.mode === "soft") return anchor.price;
+
+    const p = Number(marketData.price);
+    if (!Number.isFinite(p) || p <= 0) return null;
+
+    // No fresh anchor: return null so callers can choose to skip generating orders
+    return null;
+  }
+
   private applyAnchorPrice(symbol: string, marketData: SimulatedMarketData) {
     const anchor = this.getFreshAnchor(symbol);
     if (!anchor) return;
@@ -1138,7 +1169,16 @@ export class MarketSimulationService {
     const now = Date.now();
     const symbol = marketData.symbol;
 
-    // Filter logic ít aggressive hơn
+    
+
+// ✅ Always base bot decisions & depth levels on the CURRENT CHART PRICE (anchor)
+const refPrice = this.getReferencePrice(symbol, marketData);
+if (refPrice === null) {
+  // No fresh anchor from UI => avoid creating new bot orders at random prices
+  return;
+}
+marketData.price = refPrice;
+// Filter logic ít aggressive hơn
     marketData.bidDepth = marketData.bidDepth.filter(
       (level) =>
         level.type !== "marketMaker" ||
@@ -1695,7 +1735,16 @@ export class MarketSimulationService {
     const now = Date.now();
     const symbol = marketData.symbol;
 
-    const symbolTrends = this.activeTrends.filter(
+    
+
+// ✅ Always base bot decisions & depth levels on the CURRENT CHART PRICE (anchor)
+const refPrice = this.getReferencePrice(symbol, marketData);
+if (refPrice === null) {
+  // No fresh anchor from UI => avoid creating new bot orders at random prices
+  return;
+}
+marketData.price = refPrice;
+const symbolTrends = this.activeTrends.filter(
       (t) => t.symbol === symbol && t.endTime > now
     );
     const hasActiveTrend = symbolTrends.length > 0;
@@ -2125,7 +2174,16 @@ export class MarketSimulationService {
 
   private processBotToBotTrading(marketData: SimulatedMarketData) {
     const symbol = marketData.symbol;
-    const now = Date.now();
+    
+
+// ✅ Always base bot decisions & depth levels on the CURRENT CHART PRICE (anchor)
+const refPrice = this.getReferencePrice(symbol, marketData);
+if (refPrice === null) {
+  // No fresh anchor from UI => avoid creating new bot orders at random prices
+  return;
+}
+marketData.price = refPrice;
+const now = Date.now();
 
     const botOrdersForSymbol = Array.from(this.botOrders.values()).filter(
       (order) =>

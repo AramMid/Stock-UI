@@ -327,6 +327,9 @@ export function useChart({
   }>({ chartResizeHandler: null, resizeHandler: null });
 
   const crosshairSubscribedRef = useRef(false);
+  const lastCrosshairTimeRef = useRef<Time | null>(null);
+  const lastCrosshairVolRef = useRef<number | null>(null);
+  const crosshairRafRef = useRef<number | null>(null);
 
   // ============= Persist Layer (PUBLIC ONLY) =============
   const persistKeyRef = useRef<string>(""); // empty means disabled
@@ -1058,8 +1061,31 @@ export function useChart({
 
       mainChart.subscribeCrosshairMove((param) => {
         if (!param.time || dataRef.current.bars.length === 0) return;
-        const found = dataRef.current.bars.find((b) => b.time === param.time);
-        if (found) onVol(found.volume);
+
+        // Prevent render loops: only emit when crosshair time/volume actually changes,
+        // and throttle to 1 update per animation frame.
+        const t = param.time as Time;
+        if (lastCrosshairTimeRef.current === t) return;
+
+        const found = dataRef.current.bars.find((b) => b.time === t);
+        if (!found) return;
+
+        const v = found.volume;
+        if (lastCrosshairVolRef.current === v) {
+          lastCrosshairTimeRef.current = t;
+          return;
+        }
+
+        lastCrosshairTimeRef.current = t;
+        lastCrosshairVolRef.current = v;
+
+        if (crosshairRafRef.current) {
+          cancelAnimationFrame(crosshairRafRef.current);
+        }
+        crosshairRafRef.current = requestAnimationFrame(() => {
+          crosshairRafRef.current = null;
+          onVol(v);
+        });
       });
     };
 

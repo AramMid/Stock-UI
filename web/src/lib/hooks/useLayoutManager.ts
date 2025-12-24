@@ -78,11 +78,15 @@ export function useLayoutManager() {
     setIsAccountCollapsed(false);
   }, [chartAccountLayout]);
 
-  // Order panel resize handler
-  const handleOrderPanelResize = useCallback((newHeight: number) => {
-    // For fractional grid units, we'll update a state that can be used to recalculate grid template rows
-    setOrderPanelHeight(Math.max(150, Math.min(newHeight, 600))); // Min 150px, max 600px
-  }, []);
+  // Order panel resize handler (loop-safe)
+const handleOrderPanelResize = useCallback((newHeight: number) => {
+  // Clamp + round + only update when it actually changes (prevents ResizeObserver loops)
+  setOrderPanelHeight((prev) => {
+    const next = Math.max(150, Math.min(Math.round(newHeight), 600)); // Min 150px, max 600px
+    return Math.abs(prev - next) <= 1 ? prev : next;
+  });
+}, []);
+
 
   return {
     // Refs

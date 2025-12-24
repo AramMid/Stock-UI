@@ -63,6 +63,7 @@ interface AccountManagerSectionProps {
   marketSimulation: MarketSimulationService | null;
   onOpenOrderPanel?: (orderType: "buy" | "sell", price?: number) => void;
   selectedSymbol?: string;
+  chartPrice?: number; // latest chart price (single source of truth)
   userBalance?: number; // Add userBalance prop
   userName?: string; // Add userName prop
   realizedPnl?: number;
@@ -85,6 +86,7 @@ export default function AccountManagerSection({
   marketSimulation,
   onOpenOrderPanel,
   selectedSymbol = "VIC.VN",
+  chartPrice,
   userBalance, // Destructure userBalance prop
   userName, // Destructure userName prop
   realizedPnl,
@@ -95,6 +97,10 @@ export default function AccountManagerSection({
   const [marketAnalysis, setMarketAnalysis] = useState<MarketAnalysis | null>(
     null
   );
+
+  // Rolling price series for indicator calculations (e.g., RSI)
+  const priceSeriesRef = useRef<number[]>([]);
+
 
   // Suggestion state
   const [suggestedOrders, setSuggestedOrders] = useState<{
@@ -380,7 +386,83 @@ export default function AccountManagerSection({
   const clamp = (v: number, min: number, max: number) =>
     Math.max(min, Math.min(max, v));
 
+  // Keep AI signal prices close to the chart price to avoid UI mismatches
+  const clampNearPrice = (price: number, anchor: number, pct = 0.003) => {
+    const p = toNumber(price, NaN);
+    const a = toNumber(anchor, NaN);
+    if (!Number.isFinite(p) || !Number.isFinite(a) || a <= 0) return p;
+    return clamp(p, a * (1 - pct), a * (1 + pct));
+  };
+
+  
   // ========================
+  // ORDERBOOK ALIGNMENT (KEEP BID/ASK IN SYNC WITH CHART PRICE)
+  // ========================
+  const getTickSize = (price: number) => {
+    const p = toNumber(price, 0);
+    if (p >= 100000) return 100;
+    if (p >= 10000) return 100;
+    if (p >= 1000) return 10;
+    return 1;
+  };
+
+  const alignDepthToChartPrice = (
+    bidsIn: { price: number; totalQuantity: number; orderCount: number }[],
+    asksIn: { price: number; totalQuantity: number; orderCount: number }[],
+    anchorPrice: number
+  ) => {
+    const anchor = toNumber(anchorPrice, NaN);
+    if (!Number.isFinite(anchor) || anchor <= 0) return { bids: bidsIn, asks: asksIn };
+
+    const bids = (bidsIn ?? []).map((x) => ({ ...x, price: toNumber(x.price, 0) }));
+    const asks = (asksIn ?? []).map((x) => ({ ...x, price: toNumber(x.price, 0) }));
+
+    if (bids.length === 0 || asks.length === 0) return { bids, asks };
+
+    const bestBid = bids[0].price;
+    const bestAsk = asks[0].price;
+
+    if (!Number.isFinite(bestBid) || !Number.isFinite(bestAsk) || bestBid <= 0 || bestAsk <= 0) {
+      return { bids, asks };
+    }
+
+    const mid = (bestBid + bestAsk) / 2;
+    const shift = anchor - mid;
+
+    // If already close, do nothing (avoid jitter)
+    const pctDiff = Math.abs(shift) / Math.max(1, anchor);
+    if (pctDiff < 0.00005) return { bids, asks }; // 0.005%
+
+    const tick = getTickSize(anchor);
+
+    const roundTick = (p: number) => Math.round(p / tick) * tick;
+
+    const shiftedBids = bids
+      .map((l) => ({ ...l, price: roundTick(l.price + shift) }))
+      .filter((l) => l.price > 0);
+
+    const shiftedAsks = asks
+      .map((l) => ({ ...l, price: roundTick(l.price + shift) }))
+      .filter((l) => l.price > 0);
+
+    // Ensure ordering after rounding
+    shiftedBids.sort((a, b) => toNumber(b.price, 0) - toNumber(a.price, 0));
+    shiftedAsks.sort((a, b) => toNumber(a.price, 0) - toNumber(b.price, 0));
+
+    // Safety: ensure bestBid < bestAsk after rounding; if not, enforce a minimal spread of 1 tick
+    if (shiftedBids.length > 0 && shiftedAsks.length > 0) {
+      const bb = shiftedBids[0].price;
+      const ba = shiftedAsks[0].price;
+      if (bb >= ba) {
+        // Push asks up by 1 tick
+        for (let i = 0; i < shiftedAsks.length; i++) shiftedAsks[i].price = shiftedAsks[i].price + tick;
+      }
+    }
+
+    return { bids: shiftedBids, asks: shiftedAsks };
+  };
+
+// ========================
   // MARKET SIMULATION EFFECT
   // ========================
   useEffect(() => {
@@ -415,7 +497,17 @@ export default function AccountManagerSection({
       const resistanceLevels = identifyResistanceLevels(asks);
       const volumeAnalysis = analyzeVolume(totalBidVol + totalAskVol);
 
-      const rsiVal = toNumber((marketData as any)?.rsi, NaN);
+
+// Build a rolling series from live price (preferred for RSI). Fallback to depth proxy if needed.
+const livePrice = toNumber((marketData as any)?.price, chartPrice ?? 0);
+if (Number.isFinite(livePrice) && livePrice > 0) {
+  priceSeriesRef.current.push(livePrice);
+  if (priceSeriesRef.current.length > 120) priceSeriesRef.current.shift();
+}
+const series =
+  priceSeriesRef.current.length >= 2 ? priceSeriesRef.current : priceHistory;
+
+      const rsiVal = calculateRSIFromPrices(series, 14);
       const vwapVal = toNumber((marketData as any)?.vwap, NaN);
 
       return {
@@ -425,7 +517,7 @@ export default function AccountManagerSection({
         supportLevels,
         resistanceLevels,
         volumeAnalysis,
-        rsi: Number.isFinite(rsiVal) ? rsiVal : null,
+        rsi: rsiVal,
         vwap: Number.isFinite(vwapVal) ? vwapVal : null,
       };
     };
@@ -436,10 +528,13 @@ export default function AccountManagerSection({
       bids: OrderBookLevel[],
       asks: OrderBookLevel[]
     ): { buy: SuggestionData | null; sell: SuggestionData | null } => {
-      const currentPrice = toNumber((marketData as any)?.price, NaN);
+            const simPrice = toNumber((marketData as any)?.price, NaN);
+      const chartAnchor = toNumber(chartPrice, NaN);
+      const currentPrice =
+        Number.isFinite(chartAnchor) && chartAnchor > 0 ? chartAnchor : simPrice;
       if (!Number.isFinite(currentPrice) || currentPrice <= 0) {
         setDebugInfo(
-          `Invalid current price from simulation (${String(
+          `Invalid current price (chart/simulation) (${String(
             (marketData as any)?.price
           )}), skip signals`
         );
@@ -477,12 +572,13 @@ export default function AccountManagerSection({
             ? Math.max(...analysis.supportLevels)
             : toNumber((bestBid as any)?.price, currentPrice) * 0.995;
 
-        const entryPrice = calculateOptimalEntryPrice(
+        const entryPriceRaw = calculateOptimalEntryPrice(
           "buy",
           supportLevel,
           currentPrice,
           analysis
         );
+        const entryPrice = clampNearPrice(entryPriceRaw, currentPrice, 0.003);
         const stopLoss = entryPrice * 0.99; // -1%
         const takeProfit = entryPrice * 1.02; // +2%
 
@@ -523,14 +619,7 @@ export default function AccountManagerSection({
             expectedLoss: Math.round(toNumber(expectedLoss, 0)),
             timeFrame: determineTimeFrame(analysis.trendStrength),
             marketCondition,
-          };
-
-          setDebugInfo(
-            `Created BUY signal: RRR=${toNumber(riskRewardRatio, 0)
-              .toFixed(2)
-              .toString()}, Win=${toNumber(winProbability, 0)}%`
-          );
-        } else {
+          };} else {
           setDebugInfo(
             `BUY rejected: RRR=${toNumber(riskRewardRatio, 0)
               .toFixed(2)
@@ -549,7 +638,8 @@ export default function AccountManagerSection({
             ? Math.min(...analysis.resistanceLevels)
             : toNumber((bestAsk as any)?.price, currentPrice) * 1.005;
 
-        const entryPrice = Math.max(resistanceLevel, currentPrice * 1.002);
+        const entryPriceRaw = Math.max(resistanceLevel, currentPrice * 1.002);
+        const entryPrice = clampNearPrice(entryPriceRaw, currentPrice, 0.003);
         const stopLoss = entryPrice * 1.015; // +1.5%
         const takeProfit = entryPrice * 0.985; // -1.5%
 
@@ -590,14 +680,7 @@ export default function AccountManagerSection({
             expectedLoss: Math.round(toNumber(expectedLoss, 0)),
             timeFrame: determineTimeFrame(analysis.trendStrength),
             marketCondition,
-          };
-
-          setDebugInfo(
-            `Created SELL signal: RRR=${toNumber(riskRewardRatio, 0)
-              .toFixed(2)
-              .toString()}, Win=${toNumber(winProbability, 0)}%`
-          );
-        } else {
+          };} else {
           setDebugInfo(
             `SELL rejected: RRR=${toNumber(riskRewardRatio, 0)
               .toFixed(2)
@@ -701,22 +784,28 @@ export default function AccountManagerSection({
             (a, b) => toNumber(a.price, 0) - toNumber(b.price, 0)
           );
 
-          setOrderBook({
-            bids: bids.map((bid) => ({
-              price: toNumber(bid.price, 0),
-              totalQuantity: toNumber(bid.totalQuantity, 0),
-              orderCount: toNumber(bid.orderCount, 0),
-            })),
-            asks: asks.map((ask) => ({
-              price: toNumber(ask.price, 0),
-              totalQuantity: toNumber(ask.totalQuantity, 0),
-              orderCount: toNumber(ask.orderCount, 0),
-            })),
-            lastTradedPrice: toNumber((marketData as any)?.price, 0),
-            timestamp: new Date(),
-          });
+          
+const aligned = alignDepthToChartPrice(
+  bids.map((bid) => ({
+    price: toNumber(bid.price, 0),
+    totalQuantity: toNumber(bid.totalQuantity, 0),
+    orderCount: toNumber(bid.orderCount, 0),
+  })),
+  asks.map((ask) => ({
+    price: toNumber(ask.price, 0),
+    totalQuantity: toNumber(ask.totalQuantity, 0),
+    orderCount: toNumber(ask.orderCount, 0),
+  })),
+  toNumber(chartPrice, toNumber((marketData as any)?.price, 0))
+);
 
-          const analysis = analyzeMarket(marketData, bids as any, asks as any);
+setOrderBook({
+  bids: aligned.bids,
+  asks: aligned.asks,
+  lastTradedPrice: toNumber(chartPrice, toNumber((marketData as any)?.price, 0)),
+  timestamp: new Date(),
+});
+const analysis = analyzeMarket(marketData, bids as any, asks as any);
           setMarketAnalysis(analysis);
 
           const suggestions = generateSmartSuggestion(
@@ -739,7 +828,6 @@ export default function AccountManagerSection({
               ...prev.slice(0, 9),
             ]);
           }
-
           setLastUpdateTime(new Date());
         } else {
           setDebugInfo(`No market data for symbol ${selectedSymbol}`);
@@ -750,13 +838,43 @@ export default function AccountManagerSection({
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [marketSimulation, tradingPosition.cash, selectedSymbol]);
+  }, [marketSimulation, tradingPosition.cash, selectedSymbol, chartPrice]);
 
   // =========================================================================
   // HELPER FUNCTIONS
   // =========================================================================
 
-  const calculateTrendStrength = (prices: number[]): number => {
+  
+const calculateRSIFromPrices = (prices: number[], period = 14): number | null => {
+  const cleaned = (prices ?? []).filter((p) => Number.isFinite(p) && p > 0);
+  if (cleaned.length < period + 1) return null;
+
+  // Wilder's RSI
+  let avgGain = 0;
+  let avgLoss = 0;
+  for (let i = 1; i <= period; i++) {
+    const diff = cleaned[i] - cleaned[i - 1];
+    if (diff >= 0) avgGain += diff;
+    else avgLoss -= diff;
+  }
+  avgGain /= period;
+  avgLoss /= period;
+
+  for (let i = period + 1; i < cleaned.length; i++) {
+    const diff = cleaned[i] - cleaned[i - 1];
+    const gain = diff > 0 ? diff : 0;
+    const loss = diff < 0 ? -diff : 0;
+    avgGain = (avgGain * (period - 1) + gain) / period;
+    avgLoss = (avgLoss * (period - 1) + loss) / period;
+  }
+
+  if (avgLoss === 0) return 100;
+  const rs = avgGain / avgLoss;
+  const rsi = 100 - 100 / (1 + rs);
+  return Number.isFinite(rsi) ? clamp(rsi, 0, 100) : null;
+};
+
+const calculateTrendStrength = (prices: number[]): number => {
     const cleaned = (prices ?? []).filter((p) => Number.isFinite(p) && p > 0);
     if (cleaned.length < 5) return 0;
 
@@ -1219,23 +1337,6 @@ export default function AccountManagerSection({
               ))}
             </div>
 
-            {/* Debug info */}
-            {process.env.NODE_ENV === "development" && (
-              <div className="mt-2 text-xs text-gray-500">
-                <div>Last update: {lastUpdateTime.toLocaleTimeString()}</div>
-                <div>Debug: {debugInfo}</div>
-                {marketAnalysis && (
-                  <div className="mt-1">
-                    Trend: {toNumber(marketAnalysis.trendStrength, 0).toFixed(3)}{" "}
-                    | RSI:{" "}
-                    {marketAnalysis.rsi === null
-                      ? "--"
-                      : toNumber(marketAnalysis.rsi, 0).toFixed(1)}{" "}
-                    | Vol: {(toNumber(marketAnalysis.volatility, 0) * 100).toFixed(2)}%
-                  </div>
-                )}
-              </div>
-            )}
           </div>
 
           {/* Tabs */}
@@ -1411,11 +1512,6 @@ export default function AccountManagerSection({
                         <span className="text-xs px-2 py-1 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400">
                           {new Date().toLocaleTimeString()}
                         </span>
-                        {process.env.NODE_ENV === "development" && (
-                          <span className="text-xs px-2 py-1 rounded-full bg-yellow-100 dark:bg-yellow-900 text-yellow-700 dark:text-yellow-300">
-                            Debug
-                          </span>
-                        )}
                       </div>
                     </div>
 
@@ -1658,7 +1754,7 @@ export default function AccountManagerSection({
                                 Win rate
                               </div>
                               <div className="text-lg font-bold text-emerald-500">
-                                {toNumber(suggestedOrders.buy.winRate, 0)}%
+                                {toNumber(suggestedOrders.buy.winRate, 0).toFixed(1)}%
                               </div>
                             </div>
                             <div
@@ -1776,12 +1872,7 @@ export default function AccountManagerSection({
                           AI is scanning the order book for a high-quality long
                           opportunity.
                         </p>
-                        {process.env.NODE_ENV === "development" &&
-                          debugInfo && (
-                            <p className="text-xs text-yellow-600 mt-2">
-                              {debugInfo}
-                            </p>
-                          )}
+                        
                       </div>
                     )}
 
@@ -1923,7 +2014,7 @@ export default function AccountManagerSection({
                                 Win rate
                               </div>
                               <div className="text-lg font-bold text-rose-500">
-                                {toNumber(suggestedOrders.sell.winRate, 0)}%
+                                {toNumber(suggestedOrders.sell.winRate, 0).toFixed(1)}%
                               </div>
                             </div>
                             <div
@@ -2041,12 +2132,7 @@ export default function AccountManagerSection({
                           AI is monitoring for a potential short setup with
                           attractive risk/reward.
                         </p>
-                        {process.env.NODE_ENV === "development" &&
-                          debugInfo && (
-                            <p className="text-xs text-yellow-600 mt-2">
-                              {debugInfo}
-                            </p>
-                          )}
+                        
                       </div>
                     )}
                   </div>
@@ -2432,7 +2518,7 @@ export default function AccountManagerSection({
                         isDarkMode ? "text-gray-200" : "text-gray-900"
                       }`}
                     >
-                      📊 Market analysis
+                      Market analysis
                     </h3>
 
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
@@ -2534,7 +2620,7 @@ export default function AccountManagerSection({
                         </div>
                         <div className="text-xs mt-1">
                           {marketAnalysis.rsi === null
-                            ? "N/A"
+                            ? "Calculating"
                             : marketAnalysis.rsi < 35
                             ? "Oversold"
                             : marketAnalysis.rsi > 65
@@ -2638,7 +2724,7 @@ export default function AccountManagerSection({
                       isDarkMode ? "text-gray-200" : "text-gray-900"
                     }`}
                   >
-                    📈 Recent AI suggestions
+                    Recent AI suggestions
                   </h3>
 
                   {suggestionHistory.length > 0 ? (
@@ -2765,3 +2851,4 @@ export default function AccountManagerSection({
     </div>
   );
 }
+ 

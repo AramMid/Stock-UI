@@ -1,6 +1,6 @@
   "use client";
   import { useState, useEffect } from "react";
-  import { ChevronDown, X, Grid, MoreHorizontal, Plus } from "lucide-react";
+  import { ChevronDown, X, Grid, MoreHorizontal } from "lucide-react";
   import { formatVND, formatVNDCurrency } from "@/lib/order-management";
   import { calculateMaxPositionSize, roundDownToLotSize, sharesToLots, getExchangeBySymbol, calculatePriceBands } from "@/lib/position-sizing";
 
@@ -15,7 +15,7 @@
     onSideChange: (side: "buy" | "sell") => void; // Callback to notify parent of side changes
   }
 
-  type OrderType = "Market" | "Limit" | "Stop";
+  type OrderType = "Market" | "Limit";
 
   export default function OrderPanel({
     symbol,
@@ -29,13 +29,18 @@
   }: OrderPanelProps) {
     const [activeTab, setActiveTab] = useState<"order" | "dom">("order");
     const [orderType, setOrderType] = useState<OrderType>("Market");
-    const [quantity, setQuantity] = useState(100); // Default to 1 lot (100 shares)
-    const [price, setPrice] = useState(currentPrice);
     
-    // Exit states
-    const [takeProfitEnabled, setTakeProfitEnabled] = useState(true);
-    const [stopLossEnabled, setStopLossEnabled] = useState(false);
-    const [exitsExpanded, setExitsExpanded] = useState(true);
+
+// Exit (TP/SL) - only used for LIMIT orders
+const defaultTP = Math.round(currentPrice * 1.01);
+const defaultSL = Math.round(currentPrice * 0.99);
+
+const [takeProfitEnabled, setTakeProfitEnabled] = useState<boolean>(true);
+const [stopLossEnabled, setStopLossEnabled] = useState<boolean>(true);
+const [takeProfitPrice, setTakeProfitPrice] = useState<number>(defaultTP);
+const [stopLossPrice, setStopLossPrice] = useState<number>(defaultSL);
+const [quantity, setQuantity] = useState(100); // Default to 1 lot (100 shares)
+    const [price, setPrice] = useState(currentPrice);
 
     // Mock calculations for VND
     const priceStep = 100;
@@ -46,15 +51,6 @@
     const exchange = getExchangeBySymbol(symbol);
     const priceBands = calculatePriceBands(currentPrice, exchange);
 
-    // Defaults for VND
-    const defaultTP = 65100; 
-    const defaultSL = 55700;
-
-    const [takeProfitPrice, setTakeProfitPrice] = useState(defaultTP);
-    const [takeProfitTicks, setTakeProfitTicks] = useState(76);
-    const [stopLossPrice, setStopLossPrice] = useState(defaultSL);
-    const [stopLossTicks, setStopLossTicks] = useState(17);
-
     // Ensure quantity is always a multiple of lot size (100 shares)
     const validQuantity = roundDownToLotSize(quantity);
     const tradeValue = validQuantity * currentPrice;
@@ -62,7 +58,7 @@
     const handleAction = () => {
       // Ensure quantity is always a multiple of lot size (100 shares)
       const validQuantity = roundDownToLotSize(quantity);
-      const orderPrice = orderType === "Market" ? currentPrice : price;
+      const orderPrice = orderType === "Limit" ? price : currentPrice;
       if (side === "buy") {
         onBuy(validQuantity, orderPrice);
       } else {
@@ -203,7 +199,7 @@ return (
 
             {/* --- ORDER TYPE TABS --- */}
             <div className={`flex gap-1 p-1 rounded-lg ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`}>
-              {(["Market", "Limit", "Stop"] as OrderType[]).map((type) => (
+              {(["Market", "Limit"] as OrderType[]).map((type) => (
                 <button
                   key={type}
                   onClick={() => setOrderType(type)}
@@ -251,7 +247,7 @@ return (
             </div>
             
             {/* --- PRICE INPUT (for Limit/Stop orders) --- */}
-            {orderType !== "Market" && (
+            {orderType === "Limit" && (
               <div>
                 <label className={labelClasses}>Price</label>
                 <input
@@ -263,101 +259,69 @@ return (
               </div>
             )}
 
-            {/* --- EXITS SECTION --- */}
-            <div className={`rounded-lg border ${borderClass} p-3 ${isDarkMode ? "bg-gray-800/30" : "bg-gray-50"}`}>
-              <div 
-                className="flex justify-between items-center cursor-pointer"
-                onClick={() => setExitsExpanded(!exitsExpanded)}
-              >
-                <span className="font-bold text-sm">Exits</span>
-                <ChevronDown 
-                  size={16} 
-                  className={`transition-transform duration-200 ${exitsExpanded ? 'rotate-180' : ''} ${subTextClass}`} 
-                />
-              </div>
+            
+{/* --- EXITS SECTION (LIMIT ONLY) --- */}
+{orderType === "Limit" && (
+  <div className="mt-4 rounded-xl border p-3">
+    <div className="flex items-center justify-between">
+      <div className="text-sm font-semibold">Take profit / Stop loss</div>
+    </div>
 
-              {exitsExpanded && (
-                <div className="space-y-4 mt-3">
-                  {/* Take Profit */}
-                  <div>
-                    <div className="flex items-center gap-2 mb-2">
-                      <input 
-                        type="checkbox" 
-                        checked={takeProfitEnabled}
-                        onChange={(e) => setTakeProfitEnabled(e.target.checked)}
-                        className="w-4 h-4 accent-blue-500 cursor-pointer"
-                      />
-                      <span className={`text-sm ${textClass}`}>Take profit</span>
-                    </div>
-                    
-                    <div className="grid grid-cols-2 gap-3 pl-6">
-                      <div>
-                        <label className={labelClasses}>Price</label>
-                        <input 
-                          type="number"
-                          disabled={!takeProfitEnabled}
-                          value={takeProfitPrice}
-                          onChange={(e) => setTakeProfitPrice(Number(e.target.value))}
-                          className={`${inputBaseClasses} h-[34px] ${!takeProfitEnabled && 'opacity-40'}`} 
-                        />
-                      </div>
-                      <div>
-                        <div className="flex justify-between">
-                          <label className={labelClasses}>Ticks</label>
-                        </div>
-                        <input 
-                          type="number"
-                          disabled={!takeProfitEnabled}
-                          value={takeProfitTicks}
-                          onChange={(e) => setTakeProfitTicks(Number(e.target.value))}
-                          className={`${inputBaseClasses} h-[34px] ${!takeProfitEnabled && 'opacity-40'}`} 
-                        />
-                      </div>
-                    </div>
-                  </div>
+    <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+      <div className="rounded-lg border p-3">
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-xs font-semibold">Take profit</div>
+          <label className="flex items-center gap-2 text-xs">
+            <input
+              type="checkbox"
+              checked={takeProfitEnabled}
+              onChange={(e) => setTakeProfitEnabled(e.target.checked)}
+            />
+            Enable
+          </label>
+        </div>
+        <input
+          type="number"
+          value={takeProfitPrice}
+          onChange={(e) => setTakeProfitPrice(Number(e.target.value))}
+          className="w-full rounded-md border px-3 py-2 text-sm"
+          placeholder="TP price"
+          disabled={!takeProfitEnabled}
+        />
+        <div className="mt-1 text-[11px] opacity-70">
+          Applies only to this limit order.
+        </div>
+      </div>
 
-                  {/* Stop Loss */}
-                  <div>
-                    <div className="flex items-center gap-2 mb-2">
-                      <input 
-                        type="checkbox" 
-                        checked={stopLossEnabled}
-                        onChange={(e) => setStopLossEnabled(e.target.checked)}
-                        className="w-4 h-4 accent-blue-500 cursor-pointer"
-                      />
-                      <span className={`text-sm ${textClass}`}>Stop loss</span>
-                    </div>
-                    
-                    <div className="grid grid-cols-2 gap-3 pl-6">
-                      <div>
-                        <label className={labelClasses}>Price</label>
-                        <input 
-                          type="number"
-                          disabled={!stopLossEnabled}
-                          value={stopLossPrice}
-                          onChange={(e) => setStopLossPrice(Number(e.target.value))}
-                          className={`${inputBaseClasses} h-[34px] ${!stopLossEnabled && 'opacity-40'}`} 
-                        />
-                      </div>
-                      <div>
-                        <div className="flex justify-between">
-                          <label className={labelClasses}>Ticks</label>
-                        </div>
-                        <input 
-                          type="number"
-                          disabled={!stopLossEnabled}
-                          value={stopLossTicks}
-                          onChange={(e) => setStopLossTicks(Number(e.target.value))}
-                          className={`${inputBaseClasses} h-[34px] ${!stopLossEnabled && 'opacity-40'}`} 
-                        />
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
+      <div className="rounded-lg border p-3">
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-xs font-semibold">Stop loss</div>
+          <label className="flex items-center gap-2 text-xs">
+            <input
+              type="checkbox"
+              checked={stopLossEnabled}
+              onChange={(e) => setStopLossEnabled(e.target.checked)}
+            />
+            Enable
+          </label>
+        </div>
+        <input
+          type="number"
+          value={stopLossPrice}
+          onChange={(e) => setStopLossPrice(Number(e.target.value))}
+          className="w-full rounded-md border px-3 py-2 text-sm"
+          placeholder="SL price"
+          disabled={!stopLossEnabled}
+        />
+        <div className="mt-1 text-[11px] opacity-70">
+          Applies only to this limit order.
+        </div>
+      </div>
+    </div>
+  </div>
+)}
 
-            {/* --- ORDER INFO --- */}
+{/* --- ORDER INFO --- */}
             <div className="space-y-1.5 pt-2 pb-2">
               <div className="flex justify-between text-[13px]">
                 <span className={subTextClass}>Trade value</span>

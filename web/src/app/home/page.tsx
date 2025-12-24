@@ -10,11 +10,7 @@ import { DrawingProvider, useDrawing } from "@/contexts/DrawingContext";
 import { useLayoutManager } from "@/lib/hooks/useLayoutManager";
 import { useChartResize } from "@/lib/hooks/useChartResize";
 import { Order } from "@/lib/order-management";
-import { OrderStatus } from "@/lib/services/orderService";
-import {
-  MarketSimulationService,
-  SimulatedMarketData,
-} from "@/lib/services/marketSimulationService";
+import { MarketSimulationService } from "@/lib/services/marketSimulationService";
 import { orderBookService } from "@/lib/services/orderBookService";
 import { WebSocketService } from "@/lib/services/webSocketService";
 import { NotificationService } from "@/lib/services/notificationService";
@@ -37,11 +33,7 @@ import NewsSection from "@/components/trading/NewsSection";
 import ResizableDivider from "@/components/trading/ResizableDivider";
 import OrderPanel from "@/components/trading/OrderPanel";
 
-import {
-  createOrder,
-  CreateOrderDto,
-  getOrders,
-} from "@/lib/services/orderApiService";
+import { createOrder, CreateOrderDto } from "@/lib/services/orderApiService";
 
 import { useWatchlistPositions } from "@/lib/hooks/useWatchlistPositions";
 
@@ -60,12 +52,25 @@ export default function TradingPlatformWrapper(props: TradingPageProps) {
 function Home({ symbol = "VIC.VN" }: TradingPageProps) {
   const router = useRouter();
   const containerRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * IMPORTANT:
+   * - Chart is drawn ONLY by useChart.
+   * - MarketSimulationService is kept ONLY as a shared "price bus" for other modules
+   *   (AI Trading Signal, OrderBook, Watchlist...) to read the SAME price as the chart.
+   * - We DO NOT start simulation ticks here.
+   */
   const marketSimulationRef = useRef<MarketSimulationService | null>(null);
+
   const hasManuallyResizedOrderPanel = useRef(false);
 
   // Core state
   const [timeframe, setTimeframe] = useState<Timeframe>("1D");
   const [selectedSymbol, setSelectedSymbol] = useState(symbol);
+
+  // ✅ Keep latest selectedSymbol for async callbacks (avoid stale closure)
+  const selectedSymbolRef = useRef<string>(symbol);
+
   const [ohlcData, setOhlcData] = useState<{
     open: number;
     high: number;
@@ -84,12 +89,12 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
   const [showMACD, setShowMACD] = useState(false);
 
   const lastPriceRef = useRef(0);
-  // ✅ FIX: store last price per symbol so unrealized can update correctly
   const lastPriceBySymbolRef = useRef<Record<string, number>>({});
+  const lastUnifiedCloseRef = useRef<Record<string, number>>({});
 
-  const [chartData, setChartData] = useState<{ time: number; value: number }[]>(
-    []
-  );
+  useEffect(() => {
+    selectedSymbolRef.current = selectedSymbol;
+  }, [selectedSymbol]);
 
   // UI state
   const [isPrivateMode, setIsPrivateMode] = useState(false);
@@ -107,18 +112,10 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
   );
 
   // User data
-  const {
-    userDetail,
-    userBalance,
-    loading: userDataLoading,
-    error: userDataError,
-    refreshUserData,
-  } = useUserData();
+  const { userDetail, userBalance, refreshUserData } = useUserData();
 
   // Orders state
   const [orders, setOrders] = useState<Order[]>([]);
-
-  // ===== Orders refs (tránh stale closure) =====
   const ordersRef = useRef<Order[]>([]);
   useEffect(() => {
     ordersRef.current = orders;
@@ -136,7 +133,7 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
   const [unrealizedPnl, setUnrealizedPnl] = useState(0);
   const [equity, setEquity] = useState(0);
 
-  // Market simulation / positions
+  // Positions (keep existing logic)
   const {
     tradingPosition,
     handleBuy,
@@ -170,7 +167,6 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
   const { positions, refreshWatchlistPositions, loadingPositions } =
     useWatchlistPositions(watchlistStocks);
 
-  // Effect to refresh positions on mount
   useEffect(() => {
     const timer = setTimeout(() => {
       refreshWatchlistPositions();
@@ -178,7 +174,7 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
     return () => clearTimeout(timer);
   }, [refreshWatchlistPositions]);
 
-  // Effect to initialize lots from existing positions (placeholder avgPrice)
+  // Init lots from existing positions (placeholder)
   useEffect(() => {
     if (loadingPositions || !positions) return;
 
@@ -186,7 +182,7 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
 
     positions.forEach((shares, sym) => {
       if (shares > 0) {
-        const avgPrice = 10000; // Placeholder - ideally load avgPrice/cost basis from backend
+        const avgPrice = 10000; // Placeholder - ideally from backend
         lotsRef.current.set(sym, [{ qty: shares, price: avgPrice }]);
       }
     });
@@ -195,36 +191,63 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [positions, loadingPositions]);
 
-  // ✅ MarketSimulation initialization
+  // ✅ Create MarketSimulationService as shared bus, BUT DO NOT startSimulation
   useEffect(() => {
-    // Initialize MarketSimulationService
     marketSimulationRef.current = new MarketSimulationService();
-
-    // Make market simulation service available globally for testing
     (window as any).marketSimulationRef = marketSimulationRef;
-
-    marketSimulationRef.current.startSimulation((data: SimulatedMarketData) => {
-      if (data.symbol === selectedSymbol) {
-        updateLastPrice(data.symbol, data.price);
-      }
-    });
-
     return () => {
       marketSimulationRef.current?.stopSimulation();
-      // Clean up global reference
       delete (window as any).marketSimulationRef;
     };
-  }, [updateLastPrice, selectedSymbol]);
+  }, []);
 
-  // ✅ BlackSwanService initialization
+  /**
+   * Push the chart price into all other modules so EVERYTHING matches the chart.
+   * - updateLastPrice: positions/unrealized
+   * - marketSimulationRef.setAnchorPrice: AI Signal / others reading from simulation service
+   * - orderBookService: if it supports market/mark price setters
+   * - window event: optional for any UI modules that listen
+   */
+  const pushUnifiedPrice = useCallback(
+    (sym: string, price: number) => {
+      if (!Number.isFinite(price) || price <= 0) return;
+      const prev = lastPriceBySymbolRef.current[sym];
+      // Prevent render loops: only propagate when price actually changes
+      if (Number.isFinite(prev) && Math.abs(prev - price) < 1e-9) return;
+
+      // 1) trading positions / pnl
+      updateLastPrice(sym, price);
+
+      // 2) local caches
+      lastPriceRef.current = price;
+      lastPriceBySymbolRef.current[sym] = price;
+
+      // 3) keep marketSimulation aligned WITHOUT generating its own price stream
+      marketSimulationRef.current?.setAnchorPrice(sym, price, "hard");
+
+      // 4) keep orderBook aligned if service supports it (avoid TS errors via any)
+      const ob: any = orderBookService as any;
+      ob?.setMarketPrice?.(sym, price);
+      ob?.setMarkPrice?.(sym, price);
+      ob?.setReferencePrice?.(sym, price);
+      ob?.setLastPrice?.(sym, price);
+
+      // 5) optional event bus for AI widgets / components
+      try {
+        window.dispatchEvent(
+          new CustomEvent("chart:price", { detail: { symbol: sym, price } })
+        );
+      } catch {}
+    },
+    [updateLastPrice]
+  );
+
+  // ✅ BlackSwanService initialization (unchanged)
   useEffect(() => {
     const blackSwanService = BlackSwanService.getInstance();
 
-    // Register position checker (giữ nguyên)
-    blackSwanService.registerPositionChecker((symbol: string) => {
-      const position = getAllPositions().find(
-        (pos: any) => pos.symbol === symbol
-      );
+    blackSwanService.registerPositionChecker((sym: string) => {
+      const position = getAllPositions().find((pos: any) => pos.symbol === sym);
       return position ? position.position : 0;
     });
 
@@ -232,18 +255,14 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
     blackSwanService.stopAutomaticTriggering();
     blackSwanService.startAutomaticTriggering(selectedSymbol);
 
-    // ✅ LISTEN TRỰC TIẾP EVENT TỪ BlackSwanService
     const onBlackSwan = (event: any) => {
       if (event?.symbol !== selectedSymbol) return;
 
       setIsBlackSwanActive(true);
-
-      // nếu bạn muốn nhấp nháy nhanh theo event service
       blackSwanService.startFlashing();
 
       setTimeout(() => {
         setIsBlackSwanActive(false);
-        // nếu không còn event nào active thì tắt nhấp nháy
         if (!blackSwanService.hasActiveEvents()) {
           blackSwanService.stopFlashing();
         }
@@ -259,7 +278,7 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
     };
   }, [selectedSymbol, getAllPositions]);
 
-  // Strategy Tester fullscreen toggle
+  // Strategy Tester fullscreen toggle (unchanged)
   useEffect(() => {
     const handleToggleFullscreen = () => {
       if (isPrivateMode) {
@@ -288,53 +307,6 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
       );
     };
   }, [layoutManager, isPrivateMode]);
-
-  // ✅ Re-mark-to-market whenever latest chart price changes
-  useEffect(() => {
-    if (!ohlcData?.close) return;
-    markToMarketAll();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ohlcData?.close]);
-
-  // Wrap price update for chart
-  const handlePriceUpdate = useCallback(
-    (price: number) => {
-      updateLastPrice(selectedSymbol, price);
-    },
-    [selectedSymbol, updateLastPrice]
-  );
-
-  // Chart
-  const chartResult = useChart({
-    containerRef,
-    symbol: selectedSymbol,
-    timeframe,
-    onPriceUpdate: handlePriceUpdate,
-    onOHLCUpdate: setOhlcData,
-    onVolumeUpdate: setCurrentVolume,
-    isDarkMode,
-    showRSI,
-    showMACD,
-    chartType,
-    isPrivateMode,
-    enableTrendlineDrawing,
-    enableBrushDrawing,
-    activeTool,
-    onDrawingComplete: () => {
-      setActiveTool("selection");
-      setEnableTrendlineDrawing(false);
-    },
-  });
-
-  const drawing = chartResult?.drawing || {
-    isEnabled: false,
-    isDrawing: false,
-    trendlines: [],
-    startDrawing: () => {},
-    cancelDrawing: () => {},
-    clearAll: () => {},
-    undo: () => {},
-  };
 
   const FEE_RATE = 0.0015; // 0.15%
   const TAX_RATE = 0.001; // 0.1% chỉ bán
@@ -369,23 +341,82 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
     setEquity(cash + mv);
   }
 
-  // ✅ Bid / Ask từ close (ohlcData.close)
+  // ✅ When chart OHLC close updates, broadcast unified price to all modules
   useEffect(() => {
     if (!ohlcData?.close) return;
-
     const closePrice = Number(ohlcData.close);
-    lastPriceRef.current = closePrice;
-    lastPriceBySymbolRef.current[selectedSymbol] = closePrice;
+    if (!Number.isFinite(closePrice) || closePrice <= 0) return;
 
-    const bidPrice = closePrice - 100;
-    const askPrice = closePrice + 100;
+    const prevClose = lastUnifiedCloseRef.current[selectedSymbol];
+    if (Number.isFinite(prevClose) && Math.abs(prevClose - closePrice) < 1e-9) return;
+    lastUnifiedCloseRef.current[selectedSymbol] = closePrice;
 
-    setBestBidPrice(bidPrice);
-    setBestAskPrice(askPrice);
+    pushUnifiedPrice(selectedSymbol, closePrice);
+
+    // Bid/Ask derived from chart price
+    setBestBidPrice((prev) => {
+      const next = closePrice - 100;
+      return prev === next ? prev : next;
+    });
+    setBestAskPrice((prev) => {
+      const next = closePrice + 100;
+      return prev === next ? prev : next;
+    });
 
     markToMarketAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ohlcData?.close, selectedSymbol]);
+  }, [ohlcData?.close, selectedSymbol, pushUnifiedPrice]);
+
+  // ✅ Chart → price update (tick) should ALSO unify other modules
+  const handlePriceUpdate = useCallback(
+    (price: number) => {
+      pushUnifiedPrice(selectedSymbol, price);
+    },
+    [pushUnifiedPrice, selectedSymbol]
+  );
+
+  // ✅ If symbol changes, immediately sync "known last price" to other modules (no stale price)
+  useEffect(() => {
+    const known = lastPriceBySymbolRef.current[selectedSymbol];
+    if (Number.isFinite(known) && known > 0) {
+      pushUnifiedPrice(selectedSymbol, known);
+    } else if (ohlcData?.close && Number(ohlcData.close) > 0) {
+      pushUnifiedPrice(selectedSymbol, Number(ohlcData.close));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSymbol]);
+
+  // Chart (ONLY drawing)
+  const chartResult = useChart({
+    containerRef,
+    symbol: selectedSymbol,
+    timeframe,
+    onPriceUpdate: handlePriceUpdate,
+    onOHLCUpdate: setOhlcData,
+    onVolumeUpdate: setCurrentVolume,
+    isDarkMode,
+    showRSI,
+    showMACD,
+    chartType,
+    isPrivateMode,
+    enableTrendlineDrawing,
+    enableBrushDrawing,
+    activeTool,
+    onDrawingComplete: () => {
+      setActiveTool("selection");
+      setEnableTrendlineDrawing(false);
+    },
+  });
+
+  const drawing = chartResult?.drawing || {
+    isEnabled: false,
+    isDrawing: false,
+    trendlines: [],
+    startDrawing: () => {},
+    cancelDrawing: () => {},
+    clearAll: () => {},
+    undo: () => {},
+  };
 
   function applyFillFIFO(params: {
     symbol: string;
@@ -446,10 +477,6 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
     setSelectedSymbol(newSymbol);
   }, []);
 
-  const handleScreenshot = useCallback(async () => {
-    // Screenshot functionality not implemented yet
-  }, [selectedSymbol, timeframe]);
-
   const handleToolSelect = useCallback(
     (toolId: string) => {
       if (toolId === "trendline") {
@@ -488,7 +515,7 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
     setShowOrderPanel(false);
   }, []);
 
-  // Resize handling
+  // Resize handling (unchanged)
   useEffect(() => {
     const isAnyDragging =
       layoutManager.chartAccountLayout.isDragging ||
@@ -516,7 +543,7 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
     triggerChartResize,
   ]);
 
-  // Auto height for order panel
+  // Auto height for order panel (unchanged)
   useEffect(() => {
     if (showOrderPanel && layoutManager.rightSectionRef.current) {
       const updateOrderPanelHeight = () => {
@@ -550,11 +577,7 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
 
   // ✅ IMPORTANT: Normalize filledQty & filledPrice so FILLED never results in 0-delta
   const normalizeFill = (
-    update: {
-      status: any;
-      filledQuantity?: any;
-      filledPrice?: any;
-    },
+    update: { status: any; filledQuantity?: any; filledPrice?: any },
     fallbackQty: number,
     fallbackPrice: number
   ) => {
@@ -603,25 +626,22 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
           timestamp: new Date(),
         };
 
-        // reset applied tracker for this order id
         appliedFilledQtyRef.current[order.id] = 0;
 
-        // 1) Add to UI first
         setOrders((prev) => [order, ...prev]);
 
-        // 2) Subscribe BEFORE sending
         const unsubscribe = webSocketService.subscribe(order.id, (update) => {
           const { upperStatus, normalizedFilledQty, normalizedFilledPrice } =
             normalizeFill(update, orderQty, price);
 
-          // --- Sync orderBookService ---
+          // Sync orderBookService
           orderBookService.updateOrder(update.orderId, {
             status: update.status,
             filledPrice: normalizedFilledPrice || update.filledPrice,
             filledQuantity: normalizedFilledQty || update.filledQuantity,
           });
 
-          // --- Sync React state ---
+          // Sync React state
           setOrders((prev) =>
             prev.map((o) =>
               o.id === update.orderId
@@ -636,20 +656,12 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
             )
           );
 
-          // ✅ Update position on FILLED using normalized qty/price
+          // Update position on FILLED
           if (upperStatus === "FILLED" && normalizedFilledPrice > 0) {
             const success =
               side === "buy"
-                ? handleBuy(
-                    orderSymbol,
-                    normalizedFilledQty,
-                    normalizedFilledPrice
-                  )
-                : handleSell(
-                    orderSymbol,
-                    normalizedFilledQty,
-                    normalizedFilledPrice
-                  );
+                ? handleBuy(orderSymbol, normalizedFilledQty, normalizedFilledPrice)
+                : handleSell(orderSymbol, normalizedFilledQty, normalizedFilledPrice);
 
             if (success) {
               notificationService.showSuccess(
@@ -660,7 +672,7 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
             }
           }
 
-          // ✅ Apply P&L only for NEW delta filled qty
+          // Apply P&L only for NEW delta filled qty
           const prevApplied = appliedFilledQtyRef.current[update.orderId] ?? 0;
           const totalFilled = normalizedFilledQty;
           const deltaQty = totalFilled - prevApplied;
@@ -720,7 +732,7 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
           }
         });
 
-        // 3) Send order into the engine
+        // Send order into engine
         orderBookService.addOrder(order);
 
         notificationService.showSuccess(
@@ -739,16 +751,6 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
       refreshWatchlistPositions,
     ]
   );
-
-  const handleBuyClick = useCallback(() => {
-    setOrderPanelSide("buy");
-    setShowOrderPanel(true);
-  }, []);
-
-  const handleSellClick = useCallback(() => {
-    setOrderPanelSide("sell");
-    setShowOrderPanel(true);
-  }, []);
 
   return (
     <div className="h-screen flex flex-col transition-colors duration-200 bg-[#131722]">
@@ -1004,7 +1006,7 @@ function Home({ symbol = "VIC.VN" }: TradingPageProps) {
                   <OrderPanel
                     symbol={selectedSymbol}
                     currentPrice={ohlcData?.close || lastPriceRef.current}
-                    onClose={handleCloseOrderPanel}
+                    onClose={() => setShowOrderPanel(false)}
                     onBuy={(quantity: number, price: number) =>
                       handleOrderSubmit("buy", quantity, price)
                     }
